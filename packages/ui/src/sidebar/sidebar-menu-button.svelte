@@ -75,7 +75,7 @@
 	});
 </script>
 
-{#snippet Button({ props }: { props?: Record })}
+{#snippet Button({ props }: { props?: Record<string, unknown> })}
 	{@const mergedProps = mergeProps(buttonProps, props)}
 	{#if child}
 		{@render child({ props: mergedProps })}

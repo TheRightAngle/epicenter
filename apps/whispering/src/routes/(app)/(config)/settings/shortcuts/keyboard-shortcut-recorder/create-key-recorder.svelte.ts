@@ -21,11 +21,11 @@ const CAPTURE_WINDOW_MS = 300; // Time to wait for additional keys in a combinat
  * - Complex combinations built over time
  */
 export function createKeyRecorder({
-	pressedKeys,
+	getPressedKeys,
 	onRegister,
 	onClear,
 }: {
-	pressedKeys: PressedKeys;
+	getPressedKeys: () => PressedKeys;
 	onRegister: (keyCombination: KeyboardEventSupportedKey[]) => void;
 	onClear: () => void;
 }) {
@@ -59,6 +59,7 @@ export function createKeyRecorder({
 	// Main effect: Watch for key changes
 	$effect(() => {
 		if (!isListening) return;
+		const pressedKeys = getPressedKeys();
 
 		// Escape key cancels recording
 		if (pressedKeys.current.includes('escape')) {

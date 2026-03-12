@@ -72,7 +72,7 @@
 	}: ButtonProps = $props();
 </script>
 
-{#snippet buttonContent(tooltipProps?: Record)}
+{#snippet buttonContent(tooltipProps?: Record<string, unknown>)}
 	{#if href}
 		<!-- biome-ignore lint/a11y/useValidAriaRole: conditional role is valid -->
 		<a

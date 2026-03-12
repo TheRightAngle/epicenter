@@ -1,8 +1,8 @@
+use log::{debug, info};
 use std::fs::File;
 use std::io::{self, BufWriter, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::time::Instant;
-use log::{debug, info};
 
 /// WAV file writer that supports progressive writing with header updates
 pub struct WavWriter {

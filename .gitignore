@@ -37,6 +37,7 @@ yarn-error.log*
 
 # Epicenter
 .epicenter
+.worktrees/
 
 # WXT (browser extension framework)
 .wxt
