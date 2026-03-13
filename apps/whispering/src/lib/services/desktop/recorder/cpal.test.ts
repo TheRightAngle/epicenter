@@ -121,6 +121,44 @@ describe('CpalRecorderServiceLive', () => {
 		]);
 	});
 
+	test('surfaces discard cleanup failure when init_recording_session fails', async () => {
+		invokeMock.mockImplementation(async (command: string) => {
+			switch (command) {
+				case 'enumerate_recording_devices':
+					return ['Mic 1'];
+				case 'init_recording_session':
+					throw new Error('init boom');
+				case 'cancel_recording':
+					throw new Error('cancel boom');
+				case 'close_recording_session':
+					return undefined;
+				default:
+					throw new Error(`Unexpected command ${command}`);
+			}
+		});
+
+		const { CpalRecorderServiceLive } = await loadCpalModule();
+		const result = await CpalRecorderServiceLive.startRecording(
+			{
+				method: 'cpal',
+				selectedDeviceId: 'Mic 1' as never,
+				recordingId: 'rec-1',
+				outputFolder: '/tmp',
+				sampleRate: '16000',
+			},
+			{ sendStatus: () => undefined },
+		);
+
+		expect(result.error?.message).toContain('init boom');
+		expect(result.error?.message).toContain('cancel boom');
+		expect(commandLog()).toEqual([
+			'enumerate_recording_devices',
+			'init_recording_session',
+			'cancel_recording',
+			'close_recording_session',
+		]);
+	});
+
 	test('closes the recording session when start_recording fails after init', async () => {
 		invokeMock.mockImplementation(async (command: string) => {
 			switch (command) {
@@ -232,5 +270,32 @@ describe('CpalRecorderServiceLive', () => {
 
 		expect(result.error?.message).toContain('Unable to read recording file');
 		expect(commandLog()).toEqual(['stop_recording', 'close_recording_session']);
+	});
+
+	test('returns an error when cancel cleanup fails', async () => {
+		invokeMock.mockImplementation(async (command: string) => {
+			switch (command) {
+				case 'get_current_recording_id':
+					return 'rec-1';
+				case 'cancel_recording':
+					throw new Error('cancel boom');
+				case 'close_recording_session':
+					return undefined;
+				default:
+					throw new Error(`Unexpected command ${command}`);
+			}
+		});
+
+		const { CpalRecorderServiceLive } = await loadCpalModule();
+		const result = await CpalRecorderServiceLive.cancelRecording({
+			sendStatus: () => undefined,
+		});
+
+		expect(result.error?.message).toContain('cancel boom');
+		expect(commandLog()).toEqual([
+			'get_current_recording_id',
+			'cancel_recording',
+			'close_recording_session',
+		]);
 	});
 });

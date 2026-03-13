@@ -30,7 +30,7 @@ const closeRecordingSession = async ({
 	sendStatus,
 }: {
 	sendStatus: (args: { title: string; description: string }) => void;
-}) => {
+}): Promise<Result<void, RecorderError>> => {
 	sendStatus({
 		title: '🔄 Closing Session',
 		description: 'Cleaning up recording resources...',
@@ -38,14 +38,16 @@ const closeRecordingSession = async ({
 	const { error: closeError } = await invoke<void>('close_recording_session');
 	if (closeError) {
 		console.error('Failed to close recording session:', closeError);
+		return Err(closeError);
 	}
+	return Ok(undefined);
 };
 
 const discardRecordingSession = async ({
 	sendStatus,
 }: {
 	sendStatus: (args: { title: string; description: string }) => void;
-}) => {
+}): Promise<Result<void, RecorderError>> => {
 	sendStatus({
 		title: '🛑 Discarding Recording',
 		description: 'Cleaning up the partial recording...',
@@ -55,8 +57,21 @@ const discardRecordingSession = async ({
 	if (cancelError) {
 		console.error('Failed to cancel recording session:', cancelError);
 		await closeRecordingSession({ sendStatus });
+		return Err(cancelError);
 	}
+	return Ok(undefined);
 };
+
+const formatCleanupAwareError = ({
+	primaryError,
+	cleanupError,
+}: {
+	primaryError: { message?: string } | unknown;
+	cleanupError: { message?: string } | unknown;
+}) =>
+	new Error(
+		`${extractErrorMessage(primaryError)} Cleanup failed while discarding the partial recording: ${extractErrorMessage(cleanupError)}`,
+	);
 
 /**
  * Enumerates available recording devices from the system.
@@ -198,9 +213,16 @@ export const CpalRecorderServiceLive: RecorderService = {
 			},
 		);
 		if (initRecordingSessionError) {
-			await discardRecordingSession({ sendStatus });
+			const { error: discardError } = await discardRecordingSession({
+				sendStatus,
+			});
 			return RecorderError.InitFailed({
-				cause: initRecordingSessionError,
+				cause: discardError
+					? formatCleanupAwareError({
+							primaryError: initRecordingSessionError,
+							cleanupError: discardError,
+						})
+					: initRecordingSessionError,
 			});
 		}
 
@@ -211,8 +233,17 @@ export const CpalRecorderServiceLive: RecorderService = {
 		});
 		const { error: startRecordingError } = await invoke<void>('start_recording');
 		if (startRecordingError) {
-			await discardRecordingSession({ sendStatus });
-			return RecorderError.StartFailed({ cause: startRecordingError });
+			const { error: discardError } = await discardRecordingSession({
+				sendStatus,
+			});
+			return RecorderError.StartFailed({
+				cause: discardError
+					? formatCleanupAwareError({
+							primaryError: startRecordingError,
+							cleanupError: discardError,
+						})
+					: startRecordingError,
+			});
 		}
 
 		return Ok(deviceOutcome);
@@ -287,7 +318,10 @@ export const CpalRecorderServiceLive: RecorderService = {
 				'Safely stopping your recording and cleaning up resources...',
 		});
 
-		await discardRecordingSession({ sendStatus });
+		const { error: discardError } = await discardRecordingSession({ sendStatus });
+		if (discardError) {
+			return Err(discardError);
+		}
 
 		return Ok({ status: 'cancelled' });
 	},
@@ -305,4 +339,12 @@ async function invoke<T>(command: string, args?: Record<string, unknown>) {
 		try: async () => await tauriInvoke<T>(command, args),
 		catch: (error) => RecorderError.InvokeFailed({ command, cause: error }),
 	});
+}
+
+function extractErrorMessage(cause: { message?: string } | unknown) {
+	if (cause instanceof Error) return cause.message;
+	if (typeof cause === 'object' && cause && 'message' in cause) {
+		return String(cause.message);
+	}
+	return String(cause);
 }
