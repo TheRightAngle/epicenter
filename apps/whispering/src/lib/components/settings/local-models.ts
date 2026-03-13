@@ -11,6 +11,8 @@ import { fetch as tauriFetch } from '@tauri-apps/plugin-http';
 import {
 	isModelFileSizeValid,
 	type LocalModelConfig,
+	MOONSHINE_LANGUAGES,
+	MOONSHINE_VARIANTS,
 } from '../../services/transcription/local/types';
 import type { TranscriptionService } from '../../services/transcription/registry';
 
@@ -157,6 +159,12 @@ const localModelCatalog = {
 	moonshine: MOONSHINE_MODEL_CATALOG,
 } as const;
 
+const VALID_WHISPER_MODEL_EXTENSIONS = ['.bin', '.gguf', '.ggml'] as const;
+
+const MOONSHINE_DIRECTORY_NAME_PATTERN = new RegExp(
+	`^moonshine-(${MOONSHINE_VARIANTS.join('|')})-(${MOONSHINE_LANGUAGES.join('|')})$`,
+);
+
 export function getCachedLocalModelValidity(path: string): boolean {
 	return localModelValidityCache.get(path) === true;
 }
@@ -180,12 +188,9 @@ export async function validateConfiguredLocalModelPath(
 	}
 
 	const model = findInstalledLocalModel(serviceId, modelPath);
-	if (!model) {
-		localModelValidityCache.set(modelPath, false);
-		return false;
-	}
-
-	const isValid = await validateLocalModelInstall(model, modelPath, fs);
+	const isValid = model
+		? await validateLocalModelInstall(model, modelPath, fs)
+		: await validateManualLocalModelInstall(serviceId, modelPath, fs);
 	localModelValidityCache.set(modelPath, isValid);
 	return isValid;
 }
@@ -346,6 +351,99 @@ async function cleanupPath(
 ) {
 	if (!(await fs.exists(path))) return;
 	await fs.remove(path, { recursive });
+}
+
+async function validateManualLocalModelInstall(
+	serviceId: TranscriptionService['id'],
+	path: string,
+	fs: FsDeps,
+): Promise<boolean> {
+	switch (serviceId) {
+		case 'whispercpp':
+			return await validateManualWhisperModel(path, fs);
+		case 'parakeet':
+			return await validateManualParakeetModel(path, fs);
+		case 'moonshine':
+			return await validateManualMoonshineModel(path, fs);
+		default:
+			return false;
+	}
+}
+
+async function validateManualWhisperModel(path: string, fs: FsDeps) {
+	if (!(await fs.exists(path))) return false;
+	const stats = await safeStat(path, fs);
+	if (!stats || stats.isDirectory || stats.size <= 0) return false;
+
+	const normalizedPath = path.toLowerCase();
+	return VALID_WHISPER_MODEL_EXTENSIONS.some((extension) =>
+		normalizedPath.endsWith(extension),
+	);
+}
+
+async function validateManualParakeetModel(path: string, fs: FsDeps) {
+	return await validateRuntimeFileSet(
+		path,
+		[
+			['encoder-model.int8.onnx', 'encoder-model.fp16.onnx', 'encoder-model.onnx'],
+			[
+				'decoder_joint-model.int8.onnx',
+				'decoder_joint-model.fp16.onnx',
+				'decoder_joint-model.onnx',
+			],
+			['nemo128.onnx'],
+			['vocab.txt'],
+		],
+		fs,
+	);
+}
+
+async function validateManualMoonshineModel(path: string, fs: FsDeps) {
+	if (!MOONSHINE_DIRECTORY_NAME_PATTERN.test(getPathTail(path))) {
+		return false;
+	}
+
+	return await validateRuntimeFileSet(
+		path,
+		[
+			['encoder_model.fp16.onnx', 'encoder_model.onnx'],
+			['decoder_model_merged.fp16.onnx', 'decoder_model_merged.onnx'],
+			['tokenizer.json'],
+		],
+		fs,
+	);
+}
+
+async function validateRuntimeFileSet(
+	directoryPath: string,
+	requiredFileGroups: ReadonlyArray<ReadonlyArray<string>>,
+	fs: FsDeps,
+) {
+	if (!(await fs.exists(directoryPath))) return false;
+	const directoryStats = await safeStat(directoryPath, fs);
+	if (!directoryStats?.isDirectory) return false;
+
+	for (const fileGroup of requiredFileGroups) {
+		let hasValidFile = false;
+		for (const filename of fileGroup) {
+			const filePath = await fs.join(directoryPath, filename);
+			if (!(await fs.exists(filePath))) {
+				continue;
+			}
+
+			const fileStats = await safeStat(filePath, fs);
+			if (fileStats && !fileStats.isDirectory && fileStats.size > 0) {
+				hasValidFile = true;
+				break;
+			}
+		}
+
+		if (!hasValidFile) {
+			return false;
+		}
+	}
+
+	return true;
 }
 
 async function downloadFileToPath({

@@ -146,6 +146,46 @@ describe('local-models', () => {
 		expect(getCachedLocalModelValidity(corruptedPath)).toBeFalse();
 	});
 
+	test('manually selected whisper models stay configured when the file exists outside the prebuilt catalog', async () => {
+		clearCachedLocalModelValidity();
+		const fs = createFakeFs();
+		const manualModelPath = '/models/whisper/custom-medium-q5_0.gguf';
+
+		await fs.writeFile(manualModelPath, new Uint8Array([1, 2, 3]));
+
+		expect(
+			await validateConfiguredLocalModelPath(
+				'whispercpp',
+				manualModelPath,
+				fs,
+			),
+		).toBeTrue();
+		expect(getCachedLocalModelValidity(manualModelPath)).toBeTrue();
+	});
+
+	test('manually selected parakeet directories stay configured when they contain the required runtime files', async () => {
+		clearCachedLocalModelValidity();
+		const fs = createFakeFs();
+		const manualModelPath = '/models/parakeet/custom-parakeet';
+
+		await fs.mkdir(manualModelPath);
+		await fs.writeFile(
+			`${manualModelPath}/encoder-model.onnx`,
+			new Uint8Array([1]),
+		);
+		await fs.writeFile(
+			`${manualModelPath}/decoder_joint-model.onnx`,
+			new Uint8Array([2]),
+		);
+		await fs.writeFile(`${manualModelPath}/nemo128.onnx`, new Uint8Array([3]));
+		await fs.writeFile(`${manualModelPath}/vocab.txt`, new Uint8Array([4]));
+
+		expect(
+			await validateConfiguredLocalModelPath('parakeet', manualModelPath, fs),
+		).toBeTrue();
+		expect(getCachedLocalModelValidity(manualModelPath)).toBeTrue();
+	});
+
 	test('failed multi-file downloads clean up staged files and never activate the final directory', async () => {
 		const fs = createFakeFs();
 		const model: LocalModelConfig = {
