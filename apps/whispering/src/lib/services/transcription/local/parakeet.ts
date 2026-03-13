@@ -4,7 +4,10 @@ import { type } from 'arktype';
 import { extractErrorMessage } from 'wellcrafted/error';
 import { Ok, type Result, tryAsync } from 'wellcrafted/result';
 import { WhisperingErr, type WhisperingError } from '$lib/result';
-import type { ParakeetModelConfig } from './types';
+import type {
+	ParakeetAccelerationMode,
+	ParakeetModelConfig,
+} from './types';
 
 /**
  * Pre-built Parakeet models available for download from GitHub releases.
@@ -50,14 +53,17 @@ export const PARAKEET_MODELS = [
 ] as const satisfies readonly ParakeetModelConfig[];
 
 const ParakeetErrorType = type({
-	name: "'AudioReadError' | 'FfmpegNotFoundError' | 'ModelLoadError' | 'TranscriptionError'",
+	name: "'AudioReadError' | 'FfmpegNotFoundError' | 'GpuError' | 'ModelLoadError' | 'TranscriptionError'",
 	message: 'string',
 });
 
 export const ParakeetTranscriptionServiceLive = {
 	async transcribe(
 		audioBlob: Blob,
-		options: { modelPath: string },
+		options: {
+			modelPath: string;
+			accelerationMode: ParakeetAccelerationMode;
+		},
 	): Promise<Result<string, WhisperingError>> {
 		// Pre-validation
 		if (!options.modelPath) {
@@ -120,6 +126,7 @@ export const ParakeetTranscriptionServiceLive = {
 				invoke<string>('transcribe_audio_parakeet', {
 					audioData: audioData,
 					modelPath: options.modelPath,
+					accelerationMode: options.accelerationMode,
 				}),
 			catch: (unknownError) => {
 				const result = ParakeetErrorType(unknownError);
@@ -136,6 +143,16 @@ export const ParakeetTranscriptionServiceLive = {
 					case 'ModelLoadError':
 						return WhisperingErr({
 							title: '🤖 Model Loading Error',
+							description: error.message,
+							action: {
+								type: 'more-details',
+								error: new Error(error.message),
+							},
+						});
+
+					case 'GpuError':
+						return WhisperingErr({
+							title: '🖥️ GPU Acceleration Error',
 							description: error.message,
 							action: {
 								type: 'more-details',

@@ -90,6 +90,11 @@ export type ParakeetModelConfig = BaseModelConfig & {
 	}>;
 };
 
+export const PARAKEET_ACCELERATION_MODES = ['cpu', 'directml'] as const;
+
+export type ParakeetAccelerationMode =
+	(typeof PARAKEET_ACCELERATION_MODES)[number];
+
 /**
  * Configuration for Moonshine models, which consist of ONNX encoder/decoder files in a directory.
  * Moonshine is optimized for fast, efficient transcription with support for 8 languages.

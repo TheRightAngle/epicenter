@@ -6,6 +6,7 @@ use std::time::{Duration, SystemTime};
 use transcribe_rs::onnx::moonshine::MoonshineModel;
 use transcribe_rs::onnx::moonshine::MoonshineVariant;
 use transcribe_rs::onnx::parakeet::ParakeetModel;
+use transcribe_rs::onnx::session::OnnxExecutionProvider;
 use transcribe_rs::onnx::Quantization;
 #[cfg(not(target_os = "windows"))]
 use transcribe_rs::whisper_cpp::WhisperEngine;
@@ -25,9 +26,43 @@ impl Engine {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParakeetAccelerationMode {
+    Cpu,
+    DirectML,
+}
+
+impl ParakeetAccelerationMode {
+    pub fn parse(mode: &str) -> Result<Self, String> {
+        match mode {
+            "cpu" => Ok(Self::Cpu),
+            "directml" => Ok(Self::DirectML),
+            _ => Err(format!("Unsupported Parakeet acceleration mode: {}", mode)),
+        }
+    }
+
+    fn to_execution_provider(&self) -> Result<OnnxExecutionProvider, String> {
+        match self {
+            Self::Cpu => Ok(OnnxExecutionProvider::Cpu),
+            Self::DirectML => {
+                #[cfg(target_os = "windows")]
+                {
+                    Ok(OnnxExecutionProvider::DirectML { device_id: None })
+                }
+
+                #[cfg(not(target_os = "windows"))]
+                {
+                    Err("DirectML acceleration is only available on Windows.".to_string())
+                }
+            }
+        }
+    }
+}
+
 pub struct ModelManager {
     engine: Arc<Mutex<Option<Engine>>>,
     current_model_path: Arc<Mutex<Option<PathBuf>>>,
+    current_parakeet_mode: Arc<Mutex<Option<ParakeetAccelerationMode>>>,
     last_activity: Arc<Mutex<SystemTime>>,
     idle_timeout: Duration,
 }
@@ -37,6 +72,7 @@ impl ModelManager {
         Self {
             engine: Arc::new(Mutex::new(None)),
             current_model_path: Arc::new(Mutex::new(None)),
+            current_parakeet_mode: Arc::new(Mutex::new(None)),
             last_activity: Arc::new(Mutex::new(SystemTime::now())),
             idle_timeout: Duration::from_secs(5 * 60), // 5 minutes default
         }
@@ -45,6 +81,7 @@ impl ModelManager {
     pub fn get_or_load_parakeet(
         &self,
         model_path: PathBuf,
+        acceleration_mode: ParakeetAccelerationMode,
     ) -> Result<Arc<Mutex<Option<Engine>>>, String> {
         let mut engine_guard = self.engine.lock().map_err(|e| {
             format!(
@@ -58,20 +95,51 @@ impl ModelManager {
                 e
             )
         })?;
+        let mut current_parakeet_mode_guard = self.current_parakeet_mode.lock().map_err(|e| {
+            format!(
+                "Parakeet mode mutex poisoned (likely due to previous panic): {}",
+                e
+            )
+        })?;
 
         // Check if we need to load a new model
-        let needs_load = match (&*engine_guard, &*current_path_guard) {
-            (None, _) => true,
-            (Some(_), Some(path)) if path != &model_path => {
+        let needs_load = match (
+            &*engine_guard,
+            &*current_path_guard,
+            &*current_parakeet_mode_guard,
+        ) {
+            (None, _, _) => true,
+            (Some(_), Some(path), _) if path != &model_path => {
                 // Different model requested, unload current one
                 if let Some(mut engine) = engine_guard.take() {
                     engine.unload();
                 }
                 true
             }
+            (Some(Engine::Parakeet(_)), _, None) => {
+                if let Some(mut engine) = engine_guard.take() {
+                    engine.unload();
+                }
+                true
+            }
+            (Some(Engine::Parakeet(_)), _, Some(current_mode))
+                if current_mode != &acceleration_mode =>
+            {
+                if let Some(mut engine) = engine_guard.take() {
+                    engine.unload();
+                }
+                true
+            }
             #[cfg(not(target_os = "windows"))]
-            (Some(Engine::Whisper(_)), _) => {
+            (Some(Engine::Whisper(_)), _, _) => {
                 // Wrong engine type, unload and reload
+                if let Some(mut engine) = engine_guard.take() {
+                    engine.unload();
+                }
+                true
+            }
+            #[cfg(not(target_os = "windows"))]
+            (Some(Engine::Moonshine(_)), _, _) => {
                 if let Some(mut engine) = engine_guard.take() {
                     engine.unload();
                 }
@@ -81,11 +149,14 @@ impl ModelManager {
         };
 
         if needs_load {
-            let engine = ParakeetModel::load(&model_path, &Quantization::Int8)
-                .map_err(|e| format!("Failed to load Parakeet model: {}", e))?;
+            let provider = acceleration_mode.to_execution_provider()?;
+            let engine =
+                ParakeetModel::load_with_provider(&model_path, &Quantization::Int8, &provider)
+                    .map_err(|e| format!("Failed to load Parakeet model: {}", e))?;
 
             *engine_guard = Some(Engine::Parakeet(engine));
             *current_path_guard = Some(model_path);
+            *current_parakeet_mode_guard = Some(acceleration_mode);
         }
 
         // Update last activity
@@ -142,6 +213,9 @@ impl ModelManager {
 
             *engine_guard = Some(Engine::Whisper(engine));
             *current_path_guard = Some(model_path);
+            if let Ok(mut current_parakeet_mode_guard) = self.current_parakeet_mode.lock() {
+                *current_parakeet_mode_guard = None;
+            }
         }
 
         // Update last activity
@@ -214,6 +288,9 @@ impl ModelManager {
 
             *engine_guard = Some(Engine::Moonshine(engine));
             *current_path_guard = Some(model_path);
+            if let Ok(mut current_parakeet_mode_guard) = self.current_parakeet_mode.lock() {
+                *current_parakeet_mode_guard = None;
+            }
         }
 
         // Update last activity
@@ -266,6 +343,11 @@ impl ModelManager {
             } else {
                 error!("Model path mutex poisoned while clearing idle model path after unload");
             }
+            if let Ok(mut current_parakeet_mode_guard) = self.current_parakeet_mode.lock() {
+                *current_parakeet_mode_guard = None;
+            } else {
+                error!("Parakeet mode mutex poisoned while clearing idle mode after unload");
+            }
         }
     }
 
@@ -284,6 +366,11 @@ impl ModelManager {
             *current_path_guard = None;
         } else {
             error!("Model path mutex poisoned while clearing model path after unload");
+        }
+        if let Ok(mut current_parakeet_mode_guard) = self.current_parakeet_mode.lock() {
+            *current_parakeet_mode_guard = None;
+        } else {
+            error!("Parakeet mode mutex poisoned while clearing mode after unload");
         }
     }
 }

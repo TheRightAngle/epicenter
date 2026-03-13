@@ -64,11 +64,11 @@ windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Syste
 # - moonshine: Previously blocked by tokenizers/esaxx-rs CRT conflict.
 #   tokenizers was removed in transcribe-rs 0.2.2 — moonshine on Windows may now work (untested).
 # Parakeet works because it uses ort without tokenizers dependency
-transcribe-rs = { version = "0.3.0", features = ["onnx"] }
+transcribe-rs = { path = "vendor/transcribe-rs", features = ["onnx", "directml"] }
 
 [target.'cfg(not(windows))'.dependencies]
 # macOS/Linux: full whisper-cpp support
-transcribe-rs = { version = "0.3.0", features = ["onnx", "whisper-cpp"] }
+transcribe-rs = { path = "vendor/transcribe-rs", features = ["onnx", "whisper-cpp"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 accessibility-sys =  "0.2.0"

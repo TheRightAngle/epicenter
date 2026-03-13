@@ -227,6 +227,9 @@ export const Settings = type({
 		'Systran/faster-distil-whisper-small.en',
 	),
 	'transcription.whispercpp.modelPath': "string = ''",
+	'transcription.parakeet.acceleration': type
+		.enumerated('cpu', 'directml')
+		.default('cpu'),
 	'transcription.parakeet.modelPath': "string = ''",
 	'transcription.moonshine.modelPath': "string = ''",
 
