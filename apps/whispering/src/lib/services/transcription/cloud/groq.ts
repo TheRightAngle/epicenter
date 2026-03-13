@@ -24,7 +24,7 @@ export const GroqTranscriptionServiceLive = {
 		// When no custom baseURL is provided, we're using the official Groq API.
 		// The official API has strict requirements:
 		// 1. An API key is always required
-		// 2. The key must follow Groq's format (starts with "gsk_" or "xai-")
+		// 2. The key must follow Groq's format (starts with "gsk_")
 		//
 		// Custom endpoints (reverse proxies, Groq-compatible servers, etc.) may have
 		// different authentication schemes or no auth at all, so we skip these checks.
@@ -42,15 +42,14 @@ export const GroqTranscriptionServiceLive = {
 				});
 			}
 
-			// Check 2: Official Groq API keys start with "gsk_" or "xai-"
-			const hasValidGroqKeyFormat =
-				options.apiKey.startsWith('gsk_') || options.apiKey.startsWith('xai-');
+			// Check 2: Official Groq API keys start with "gsk_"
+			const hasValidGroqKeyFormat = options.apiKey.startsWith('gsk_');
 
 			if (!hasValidGroqKeyFormat) {
 				return WhisperingErr({
 					title: '🔑 Invalid API Key Format',
 					description:
-						'Your Groq API key should start with "gsk_" or "xai-". Please check and update your API key.',
+						'Your Groq API key should start with "gsk_". Please check and update your API key.',
 					action: {
 						type: 'link',
 						label: 'Update API key',
