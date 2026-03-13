@@ -15,11 +15,10 @@ describe('Experimental CPAL buffered capture wiring', () => {
 		expect(commandSource).toContain('experimental_buffered_capture: Option<bool>');
 		expect(commandSource).toContain('experimental_buffered_capture,');
 		expect(recorderSource).toContain('experimental_buffered_capture: bool');
-		expect(recorderSource).toContain('RecorderWriteMode::Buffered');
+		expect(recorderSource).toContain('RecorderWriteMode::BufferedMemory');
 		expect(recorderSource).toContain('RecorderWriteMode::Inline');
-		expect(recorderSource).toContain('spawn_buffered_writer_thread');
-		expect(recorderSource).toContain('mpsc::sync_channel');
-		expect(recorderSource).toContain('fn record_buffered_writer_error(');
-		expect(recorderSource).toContain('fn flush_buffered_writer_inner(');
+		expect(recorderSource).toContain('in_memory_audio');
+		expect(recorderSource).toContain('InMemoryAudioBuffer::new(');
+		expect(recorderSource).toContain('resolve_stream_buffer_size(&config, write_mode)');
 	});
 });

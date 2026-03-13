@@ -10,14 +10,19 @@ const tauriConfig = JSON.parse(
 };
 
 describe('windows tray resource bundling', () => {
-  test('bundles recorder state icons for the tray', () => {
-    const resources = tauriConfig.bundle?.resources;
-    const values = Array.isArray(resources)
-      ? resources
-      : resources
-        ? [resources]
-        : [];
+	test('bundles recorder state icons for the tray', () => {
+		const resources = tauriConfig.bundle?.resources;
+		const values = Array.isArray(resources)
+			? resources
+			: resources
+				? [resources]
+				: [];
 
-    expect(values).toContain('recorder-state-icons/**');
-  });
+		expect(values).toEqual(
+			expect.arrayContaining([
+				'recorder-state-icons/studio_microphone.png',
+				'recorder-state-icons/red_large_square.png',
+			]),
+		);
+	});
 });

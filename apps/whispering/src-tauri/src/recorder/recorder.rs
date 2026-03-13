@@ -1,6 +1,6 @@
 use crate::recorder::wav_writer::WavWriter;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{Device, DeviceId, SampleFormat, Stream};
+use cpal::{BufferSize, Device, DeviceId, SampleFormat, Stream, SupportedBufferSize};
 use log::{debug, error, info};
 use serde::Serialize;
 use std::any::Any;
@@ -45,6 +45,9 @@ enum RecorderWriteMode {
     BufferedMemory,
 }
 
+const EXPERIMENTAL_CAPTURE_TARGET_BUFFER_FRAMES: u32 = 2048;
+const EXPERIMENTAL_CAPTURE_INITIAL_SECONDS: usize = 30;
+
 #[derive(Debug)]
 enum InMemoryAudioBuffer {
     F32(Vec<f32>),
@@ -53,11 +56,11 @@ enum InMemoryAudioBuffer {
 }
 
 impl InMemoryAudioBuffer {
-    fn new(sample_format: SampleFormat) -> Result<Self> {
+    fn new(sample_format: SampleFormat, initial_capacity_samples: usize) -> Result<Self> {
         match sample_format {
-            SampleFormat::F32 => Ok(Self::F32(Vec::new())),
-            SampleFormat::I16 => Ok(Self::I16(Vec::new())),
-            SampleFormat::U16 => Ok(Self::U16(Vec::new())),
+            SampleFormat::F32 => Ok(Self::F32(Vec::with_capacity(initial_capacity_samples))),
+            SampleFormat::I16 => Ok(Self::I16(Vec::with_capacity(initial_capacity_samples))),
+            SampleFormat::U16 => Ok(Self::U16(Vec::with_capacity(initial_capacity_samples))),
             _ => Err(format!(
                 "Unsupported sample format for in-memory capture: {:?}",
                 sample_format
@@ -187,8 +190,12 @@ impl RecorderState {
             None
         };
         let in_memory_audio = if write_mode == RecorderWriteMode::BufferedMemory {
+            let initial_capacity_samples = sample_rate as usize
+                * channels as usize
+                * EXPERIMENTAL_CAPTURE_INITIAL_SECONDS;
             Some(Arc::new(Mutex::new(InMemoryAudioBuffer::new(
                 sample_format,
+                initial_capacity_samples,
             )?)))
         } else {
             None
@@ -198,7 +205,7 @@ impl RecorderState {
         let stream_config = cpal::StreamConfig {
             channels,
             sample_rate,
-            buffer_size: cpal::BufferSize::Default,
+            buffer_size: resolve_stream_buffer_size(&config, write_mode),
         };
 
         // Create fresh recording flag
@@ -280,8 +287,8 @@ impl RecorderState {
         self.current_recording_id = Some(recording_id);
 
         info!(
-            "Recording session initialized: {} Hz, {} channels, file: {:?}",
-            sample_rate, channels, self.file_path
+            "Recording session initialized: {} Hz, {} channels, buffer={:?}, file: {:?}",
+            sample_rate, channels, stream_config.buffer_size, self.file_path
         );
 
         Ok(())
@@ -660,6 +667,30 @@ fn get_optimal_config(
     }
 
     best_config.ok_or_else(|| "Failed to find suitable audio configuration".to_string())
+}
+
+fn resolve_stream_buffer_size(
+    config: &cpal::SupportedStreamConfig,
+    write_mode: RecorderWriteMode,
+) -> BufferSize {
+    if write_mode != RecorderWriteMode::BufferedMemory {
+        return BufferSize::Default;
+    }
+
+    match config.buffer_size() {
+        SupportedBufferSize::Range { min, max } => {
+            let preferred = EXPERIMENTAL_CAPTURE_TARGET_BUFFER_FRAMES
+                .max(*min)
+                .min(*max);
+
+            if preferred == 0 {
+                BufferSize::Default
+            } else {
+                BufferSize::Fixed(preferred)
+            }
+        }
+        SupportedBufferSize::Unknown => BufferSize::Default,
+    }
 }
 
 /// Build input stream for any supported sample format
