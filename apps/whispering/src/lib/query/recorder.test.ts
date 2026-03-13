@@ -104,6 +104,7 @@ beforeEach(() => {
 				'recording.cpal.outputFolder': '/tmp/out',
 				'recording.cpal.deviceId': null,
 				'recording.cpal.sampleRate': '16000',
+				'recording.cpal.experimentalBufferedCapture': false,
 				'recording.ffmpeg.deviceId': null,
 				'recording.ffmpeg.globalOptions': '',
 				'recording.ffmpeg.inputOptions': '',
@@ -206,7 +207,47 @@ describe('recorder.startRecording', () => {
 });
 
 describe('recorder.enumerateDevices', () => {
+	test('skips navigator label enrichment when desktop labels are already unique', async () => {
+		desktopEnumerateDevicesMock.mockResolvedValue({
+			data: [
+				{
+					id: asDeviceIdentifier('wasapi:realtek'),
+					label: 'Microphone (Realtek(R) Audio)',
+				},
+				{
+					id: asDeviceIdentifier('wasapi:webcam'),
+					label: 'Microphone (1080P Pro Stream)',
+				},
+			],
+			error: undefined,
+		});
+
+		const { recorder } = await loadRecorderModule();
+		const queryFn = recorder.enumerateDevices.options.queryFn as () => Promise<
+			unknown
+		>;
+		const result = await queryFn();
+
+		expect(result).toEqual([
+			{
+				id: asDeviceIdentifier('wasapi:realtek'),
+				label: 'Microphone (Realtek(R) Audio)',
+			},
+			{
+				id: asDeviceIdentifier('wasapi:webcam'),
+				label: 'Microphone (1080P Pro Stream)',
+			},
+		]);
+		expect(navigatorEnumerateDevicesMock).not.toHaveBeenCalled();
+	});
+
 	test('disambiguates duplicate desktop labels using richer navigator labels', async () => {
+		Object.assign(globalThis, {
+			window: {
+				__TAURI_INTERNALS__: {},
+			} as Window & { __TAURI_INTERNALS__?: unknown },
+		});
+
 		desktopEnumerateDevicesMock.mockResolvedValue({
 			data: [
 				{ id: asDeviceIdentifier('cpal-a'), label: 'Microphone' },

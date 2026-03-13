@@ -1,6 +1,6 @@
 use crate::recorder::wav_writer::WavWriter;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{Device, SampleFormat, Stream};
+use cpal::{Device, DeviceId, SampleFormat, Stream};
 use log::{debug, error, info};
 use serde::Serialize;
 use std::any::Any;
@@ -23,6 +23,14 @@ pub struct AudioRecording {
     pub file_path: Option<String>, // Path to the WAV file
 }
 
+/// Recording device metadata returned to the frontend.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordingDeviceInfo {
+    pub id: String,
+    pub label: String,
+}
+
 /// Simple recorder commands for worker thread communication
 #[derive(Debug)]
 enum RecorderCmd {
@@ -31,11 +39,34 @@ enum RecorderCmd {
     Shutdown,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RecorderWriteMode {
+    Inline,
+    Buffered,
+}
+
+#[derive(Debug)]
+enum BufferedAudioChunk {
+    F32(Vec<f32>),
+    I16(Vec<i16>),
+    U16(Vec<u16>),
+}
+
+#[derive(Debug)]
+enum BufferedWriterCmd {
+    Audio(BufferedAudioChunk),
+    Flush(mpsc::Sender<Result<()>>),
+    Shutdown(mpsc::Sender<Result<()>>),
+}
+
 /// Simplified recorder state
 pub struct RecorderState {
     cmd_tx: Option<mpsc::Sender<RecorderCmd>>,
     worker_handle: Option<JoinHandle<()>>,
     writer: Option<Arc<Mutex<WavWriter>>>,
+    write_mode: RecorderWriteMode,
+    buffered_writer_tx: Option<mpsc::SyncSender<BufferedWriterCmd>>,
+    buffered_writer_handle: Option<JoinHandle<()>>,
     is_recording: Arc<AtomicBool>,
     sample_rate: u32,
     channels: u16,
@@ -48,6 +79,9 @@ impl RecorderState {
             cmd_tx: None,
             worker_handle: None,
             writer: None,
+            write_mode: RecorderWriteMode::Inline,
+            buffered_writer_tx: None,
+            buffered_writer_handle: None,
             is_recording: Arc::new(AtomicBool::new(false)),
             sample_rate: 0,
             channels: 0,
@@ -55,13 +89,21 @@ impl RecorderState {
         }
     }
 
-    /// List available recording devices by name
-    pub fn enumerate_devices(&self) -> Result<Vec<String>> {
+    /// List available recording devices using stable identifiers and user-facing labels.
+    pub fn enumerate_devices(&self) -> Result<Vec<RecordingDeviceInfo>> {
         let host = cpal::default_host();
         let devices = host
             .input_devices()
             .map_err(|e| format!("Failed to get input devices: {}", e))?
-            .filter_map(|device| device.name().ok())
+            .map(|device| {
+                let id = device
+                    .id()
+                    .map(|device_id| device_id.to_string())
+                    .or_else(|_| device.name())
+                    .map_err(|e| format!("Failed to get device id: {}", e))?;
+                let label = format_device_label(&device)?;
+                Ok(RecordingDeviceInfo { id, label })
+            })
             .collect();
 
         Ok(devices)
@@ -70,10 +112,11 @@ impl RecorderState {
     /// Initialize recording session - creates stream and WAV writer
     pub fn init_session(
         &mut self,
-        device_name: String,
+        device_identifier: String,
         output_folder: PathBuf,
         recording_id: String,
         preferred_sample_rate: Option<u32>,
+        experimental_buffered_capture: bool,
     ) -> Result<()> {
         // Clean up any existing session
         self.close_session()?;
@@ -83,7 +126,7 @@ impl RecorderState {
 
         // Find the device
         let host = cpal::default_host();
-        let device = find_device(&host, &device_name)?;
+        let device = find_device(&host, &device_identifier)?;
 
         // Get optimal config for voice with optional preferred sample rate
         let config = get_optimal_config(&device, preferred_sample_rate)?;
@@ -95,6 +138,18 @@ impl RecorderState {
         let writer = WavWriter::new(file_path.clone(), sample_rate, channels)
             .map_err(|e| format!("Failed to create WAV file: {}", e))?;
         let writer = Arc::new(Mutex::new(writer));
+        let write_mode = if experimental_buffered_capture {
+            RecorderWriteMode::Buffered
+        } else {
+            RecorderWriteMode::Inline
+        };
+        let (buffered_writer_tx, buffered_writer_handle) =
+            if write_mode == RecorderWriteMode::Buffered {
+                let (tx, handle) = spawn_buffered_writer_thread(writer.clone());
+                (Some(tx), Some(handle))
+            } else {
+                (None, None)
+            };
 
         // Create stream config
         let stream_config = cpal::StreamConfig {
@@ -113,6 +168,8 @@ impl RecorderState {
         // Clone for the worker thread
         let writer_clone = writer.clone();
         let is_recording_clone = is_recording.clone();
+        let buffered_writer_tx_for_stream = buffered_writer_tx.clone();
+        let write_mode_for_stream = write_mode;
 
         // Create the worker thread that owns the stream
         let worker = thread::spawn(move || {
@@ -122,7 +179,9 @@ impl RecorderState {
                 &stream_config,
                 sample_format,
                 is_recording_clone,
+                write_mode_for_stream,
                 writer_clone,
+                buffered_writer_tx_for_stream,
             ) {
                 Ok(s) => s,
                 Err(e) => {
@@ -166,6 +225,9 @@ impl RecorderState {
         self.cmd_tx = Some(cmd_tx);
         self.worker_handle = Some(worker);
         self.writer = Some(writer);
+        self.write_mode = write_mode;
+        self.buffered_writer_tx = buffered_writer_tx;
+        self.buffered_writer_handle = buffered_writer_handle;
         self.sample_rate = sample_rate;
         self.channels = channels;
         self.file_path = Some(file_path);
@@ -206,6 +268,8 @@ impl RecorderState {
                 .recv()
                 .map_err(|e| format!("Failed to receive stop confirmation: {}", e))?;
         }
+
+        self.flush_buffered_writer()?;
 
         // Finalize the WAV file and get metadata
         let (sample_rate, channels, duration) = if let Some(writer) = &self.writer {
@@ -280,6 +344,10 @@ impl RecorderState {
             }
         }
 
+        if let Err(error) = self.shutdown_buffered_writer() {
+            cleanup_errors.push(error);
+        }
+
         // Finalize and drop the writer
         if let Some(writer) = self.writer.take() {
             match writer.lock() {
@@ -295,6 +363,7 @@ impl RecorderState {
         }
 
         // Clear state
+        self.write_mode = RecorderWriteMode::Inline;
         self.file_path = None;
         self.sample_rate = 0;
         self.channels = 0;
@@ -319,29 +388,106 @@ impl RecorderState {
             None
         }
     }
+
+    fn flush_buffered_writer(&self) -> Result<()> {
+        let Some(tx) = &self.buffered_writer_tx else {
+            return Ok(());
+        };
+
+        let (reply_tx, reply_rx) = mpsc::channel();
+        tx.send(BufferedWriterCmd::Flush(reply_tx))
+            .map_err(|e| format!("Failed to send flush command: {}", e))?;
+        reply_rx
+            .recv()
+            .map_err(|e| format!("Failed to receive flush confirmation: {}", e))?
+    }
+
+    fn shutdown_buffered_writer(&mut self) -> Result<()> {
+        let mut cleanup_errors = Vec::new();
+
+        if let Some(tx) = self.buffered_writer_tx.take() {
+            let (reply_tx, reply_rx) = mpsc::channel();
+            if let Err(e) = tx.send(BufferedWriterCmd::Shutdown(reply_tx)) {
+                cleanup_errors.push(format!("Failed to send buffered writer shutdown: {}", e));
+            } else {
+                match reply_rx.recv() {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => cleanup_errors.push(e),
+                    Err(err) => cleanup_errors.push(format!(
+                        "Failed to receive buffered writer shutdown: {}",
+                        err
+                    )),
+                }
+            }
+        }
+
+        if let Some(handle) = self.buffered_writer_handle.take() {
+            if let Err(panic) = handle.join() {
+                cleanup_errors.push(format!(
+                    "Failed to join buffered writer thread: {}",
+                    panic_payload_message(&panic)
+                ));
+            }
+        }
+
+        if cleanup_errors.is_empty() {
+            Ok(())
+        } else {
+            Err(cleanup_errors.join("; "))
+        }
+    }
 }
 
-/// Find a recording device by name
-fn find_device(host: &cpal::Host, device_name: &str) -> Result<Device> {
+/// Find a recording device by stable id, falling back to the legacy name path.
+fn find_device(host: &cpal::Host, device_identifier: &str) -> Result<Device> {
     // Handle "default" device
-    if device_name.to_lowercase() == "default" {
+    if device_identifier.to_lowercase() == "default" {
         return host
             .default_input_device()
             .ok_or_else(|| "No default input device available".to_string());
     }
 
-    // Find specific device
+    if let Ok(device_id) = device_identifier.parse::<DeviceId>() {
+        if let Some(device) = host.device_by_id(&device_id) {
+            return Ok(device);
+        }
+    }
+
+    // Fall back to legacy name-based lookup for older persisted settings.
     let devices: Vec<_> = host.input_devices().map_err(|e| e.to_string())?.collect();
 
     for device in devices {
         if let Ok(name) = device.name() {
-            if name == device_name {
+            if name == device_identifier {
                 return Ok(device);
             }
         }
     }
 
-    Err(format!("Device '{}' not found", device_name))
+    Err(format!("Device '{}' not found", device_identifier))
+}
+
+fn format_device_label(device: &Device) -> Result<String> {
+    if let Ok(description) = device.description() {
+        let name = description.name().trim();
+
+        if let Some(friendly_name) = description
+            .extended()
+            .first()
+            .map(|line| line.trim())
+            .filter(|line| !line.is_empty() && *line != name)
+        {
+            return Ok(format!("{} ({})", friendly_name, name));
+        }
+
+        if !name.is_empty() {
+            return Ok(name.to_string());
+        }
+    }
+
+    device
+        .name()
+        .map_err(|e| format!("Failed to get device label: {}", e))
 }
 
 fn panic_payload_message(panic: &Box<dyn Any + Send + 'static>) -> String {
@@ -352,6 +498,78 @@ fn panic_payload_message(panic: &Box<dyn Any + Send + 'static>) -> String {
     } else {
         "unknown panic".to_string()
     }
+}
+
+fn spawn_buffered_writer_thread(
+    writer: Arc<Mutex<WavWriter>>,
+) -> (mpsc::SyncSender<BufferedWriterCmd>, JoinHandle<()>) {
+    let (tx, rx) = mpsc::sync_channel(16);
+
+    let handle = thread::spawn(move || {
+        let mut first_error: Option<String> = None;
+
+        let mut record_error = |error: String| {
+            if first_error.is_none() {
+                error!("Buffered writer failed: {}", error);
+                first_error = Some(error);
+            }
+        };
+
+        let mut handle_audio_chunk = |chunk: BufferedAudioChunk| {
+            if first_error.is_some() {
+                return;
+            }
+
+            let result = writer
+                .lock()
+                .map_err(|e| format!("Failed to lock writer: {}", e))
+                .and_then(|mut wav_writer| match chunk {
+                    BufferedAudioChunk::F32(samples) => wav_writer
+                        .write_samples_f32(&samples)
+                        .map_err(|e| format!("Failed to write f32 samples: {}", e)),
+                    BufferedAudioChunk::I16(samples) => wav_writer
+                        .write_samples_i16(&samples)
+                        .map_err(|e| format!("Failed to write i16 samples: {}", e)),
+                    BufferedAudioChunk::U16(samples) => wav_writer
+                        .write_samples_u16(&samples)
+                        .map_err(|e| format!("Failed to write u16 samples: {}", e)),
+                });
+
+            if let Err(error) = result {
+                record_error(error);
+            }
+        };
+
+        let mut flush_writer = || -> Result<()> {
+            if let Some(error) = first_error.clone() {
+                return Err(error);
+            }
+
+            writer
+                .lock()
+                .map_err(|e| format!("Failed to lock writer: {}", e))?
+                .flush()
+                .map_err(|e| format!("Failed to flush writer: {}", e))
+        };
+
+        loop {
+            match rx.recv() {
+                Ok(BufferedWriterCmd::Audio(chunk)) => handle_audio_chunk(chunk),
+                Ok(BufferedWriterCmd::Flush(reply_tx)) => {
+                    let result = flush_writer();
+                    let _ = reply_tx.send(result);
+                }
+                Ok(BufferedWriterCmd::Shutdown(reply_tx)) => {
+                    let result = flush_writer();
+                    let _ = reply_tx.send(result);
+                    break;
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    (tx, handle)
 }
 
 #[cfg(test)]
@@ -500,7 +718,9 @@ fn build_input_stream(
     config: &cpal::StreamConfig,
     sample_format: SampleFormat,
     is_recording: Arc<AtomicBool>,
+    write_mode: RecorderWriteMode,
     writer: Arc<Mutex<WavWriter>>,
+    buffered_writer_tx: Option<mpsc::SyncSender<BufferedWriterCmd>>,
 ) -> Result<Stream> {
     let err_fn = |err| error!("Audio stream error: {}", err);
 
@@ -510,8 +730,19 @@ fn build_input_stream(
                 config,
                 move |data: &[f32], _: &_| {
                     if is_recording.load(Ordering::Relaxed) {
-                        if let Ok(mut w) = writer.lock() {
-                            let _ = w.write_samples_f32(data);
+                        match write_mode {
+                            RecorderWriteMode::Inline => {
+                                if let Ok(mut w) = writer.lock() {
+                                    let _ = w.write_samples_f32(data);
+                                }
+                            }
+                            RecorderWriteMode::Buffered => {
+                                if let Some(tx) = &buffered_writer_tx {
+                                    let _ = tx.send(BufferedWriterCmd::Audio(
+                                        BufferedAudioChunk::F32(data.to_vec()),
+                                    ));
+                                }
+                            }
                         }
                     }
                 },
@@ -524,8 +755,19 @@ fn build_input_stream(
                 config,
                 move |data: &[i16], _: &_| {
                     if is_recording.load(Ordering::Relaxed) {
-                        if let Ok(mut w) = writer.lock() {
-                            let _ = w.write_samples_i16(data);
+                        match write_mode {
+                            RecorderWriteMode::Inline => {
+                                if let Ok(mut w) = writer.lock() {
+                                    let _ = w.write_samples_i16(data);
+                                }
+                            }
+                            RecorderWriteMode::Buffered => {
+                                if let Some(tx) = &buffered_writer_tx {
+                                    let _ = tx.send(BufferedWriterCmd::Audio(
+                                        BufferedAudioChunk::I16(data.to_vec()),
+                                    ));
+                                }
+                            }
                         }
                     }
                 },
@@ -538,8 +780,19 @@ fn build_input_stream(
                 config,
                 move |data: &[u16], _: &_| {
                     if is_recording.load(Ordering::Relaxed) {
-                        if let Ok(mut w) = writer.lock() {
-                            let _ = w.write_samples_u16(data);
+                        match write_mode {
+                            RecorderWriteMode::Inline => {
+                                if let Ok(mut w) = writer.lock() {
+                                    let _ = w.write_samples_u16(data);
+                                }
+                            }
+                            RecorderWriteMode::Buffered => {
+                                if let Some(tx) = &buffered_writer_tx {
+                                    let _ = tx.send(BufferedWriterCmd::Audio(
+                                        BufferedAudioChunk::U16(data.to_vec()),
+                                    ));
+                                }
+                            }
                         }
                     }
                 },

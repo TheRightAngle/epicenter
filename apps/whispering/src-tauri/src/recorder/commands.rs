@@ -1,4 +1,4 @@
-use crate::recorder::recorder::{AudioRecording, RecorderState, Result};
+use crate::recorder::recorder::{AudioRecording, RecorderState, RecordingDeviceInfo, Result};
 use log::{debug, info};
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -18,7 +18,9 @@ impl AppData {
 }
 
 #[tauri::command]
-pub async fn enumerate_recording_devices(state: State<'_, AppData>) -> Result<Vec<String>> {
+pub async fn enumerate_recording_devices(
+    state: State<'_, AppData>,
+) -> Result<Vec<RecordingDeviceInfo>> {
     debug!("Enumerating recording devices");
     let recorder = state
         .recorder
@@ -33,12 +35,17 @@ pub async fn init_recording_session(
     recording_id: String,
     output_folder: String,
     sample_rate: Option<u32>,
+    experimental_buffered_capture: Option<bool>,
     state: State<'_, AppData>,
     _app_handle: tauri::AppHandle,
 ) -> Result<()> {
     info!(
-        "Initializing recording session: device={}, id={}, folder={}, sample_rate={:?}",
-        device_identifier, recording_id, output_folder, sample_rate
+        "Initializing recording session: device={}, id={}, folder={}, sample_rate={:?}, experimental_buffered_capture={:?}",
+        device_identifier,
+        recording_id,
+        output_folder,
+        sample_rate,
+        experimental_buffered_capture
     );
 
     // Use the provided output folder
@@ -63,7 +70,14 @@ pub async fn init_recording_session(
         .recorder
         .lock()
         .map_err(|e| format!("Failed to lock recorder: {}", e))?;
-    recorder.init_session(device_identifier, recordings_dir, recording_id, sample_rate)
+    let experimental_buffered_capture = experimental_buffered_capture.unwrap_or(false);
+    recorder.init_session(
+        device_identifier,
+        recordings_dir,
+        recording_id,
+        sample_rate,
+        experimental_buffered_capture,
+    )
 }
 
 #[tauri::command]

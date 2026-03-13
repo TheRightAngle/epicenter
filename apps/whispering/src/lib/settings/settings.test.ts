@@ -37,4 +37,11 @@ describe('settings schema', () => {
 			"'database.maxRecordingCount': type('string.digits').default('0')",
 		);
 	});
+
+	test('defaults experimental CPAL buffering to disabled', () => {
+		const settingsSource = readFileSync(new URL('./settings.ts', import.meta.url), 'utf8');
+
+		expect(settingsSource).toContain("'recording.cpal.experimentalBufferedCapture'");
+		expect(settingsSource).toContain("'recording.cpal.experimentalBufferedCapture': 'boolean = false'");
+	});
 });

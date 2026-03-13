@@ -5,6 +5,7 @@ const pathToBlobMock = mock<any>(async () => ({
 	data: new Blob(),
 	error: undefined,
 }));
+const asDeviceIdentifier = (value: string) => value as never;
 const asRecorderErr = (message: string) => ({
 	data: undefined,
 	error: {
@@ -93,7 +94,7 @@ describe('CpalRecorderServiceLive', () => {
 		invokeMock.mockImplementation(async (command: string) => {
 			switch (command) {
 				case 'enumerate_recording_devices':
-					return ['Mic 1'];
+					return [{ id: 'wasapi:mic-1', label: 'Microphone (Realtek(R) Audio)' }];
 				case 'init_recording_session':
 					throw new Error('init boom');
 				case 'cancel_recording':
@@ -107,10 +108,11 @@ describe('CpalRecorderServiceLive', () => {
 		const result = await CpalRecorderServiceLive.startRecording(
 			{
 				method: 'cpal',
-				selectedDeviceId: 'Mic 1' as never,
+				selectedDeviceId: 'wasapi:mic-1' as never,
 				recordingId: 'rec-1',
 				outputFolder: '/tmp',
 				sampleRate: '16000',
+				experimentalBufferedCapture: false,
 			},
 			{ sendStatus: () => undefined },
 		);
@@ -129,7 +131,7 @@ describe('CpalRecorderServiceLive', () => {
 		invokeMock.mockImplementation(async (command: string) => {
 			switch (command) {
 				case 'enumerate_recording_devices':
-					return ['Mic 1'];
+					return [{ id: 'wasapi:mic-1', label: 'Microphone (Realtek(R) Audio)' }];
 				case 'init_recording_session':
 					throw new Error('init boom');
 				case 'cancel_recording':
@@ -145,10 +147,11 @@ describe('CpalRecorderServiceLive', () => {
 		const result = await CpalRecorderServiceLive.startRecording(
 			{
 				method: 'cpal',
-				selectedDeviceId: 'Mic 1' as never,
+				selectedDeviceId: 'wasapi:mic-1' as never,
 				recordingId: 'rec-1',
 				outputFolder: '/tmp',
 				sampleRate: '16000',
+				experimentalBufferedCapture: false,
 			},
 			{ sendStatus: () => undefined },
 		);
@@ -167,7 +170,7 @@ describe('CpalRecorderServiceLive', () => {
 		invokeMock.mockImplementation(async (command: string) => {
 			switch (command) {
 				case 'enumerate_recording_devices':
-					return ['Mic 1'];
+					return [{ id: 'wasapi:mic-1', label: 'Microphone (Realtek(R) Audio)' }];
 				case 'init_recording_session':
 					throw new Error('init boom');
 				case 'cancel_recording':
@@ -183,10 +186,11 @@ describe('CpalRecorderServiceLive', () => {
 		const result = await CpalRecorderServiceLive.startRecording(
 			{
 				method: 'cpal',
-				selectedDeviceId: 'Mic 1' as never,
+				selectedDeviceId: 'wasapi:mic-1' as never,
 				recordingId: 'rec-1',
 				outputFolder: '/tmp',
 				sampleRate: '16000',
+				experimentalBufferedCapture: false,
 			},
 			{ sendStatus: () => undefined },
 		);
@@ -206,7 +210,7 @@ describe('CpalRecorderServiceLive', () => {
 		invokeMock.mockImplementation(async (command: string) => {
 			switch (command) {
 				case 'enumerate_recording_devices':
-					return ['Mic 1'];
+					return [{ id: 'wasapi:mic-1', label: 'Microphone (Realtek(R) Audio)' }];
 				case 'init_recording_session':
 					return undefined;
 				case 'start_recording':
@@ -222,10 +226,11 @@ describe('CpalRecorderServiceLive', () => {
 		const result = await CpalRecorderServiceLive.startRecording(
 			{
 				method: 'cpal',
-				selectedDeviceId: 'Mic 1' as never,
+				selectedDeviceId: 'wasapi:mic-1' as never,
 				recordingId: 'rec-1',
 				outputFolder: '/tmp',
 				sampleRate: '16000',
+				experimentalBufferedCapture: false,
 			},
 			{ sendStatus: () => undefined },
 		);
@@ -236,6 +241,34 @@ describe('CpalRecorderServiceLive', () => {
 			'init_recording_session',
 			'start_recording',
 			'cancel_recording',
+		]);
+	});
+
+	test('returns stable desktop device ids with richer Windows labels', async () => {
+		invokeMock.mockImplementation(async (command: string) => {
+			switch (command) {
+				case 'enumerate_recording_devices':
+					return [
+						{ id: 'wasapi:mic-realtek', label: 'Microphone (Realtek(R) Audio)' },
+						{ id: 'wasapi:mic-webcam', label: 'Microphone (1080P Pro Stream)' },
+					];
+				default:
+					throw new Error(`Unexpected command ${command}`);
+			}
+		});
+
+		const { CpalRecorderServiceLive } = await loadCpalModule();
+		const result = await CpalRecorderServiceLive.enumerateDevices();
+
+		expect(result.data).toEqual([
+			{
+				id: asDeviceIdentifier('wasapi:mic-realtek'),
+				label: 'Microphone (Realtek(R) Audio)',
+			},
+			{
+				id: asDeviceIdentifier('wasapi:mic-webcam'),
+				label: 'Microphone (1080P Pro Stream)',
+			},
 		]);
 	});
 

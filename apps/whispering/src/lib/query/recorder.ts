@@ -30,6 +30,27 @@ let currentRecordingSourceFilePath: string | null = null;
 const invalidateRecorderState = () =>
 	queryClient.invalidateQueries({ queryKey: recorderKeys.recorderState });
 
+function hasDuplicateDeviceLabels(devices: Device[]) {
+	const labels = devices.map((device) => device.label.toLowerCase());
+	return new Set(labels).size !== labels.length;
+}
+
+function filterNavigatorAliasDevices(devices: Device[] | undefined) {
+	if (!devices) return undefined;
+
+	return devices.filter((device) => {
+		const id = String(device.id).toLowerCase();
+		const label = device.label.toLowerCase();
+
+		if (id === 'default' || id === 'communications') return false;
+		if (label.startsWith('default - ') || label.startsWith('communications - ')) {
+			return false;
+		}
+
+		return true;
+	});
+}
+
 async function resolveDesktopSourceFilePath(
 	recordingId: string,
 ): Promise<string | null> {
@@ -70,11 +91,14 @@ export const recorder = {
 
 			if (
 				window.__TAURI_INTERNALS__ &&
-				settings.value['recording.method'] !== 'navigator'
+				settings.value['recording.method'] !== 'navigator' &&
+				hasDuplicateDeviceLabels(data)
 			) {
 				const { data: navigatorDevices } =
 					await services.navigatorRecorder.enumerateDevices();
-				richerDevices = navigatorDevices ?? undefined;
+				richerDevices = filterNavigatorAliasDevices(
+					navigatorDevices ?? undefined,
+				);
 			}
 
 			return Ok(disambiguateDeviceLabels(data, richerDevices));
@@ -143,6 +167,8 @@ export const recorder = {
 						selectedDeviceId: settings.value['recording.cpal.deviceId'],
 						outputFolder,
 						sampleRate: settings.value['recording.cpal.sampleRate'],
+						experimentalBufferedCapture:
+							settings.value['recording.cpal.experimentalBufferedCapture'],
 					},
 				} as const;
 

@@ -159,6 +159,7 @@ export const Settings = type({
 	'recording.cpal.sampleRate': type
 		.enumerated('16000', '44100', '48000')
 		.default('16000'),
+	'recording.cpal.experimentalBufferedCapture': 'boolean = false',
 
 	// FFmpeg recording settings - split into three customizable parts
 	'recording.ffmpeg.globalOptions': type('string').default(

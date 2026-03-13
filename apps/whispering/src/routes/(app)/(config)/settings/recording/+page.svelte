@@ -4,6 +4,7 @@
 	import * as Field from '@epicenter/ui/field';
 	import { Link } from '@epicenter/ui/link';
 	import * as Select from '@epicenter/ui/select';
+	import { Switch } from '@epicenter/ui/switch';
 	import InfoIcon from '@lucide/svelte/icons/info';
 	import {
 		BITRATE_OPTIONS,
@@ -379,6 +380,29 @@
 					<Field.Description>
 						Higher sample rates provide better quality but create larger files
 					</Field.Description>
+				</Field.Field>
+
+				<Field.Field orientation="horizontal">
+					<Switch
+						id="recording.cpal.experimentalBufferedCapture"
+						bind:checked={() =>
+							settings.value['recording.cpal.experimentalBufferedCapture'],
+							(v) =>
+								settings.updateKey(
+									'recording.cpal.experimentalBufferedCapture',
+									v,
+								)}
+					/>
+					<div class="space-y-1">
+						<Field.Label for="recording.cpal.experimentalBufferedCapture">
+							Experimental buffered capture
+						</Field.Label>
+						<Field.Description>
+							Keeps the audio callback lighter by queueing CPAL chunks for a
+							background writer thread. Try this if push-to-talk ramps a CPU
+							core or your fans during capture.
+						</Field.Description>
+					</div>
 				</Field.Field>
 
 				<div class="space-y-2">

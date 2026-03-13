@@ -1,6 +1,7 @@
 use log::{debug, info};
 use std::fs::File;
 use std::io::{self, BufWriter, Seek, SeekFrom, Write};
+use std::mem::size_of;
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -78,52 +79,40 @@ impl WavWriter {
 
     /// Write f32 samples to the WAV file
     pub fn write_samples_f32(&mut self, samples: &[f32]) -> io::Result<()> {
-        // Write samples as little-endian f32
+        let mut bytes = Vec::with_capacity(samples.len() * size_of::<f32>());
         for sample in samples {
-            self.writer.write_all(&sample.to_le_bytes())?;
+            bytes.extend_from_slice(&sample.to_le_bytes());
         }
 
-        self.samples_written += samples.len() as u64;
-
-        // Update headers periodically (every second)
-        if self.last_header_update.elapsed().as_secs() >= 1 {
-            self.update_headers()?;
-            self.last_header_update = Instant::now();
-        }
-
-        Ok(())
+        self.write_sample_bytes(&bytes, samples.len() as u64)
     }
 
     /// Write i16 samples to the WAV file (converting to f32)
     pub fn write_samples_i16(&mut self, samples: &[i16]) -> io::Result<()> {
-        // Convert i16 to f32 and write
+        let mut bytes = Vec::with_capacity(samples.len() * size_of::<f32>());
         for &sample in samples {
             let f32_sample = sample as f32 / i16::MAX as f32;
-            self.writer.write_all(&f32_sample.to_le_bytes())?;
+            bytes.extend_from_slice(&f32_sample.to_le_bytes());
         }
 
-        self.samples_written += samples.len() as u64;
-
-        // Update headers periodically
-        if self.last_header_update.elapsed().as_secs() >= 1 {
-            self.update_headers()?;
-            self.last_header_update = Instant::now();
-        }
-
-        Ok(())
+        self.write_sample_bytes(&bytes, samples.len() as u64)
     }
 
     /// Write u16 samples to the WAV file (converting to f32)
     pub fn write_samples_u16(&mut self, samples: &[u16]) -> io::Result<()> {
-        // Convert u16 to f32 and write
+        let mut bytes = Vec::with_capacity(samples.len() * size_of::<f32>());
         for &sample in samples {
             let f32_sample = (sample as f32 / u16::MAX as f32) * 2.0 - 1.0;
-            self.writer.write_all(&f32_sample.to_le_bytes())?;
+            bytes.extend_from_slice(&f32_sample.to_le_bytes());
         }
 
-        self.samples_written += samples.len() as u64;
+        self.write_sample_bytes(&bytes, samples.len() as u64)
+    }
 
-        // Update headers periodically
+    fn write_sample_bytes(&mut self, bytes: &[u8], sample_count: u64) -> io::Result<()> {
+        self.writer.write_all(bytes)?;
+        self.samples_written += sample_count;
+
         if self.last_header_update.elapsed().as_secs() >= 1 {
             self.update_headers()?;
             self.last_header_update = Instant::now();

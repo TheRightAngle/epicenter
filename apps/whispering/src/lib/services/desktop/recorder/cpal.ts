@@ -88,18 +88,18 @@ const formatCleanupAwareError = ({
  * Enumerates available recording devices from the system.
  */
 const enumerateDevices = async (): Promise<Result<Device[], RecorderError>> => {
-	const { data: deviceNames, error: enumerateRecordingDevicesError } =
-		await invoke<string[]>('enumerate_recording_devices');
+	const { data: devices, error: enumerateRecordingDevicesError } = await invoke<
+		Device[]
+	>('enumerate_recording_devices');
 	if (enumerateRecordingDevicesError) {
 		return RecorderError.EnumerateDevices({
 			cause: enumerateRecordingDevicesError,
 		});
 	}
-	// On desktop, device names serve as both ID and label
 	return Ok(
-		deviceNames.map((name) => ({
-			id: asDeviceIdentifier(name),
-			label: name,
+		devices.map((device) => ({
+			id: asDeviceIdentifier(device.id),
+			label: device.label,
 		})),
 	);
 };
@@ -142,6 +142,7 @@ export const CpalRecorderServiceLive: RecorderService = {
 			recordingId,
 			outputFolder,
 			sampleRate,
+			experimentalBufferedCapture,
 		}: CpalRecordingParams,
 		{ sendStatus },
 	): Promise<Result<DeviceAcquisitionOutcome, RecorderError>> => {
@@ -221,6 +222,7 @@ export const CpalRecorderServiceLive: RecorderService = {
 				recordingId,
 				outputFolder,
 				sampleRate: sampleRateNum,
+				experimentalBufferedCapture,
 			},
 		);
 		if (initRecordingSessionError) {

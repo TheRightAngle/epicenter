@@ -87,6 +87,7 @@ export type CpalRecordingParams = BaseRecordingParams & {
 	method: 'cpal';
 	outputFolder: string;
 	sampleRate: string;
+	experimentalBufferedCapture: boolean;
 };
 
 /**
