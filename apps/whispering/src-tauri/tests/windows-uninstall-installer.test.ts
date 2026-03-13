@@ -20,14 +20,22 @@ describe("Windows uninstall installer wiring", () => {
 
 		const hooks = readFileSync(hooksPath, "utf8");
 		expect(hooks).toContain("!macro NSIS_HOOK_POSTUNINSTALL");
-		expect(hooks).toContain("DeleteAppDataCheckboxState");
-		expect(hooks).toContain("$LOCALAPPDATA\\Whispering");
+		expect(hooks).toContain('${If} $UpdateMode <> 1');
+		expect(hooks).toContain("$INSTDIR");
+		expect(hooks).not.toContain("$LOCALAPPDATA\\Whispering");
 		expect(hooks).toContain("$LOCALAPPDATA\\com.bradenwong.whispering");
+		expect(hooks).toContain('${If} $DeleteAppDataCheckboxState = 1');
+		expect(hooks.indexOf('${If} $UpdateMode <> 1')).toBeLessThan(
+			hooks.indexOf('${If} $DeleteAppDataCheckboxState = 1'),
+		);
 
 		const template = readFileSync(templatePath, "utf8");
 		expect(template).toContain("Function PageLeaveReinstall");
 		expect(template).toContain("Var MaintenanceUninstallMode");
 		expect(template).toContain("${If} $MaintenanceUninstallMode = 1");
 		expect(template).toContain("Quit");
+		expect(template).toContain(
+			"SendMessage $DeleteAppDataCheckbox ${BM_SETCHECK} ${BST_CHECKED} 0",
+		);
 	});
 });
