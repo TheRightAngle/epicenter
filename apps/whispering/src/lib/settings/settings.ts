@@ -99,6 +99,8 @@ export const Settings = type({
 	'transformation.copyToClipboardOnSuccess': 'boolean = true',
 	'transformation.writeToCursorOnSuccess': 'boolean = false',
 	'transformation.simulateEnterAfterOutput': 'boolean = false',
+	'output.fastMode': 'boolean = false',
+	'system.minimizeToTray': 'boolean = false',
 
 	'system.alwaysOnTop': type
 		.enumerated(...ALWAYS_ON_TOP_MODES)
@@ -114,8 +116,8 @@ export const Settings = type({
 
 	'database.recordingRetentionStrategy': type
 		.enumerated('keep-forever', 'limit-count')
-		.default('keep-forever'),
-	'database.maxRecordingCount': type('string.digits').default('100'),
+		.default('limit-count'),
+	'database.maxRecordingCount': type('string.digits').default('0'),
 
 	// Recording mode settings
 	'recording.mode': type.enumerated(...RECORDING_MODES).default('manual'),
@@ -252,7 +254,7 @@ export const Settings = type({
 	'apiEndpoints.groq': "string = ''",
 
 	// Analytics settings
-	'analytics.enabled': 'boolean = true',
+	'analytics.enabled': 'boolean = false',
 
 	// Local shortcuts (in-app shortcuts)
 	'shortcuts.local.toggleManualRecording': "string | null = ' '",

@@ -31,6 +31,7 @@
 		registerAccessibilityPermission,
 		registerMicrophonePermission,
 	} from '../_layout-utils/register-permissions';
+	import { registerMinimizeToTray } from '../_layout-utils/register-minimize-to-tray';
 	import { registerWindowScaleRecovery } from '../_layout-utils/register-window-scale-recovery';
 	import { syncIconWithRecorderState } from '../_layout-utils/syncIconWithRecorderState.svelte';
 
@@ -40,6 +41,7 @@
 
 	let cleanupAccessibilityPermission: (() => void) | undefined;
 	let cleanupMicrophonePermission: (() => void) | undefined;
+	let cleanupMinimizeToTray: (() => void) | undefined;
 	let cleanupWindowScaleRecovery: (() => void) | undefined;
 
 	onMount(() => {
@@ -64,6 +66,15 @@
 				.catch((error) => {
 					console.error('Failed to register window scale recovery:', error);
 				});
+			void registerMinimizeToTray({
+				isEnabled: () => settings.value['system.minimizeToTray'],
+			})
+				.then((cleanup) => {
+					cleanupMinimizeToTray = cleanup;
+				})
+				.catch((error) => {
+					console.error('Failed to register minimize to tray:', error);
+				});
 
 			// Async operations - fire and forget, don't block UI rendering
 			// These show toasts/notifications on completion, no need to await
@@ -82,6 +93,7 @@
 	onDestroy(() => {
 		cleanupAccessibilityPermission?.();
 		cleanupMicrophonePermission?.();
+		cleanupMinimizeToTray?.();
 		cleanupWindowScaleRecovery?.();
 	});
 

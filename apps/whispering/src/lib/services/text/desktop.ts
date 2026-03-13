@@ -21,9 +21,15 @@ export function createTextServiceDesktop(): TextService {
 				catch: (error) => TextError.ClipboardWrite({ cause: error }),
 			}),
 
-		writeToCursor: async (text) =>
+		writeToCursor: async (text, options) =>
 			tryAsync({
-				try: () => invoke<void>('write_text', { text }),
+				try: () =>
+					invoke<void>(
+						options?.preserveClipboard === false
+							? 'write_text_fast'
+							: 'write_text',
+						{ text },
+					),
 				catch: (error) => TextError.WriteToCursor({ cause: error }),
 			}),
 

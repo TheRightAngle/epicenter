@@ -165,6 +165,28 @@
 
 		<Field.Separator />
 
+		{#if window.__TAURI_INTERNALS__}
+			<Field.Set>
+				<Field.Legend variant="label">Output delivery</Field.Legend>
+				<Field.Description>
+					Fast mode reduces paste latency for transcript and transformation
+					output. It may leave the pasted text in your clipboard.
+				</Field.Description>
+				<Field.Group>
+					<Field.Field orientation="horizontal">
+						<Switch
+							id="output.fastMode"
+							bind:checked={() => settings.value['output.fastMode'],
+								(v) => settings.updateKey('output.fastMode', v)}
+						/>
+						<Field.Label for="output.fastMode">Fast output mode</Field.Label>
+					</Field.Field>
+				</Field.Group>
+			</Field.Set>
+
+			<Field.Separator />
+		{/if}
+
 		<Field.Field>
 			<Field.Label for="recording-retention-strategy"
 				>Auto Delete Recordings</Field.Label
@@ -206,6 +228,22 @@
 		{/if}
 
 		{#if window.__TAURI_INTERNALS__}
+			<Field.Field orientation="horizontal">
+				<Field.Content>
+					<Field.Label for="system.minimizeToTray"
+						>Minimize to tray</Field.Label
+					>
+					<Field.Description>
+						Hide Whispering to the system tray when the window is minimized.
+					</Field.Description>
+				</Field.Content>
+				<Switch
+					id="system.minimizeToTray"
+					bind:checked={() => settings.value['system.minimizeToTray'],
+						(v) => settings.updateKey('system.minimizeToTray', v)}
+				/>
+			</Field.Field>
+
 			<Field.Field orientation="horizontal">
 				<Field.Content>
 					<Field.Label for="autostart">Launch on Startup</Field.Label>

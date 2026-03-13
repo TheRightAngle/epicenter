@@ -1,13 +1,11 @@
-import {
-	getCurrentWindow,
-	PhysicalSize,
-	type Window as TauriWindow,
-} from '@tauri-apps/api/window';
+import type { Window as TauriWindow } from '@tauri-apps/api/window';
 
 type WindowScaleRecoveryWindow = Pick<
 	TauriWindow,
 	'onScaleChanged' | 'onFocusChanged' | 'scaleFactor' | 'innerSize' | 'setSize'
 >;
+
+type WindowSizeArg = Parameters<WindowScaleRecoveryWindow['setSize']>[0];
 
 type DocumentRef = Pick<
 	Document,
@@ -21,21 +19,37 @@ type RegisterWindowScaleRecoveryOptions = {
 	requestFrame?: (callback: FrameRequestCallback) => number;
 	cancelFrame?: (handle: number) => void;
 	getDevicePixelRatio?: () => number;
+	createSize?: (width: number, height: number) => WindowSizeArg;
 };
 
 const SCALE_MISMATCH_EPSILON = 0.01;
 
 export async function registerWindowScaleRecovery({
 	isTauri = Boolean(window.__TAURI_INTERNALS__),
-	currentWindow = getCurrentWindow(),
+	currentWindow,
 	documentRef = document,
 	requestFrame = window.requestAnimationFrame.bind(window),
 	cancelFrame = window.cancelAnimationFrame.bind(window),
 	getDevicePixelRatio = () => window.devicePixelRatio,
+	createSize = (width, height) => ({ width, height }) as WindowSizeArg,
 }: RegisterWindowScaleRecoveryOptions = {}): Promise<() => void> {
 	if (!isTauri) {
 		return () => undefined;
 	}
+
+	const resolvedWindow =
+		currentWindow ??
+		(await import('@tauri-apps/api/window')).getCurrentWindow();
+	const resolvedCreateSize: (
+		width: number,
+		height: number,
+	) => Promise<WindowSizeArg> =
+		currentWindow === undefined
+			? async (width: number, height: number) => {
+					const { PhysicalSize } = await import('@tauri-apps/api/window');
+					return new PhysicalSize(width, height) as WindowSizeArg;
+				}
+			: async (width: number, height: number) => createSize(width, height);
 
 	let disposed = false;
 	let scheduledFrame: number | null = null;
@@ -43,16 +57,16 @@ export async function registerWindowScaleRecovery({
 
 	const runRecoveryIfNeeded = async () => {
 		try {
-			const scaleFactor = await currentWindow.scaleFactor();
+			const scaleFactor = await resolvedWindow.scaleFactor();
 			if (
 				Math.abs(getDevicePixelRatio() - scaleFactor) <= SCALE_MISMATCH_EPSILON
 			) {
 				return;
 			}
 
-			const currentSize = await currentWindow.innerSize();
-			await currentWindow.setSize(
-				new PhysicalSize(currentSize.width, currentSize.height),
+			const currentSize = await resolvedWindow.innerSize();
+			await resolvedWindow.setSize(
+				await resolvedCreateSize(currentSize.width, currentSize.height),
 			);
 		} catch (error) {
 			console.error('Failed to recover window scale after wake:', error);
@@ -82,10 +96,10 @@ export async function registerWindowScaleRecovery({
 		});
 	};
 
-	const removeScaleListener = await currentWindow.onScaleChanged(() => {
+	const removeScaleListener = await resolvedWindow.onScaleChanged(() => {
 		scheduleRecovery();
 	});
-	const removeFocusListener = await currentWindow.onFocusChanged(({ payload }) => {
+	const removeFocusListener = await resolvedWindow.onFocusChanged(({ payload }) => {
 		if (payload) {
 			scheduleRecovery();
 		}

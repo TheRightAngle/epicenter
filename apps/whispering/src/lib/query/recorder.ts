@@ -6,7 +6,10 @@ import { PATHS } from '$lib/constants/paths';
 import { defineMutation, defineQuery, queryClient } from '$lib/query/client';
 import { WhisperingErr } from '$lib/result';
 import { desktopServices, services } from '$lib/services';
+import { getFileExtensionFromFfmpegOptions } from '$lib/services/desktop/recorder/ffmpeg';
+import type { Device } from '$lib/services/types';
 import { settings } from '$lib/state/settings.svelte';
+import { disambiguateDeviceLabels } from '../services/device-labels';
 import { notify } from './notify';
 
 const recorderKeys = {
@@ -22,9 +25,33 @@ const recorderKeys = {
  * This ensures the same ID is used from recording start through database save.
  */
 let currentRecordingId: string | null = null;
+let currentRecordingSourceFilePath: string | null = null;
 
 const invalidateRecorderState = () =>
 	queryClient.invalidateQueries({ queryKey: recorderKeys.recorderState });
+
+async function resolveDesktopSourceFilePath(
+	recordingId: string,
+): Promise<string | null> {
+	if (!window.__TAURI_INTERNALS__) return null;
+	const { join } = await import('@tauri-apps/api/path');
+
+	const outputFolder =
+		settings.value['recording.cpal.outputFolder'] ?? (await PATHS.DB.RECORDINGS());
+
+	switch (settings.value['recording.method']) {
+		case 'cpal':
+			return await join(outputFolder, `${recordingId}.wav`);
+		case 'ffmpeg': {
+			const extension = getFileExtensionFromFfmpegOptions(
+				settings.value['recording.ffmpeg.outputOptions'],
+			);
+			return await join(outputFolder, `${recordingId}.${extension}`);
+		}
+		case 'navigator':
+			return null;
+	}
+}
 
 export const recorder = {
 	// Query that enumerates available recording devices with labels
@@ -38,7 +65,19 @@ export const recorder = {
 					serviceError: error,
 				});
 			}
-			return Ok(data);
+
+			let richerDevices: Device[] | undefined;
+
+			if (
+				window.__TAURI_INTERNALS__ &&
+				settings.value['recording.method'] !== 'navigator'
+			) {
+				const { data: navigatorDevices } =
+					await services.navigatorRecorder.enumerateDevices();
+				richerDevices = navigatorDevices ?? undefined;
+			}
+
+			return Ok(disambiguateDeviceLabels(data, richerDevices));
 		},
 	}),
 
@@ -68,6 +107,8 @@ export const recorder = {
 
 				// Store the recording ID so it can be reused when stopping
 				currentRecordingId = recordingId;
+				currentRecordingSourceFilePath =
+					await resolveDesktopSourceFilePath(recordingId);
 
 				// Prepare recording parameters based on which method we're using
 				const baseParams = {
@@ -119,6 +160,7 @@ export const recorder = {
 
 				if (startRecordingError) {
 					currentRecordingId = null;
+					currentRecordingSourceFilePath = null;
 					return WhisperingErr({
 						title: '❌ Failed to start recording',
 						serviceError: startRecordingError,
@@ -127,6 +169,7 @@ export const recorder = {
 				return Ok(deviceAcquisitionOutcome);
 			} catch (error) {
 				currentRecordingId = null;
+				currentRecordingSourceFilePath = null;
 				return WhisperingErr({
 					title: '❌ Failed to start recording',
 					description:
@@ -156,6 +199,7 @@ export const recorder = {
 			}
 			if (!recordingId) {
 				currentRecordingId = null;
+				currentRecordingSourceFilePath = null;
 				return WhisperingErr({
 					title: '❌ Missing recording ID',
 					description:
@@ -164,6 +208,10 @@ export const recorder = {
 			}
 
 			currentRecordingId = recordingId;
+			if (!currentRecordingSourceFilePath) {
+				currentRecordingSourceFilePath =
+					await resolveDesktopSourceFilePath(recordingId);
+			}
 			const { data: blob, error: stopRecordingError } =
 				await recorderService().stopRecording({
 					sendStatus: (options) => notify.loading({ id: toastId, ...options }),
@@ -172,6 +220,7 @@ export const recorder = {
 			if (stopRecordingError) {
 				if (isDesktopCpalContext()) {
 					currentRecordingId = null;
+					currentRecordingSourceFilePath = null;
 				}
 				return WhisperingErr({
 					title: '❌ Failed to stop recording',
@@ -179,9 +228,11 @@ export const recorder = {
 				});
 			}
 
+			const sourceFilePath = currentRecordingSourceFilePath;
 			currentRecordingId = null;
+			currentRecordingSourceFilePath = null;
 			// Return both blob and recordingId so they can be used together
-			return Ok({ blob, recordingId });
+			return Ok({ blob, recordingId, sourceFilePath });
 		},
 		onSettled: invalidateRecorderState,
 	}),
@@ -196,6 +247,7 @@ export const recorder = {
 
 			// Reset recording ID when canceling
 			currentRecordingId = null;
+			currentRecordingSourceFilePath = null;
 
 			if (cancelRecordingError) {
 				return WhisperingErr({

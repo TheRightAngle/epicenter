@@ -1,5 +1,5 @@
 import { basename } from '@tauri-apps/api/path';
-import { readFile } from '@tauri-apps/plugin-fs';
+import { exists, readFile, remove } from '@tauri-apps/plugin-fs';
 import mime from 'mime';
 import {
 	defineErrors,
@@ -22,6 +22,11 @@ export const FsError = defineErrors({
 	ReadFilesFailed: ({ paths, cause }: { paths: string[]; cause: unknown }) => ({
 		message: `Failed to read files: ${paths.join(', ')}: ${extractErrorMessage(cause)}`,
 		paths,
+		cause,
+	}),
+	DeletePathFailed: ({ path, cause }: { path: string; cause: unknown }) => ({
+		message: `Failed to delete file: ${path}: ${extractErrorMessage(cause)}`,
+		path,
 		cause,
 	}),
 });
@@ -56,6 +61,16 @@ export const FsServiceLive = {
 		tryAsync({
 			try: () => Promise.all(paths.map(createFileFromPath)),
 			catch: (error) => FsError.ReadFilesFailed({ paths, cause: error }),
+		}),
+
+	deletePath: (path: string) =>
+		tryAsync({
+			try: async () => {
+				if (await exists(path)) {
+					await remove(path);
+				}
+			},
+			catch: (error) => FsError.DeletePathFailed({ path, cause: error }),
 		}),
 };
 

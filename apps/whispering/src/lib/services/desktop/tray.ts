@@ -53,7 +53,11 @@ async function initTray() {
 			await MenuItem.new({
 				id: 'show',
 				text: 'Show Window',
-				action: () => getCurrentWindow().show(),
+				action: async () => {
+					const currentWindow = getCurrentWindow();
+					await currentWindow.unminimize();
+					await currentWindow.show();
+				},
 			}),
 
 			await MenuItem.new({

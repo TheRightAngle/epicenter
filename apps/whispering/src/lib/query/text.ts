@@ -20,14 +20,19 @@ export const text = {
 			services.text.copyToClipboard(text),
 	}),
 	writeToCursor: defineMutation({
-		mutationKey: ['text', 'writeToCursor'],
-		mutationFn: async ({ text }: { text: string }) => {
+		mutationKey: textKeys.writeToCursor,
+		mutationFn: async ({
+			text,
+			preserveClipboard,
+		}: {
+			text: string;
+			preserveClipboard?: boolean;
+		}) => {
 			// writeToCursor handles everything internally:
-			// 1. Saves current clipboard
-			// 2. Writes text to clipboard
-			// 3. Simulates paste
-			// 4. Restores original clipboard
-			return await services.text.writeToCursor(text);
+			// 1. Writes text to clipboard
+			// 2. Simulates paste
+			// 3. Optionally restores the prior clipboard
+			return await services.text.writeToCursor(text, { preserveClipboard });
 		},
 	}),
 	simulateEnterKeystroke: defineMutation({

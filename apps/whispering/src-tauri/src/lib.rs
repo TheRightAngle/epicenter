@@ -152,6 +152,7 @@ pub async fn run() {
     // Register command handlers (same for all platforms now)
     let builder = builder.invoke_handler(tauri::generate_handler![
         write_text,
+        write_text_fast,
         simulate_enter_keystroke,
         // Audio recorder commands
         get_current_recording_id,
@@ -199,30 +200,30 @@ pub async fn run() {
 use enigo::{Direction, Enigo, Key, Keyboard, Settings};
 use tauri_plugin_clipboard_manager::ClipboardExt;
 
-/// Writes text at the cursor position using the clipboard sandwich technique
-///
-/// This method preserves the user's existing clipboard content by:
-/// 1. Saving the current clipboard content
-/// 2. Writing the new text to clipboard
-/// 3. Simulating a paste operation (Cmd+V on macOS, Ctrl+V elsewhere)
-/// 4. Restoring the original clipboard content
-///
-/// This approach is faster than typing character-by-character and preserves
-/// the user's clipboard, making it ideal for inserting transcribed text.
-#[tauri::command]
-async fn write_text(app: tauri::AppHandle, text: String) -> Result<(), String> {
-    // 1. Save current clipboard content
-    let original_clipboard = app.clipboard().read_text().ok();
+async fn paste_text_at_cursor(
+    app: tauri::AppHandle,
+    text: String,
+    preserve_clipboard: bool,
+    clipboard_settle_delay_ms: u64,
+    post_paste_delay_ms: u64,
+) -> Result<(), String> {
+    let original_clipboard = if preserve_clipboard {
+        app.clipboard().read_text().ok()
+    } else {
+        None
+    };
 
-    // 2. Write new text to clipboard
     app.clipboard()
         .write_text(&text)
         .map_err(|e| format!("Failed to write to clipboard: {}", e))?;
 
-    // Small delay to ensure clipboard is updated
-    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    if clipboard_settle_delay_ms > 0 {
+        tokio::time::sleep(tokio::time::Duration::from_millis(
+            clipboard_settle_delay_ms,
+        ))
+        .await;
+    }
 
-    // 3. Simulate paste operation using virtual key codes (layout-independent)
     let mut enigo = Enigo::new(&Settings::default()).map_err(|e| e.to_string())?;
 
     // Use virtual key codes for V to work with any keyboard layout
@@ -249,10 +250,10 @@ async fn write_text(app: tauri::AppHandle, text: String) -> Result<(), String> {
         .key(modifier, Direction::Release)
         .map_err(|e| format!("Failed to release modifier key: {}", e))?;
 
-    // Small delay to ensure paste completes
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    if post_paste_delay_ms > 0 {
+        tokio::time::sleep(tokio::time::Duration::from_millis(post_paste_delay_ms)).await;
+    }
 
-    // 4. Restore original clipboard content
     if let Some(content) = original_clipboard {
         app.clipboard()
             .write_text(&content)
@@ -260,6 +261,22 @@ async fn write_text(app: tauri::AppHandle, text: String) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+/// Writes text at the cursor position using the clipboard sandwich technique.
+///
+/// This preserves the existing clipboard at the cost of additional latency.
+#[tauri::command]
+async fn write_text(app: tauri::AppHandle, text: String) -> Result<(), String> {
+    paste_text_at_cursor(app, text, true, 50, 100).await
+}
+
+/// Writes text at the cursor position using the fastest clipboard paste path.
+///
+/// This skips clipboard restoration and uses a shorter clipboard settle delay.
+#[tauri::command]
+async fn write_text_fast(app: tauri::AppHandle, text: String) -> Result<(), String> {
+    paste_text_at_cursor(app, text, false, 10, 0).await
 }
 
 /// Simulates pressing the Enter/Return key

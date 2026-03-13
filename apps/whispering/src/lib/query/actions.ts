@@ -3,6 +3,7 @@ import { Ok } from 'wellcrafted/result';
 import { defineMutation } from '$lib/query/client';
 import { WhisperingErr } from '$lib/result';
 import { DbError } from '$lib/services/db';
+import { desktopServices } from '$lib/services';
 import { settings } from '$lib/state/settings.svelte';
 import { vadRecorder } from '$lib/state/vad-recorder.svelte';
 import * as transformClipboardWindow from '$routes/transform-clipboard/transformClipboardWindow.tauri';
@@ -14,6 +15,7 @@ import { recorder } from './recorder';
 import { sound } from './sound';
 import { text } from './text';
 import { transcribeBlob } from './transcription';
+import { shouldPersistRecordings } from './recording-persistence';
 import { transformer } from './transformer';
 
 /**
@@ -158,12 +160,12 @@ const stopManualRecording = defineMutation({
 			return Ok(undefined);
 		}
 
-		const { blob, recordingId } = data;
+		const { blob, recordingId, sourceFilePath } = data;
 
 		notify.success({
 			id: toastId,
 			title: '🎙️ Recording stopped',
-			description: 'Your recording has been saved',
+			description: 'Your recording is ready for transcription.',
 		});
 		console.info('Recording stopped');
 		sound.playSoundIfEnabled('manual-stop');
@@ -185,9 +187,10 @@ const stopManualRecording = defineMutation({
 		await processRecordingPipeline({
 			blob,
 			recordingId,
+			sourceFilePath,
 			toastId,
 			completionTitle: '✨ Recording Complete!',
-			completionDescription: 'Recording saved and session closed successfully',
+			completionDescription: 'Recording captured and session closed successfully',
 		});
 
 		return Ok(undefined);
@@ -602,12 +605,14 @@ export const commands = {
 async function processRecordingPipeline({
 	blob,
 	recordingId,
+	sourceFilePath,
 	toastId,
 	completionTitle,
 	completionDescription,
 }: {
 	blob: Blob;
 	recordingId?: string;
+	sourceFilePath?: string | null;
 	toastId: string;
 	completionTitle: string;
 	completionDescription: string;
@@ -626,6 +631,12 @@ async function processRecordingPipeline({
 		transcriptionStatus: 'UNPROCESSED',
 	} as const;
 
+	const persistRecording = shouldPersistRecordings({
+		recordingRetentionStrategy:
+			settings.value['database.recordingRetentionStrategy'],
+		maxRecordingCount: settings.value['database.maxRecordingCount'],
+	});
+
 	// Show transcribing toast immediately
 	const transcribeToastId = nanoid();
 	notify.loading({
@@ -635,7 +646,13 @@ async function processRecordingPipeline({
 	});
 
 	// Start both operations in parallel
-	const savePromise = db.recordings.create({ recording, audio: blob });
+	const savePromise = persistRecording
+		? db.recordings.create({ recording, audio: blob })
+		: Promise.resolve(Ok(undefined));
+	const sourceCleanupPromise =
+		!persistRecording && window.__TAURI_INTERNALS__ && sourceFilePath
+			? desktopServices.fs.deletePath(sourceFilePath)
+			: Promise.resolve(Ok(undefined));
 	const transcribePromise = transcribeBlob(blob);
 
 	// Await transcription first (latency-critical path)
@@ -645,10 +662,19 @@ async function processRecordingPipeline({
 	if (transcribeError) {
 		// Transcription failed - still check save for proper cleanup
 		const { error: saveError } = await savePromise;
-		if (!saveError) {
+		if (persistRecording && !saveError) {
 			await db.recordings.update({
 				...recording,
 				transcriptionStatus: 'FAILED',
+			});
+		}
+		const { error: sourceCleanupError } = await sourceCleanupPromise;
+		if (sourceCleanupError) {
+			notify.warning({
+				title: '⚠️ Temporary recording file not deleted',
+				description:
+					'Transcription stopped, but the temporary desktop recording file could not be removed.',
+				action: { type: 'more-details', error: sourceCleanupError },
 			});
 		}
 		if (transcribeError.name === 'WhisperingError') {
@@ -671,39 +697,50 @@ async function processRecordingPipeline({
 		toastId: transcribeToastId,
 	});
 
-	// Now check save result (best-effort)
-	const { error: saveError } = await savePromise;
-	if (saveError) {
+	const { error: sourceCleanupError } = await sourceCleanupPromise;
+	if (sourceCleanupError) {
 		notify.warning({
-			id: toastId,
-			title: '⚠️ Recording not saved',
+			title: '⚠️ Temporary recording file not deleted',
 			description:
-				'Your text was delivered but the recording was not saved to history.',
-			action: { type: 'more-details', error: saveError },
+				'Transcription completed, but the temporary desktop recording file could not be removed.',
+			action: { type: 'more-details', error: sourceCleanupError },
 		});
-		// Can't update recording since it wasn't saved - skip transformation too
-		return;
 	}
 
-	// Save succeeded - show completion toast and update recording
 	notify.success({
 		id: toastId,
 		title: completionTitle,
 		description: completionDescription,
 	});
 
-	const { error: updateError } = await db.recordings.update({
-		...recording,
-		transcribedText,
-		transcriptionStatus: 'DONE',
-	});
+	if (persistRecording) {
+		// Now check save result (best-effort)
+		const { error: saveError } = await savePromise;
+		if (saveError) {
+			notify.warning({
+				id: toastId,
+				title: '⚠️ Recording not saved',
+				description:
+					'Your text was delivered but the recording was not saved to history.',
+				action: { type: 'more-details', error: saveError },
+			});
+			// Can't update recording since it wasn't saved - skip transformation too
+			return;
+		}
 
-	if (updateError) {
-		notify.warning({
-			title: '⚠️ Unable to save transcription',
-			description: "Transcription completed but couldn't save to database",
-			action: { type: 'more-details', error: updateError },
+		const { error: updateError } = await db.recordings.update({
+			...recording,
+			transcribedText,
+			transcriptionStatus: 'DONE',
 		});
+
+		if (updateError) {
+			notify.warning({
+				title: '⚠️ Unable to save transcription',
+				description: "Transcription completed but couldn't save to database",
+				action: { type: 'more-details', error: updateError },
+			});
+		}
 	}
 
 	// Determine if we need to chain to transformation
@@ -751,6 +788,25 @@ async function processRecordingPipeline({
 		description:
 			'Applying your selected transformation to the transcribed text...',
 	});
+	if (!persistRecording) {
+		const { data: output, error: transformError } =
+			await transformer.transformInput({
+				input: transcribedText,
+				transformation,
+			});
+		if (transformError) {
+			notify.error({ id: transformToastId, ...transformError });
+			return;
+		}
+
+		sound.playSoundIfEnabled('transformationComplete');
+		await delivery.deliverTransformationResult({
+			text: output,
+			toastId: transformToastId,
+		});
+		return;
+	}
+
 	const { data: transformationRun, error: transformError } =
 		await transformer.transformRecording({
 			recordingId: recording.id,

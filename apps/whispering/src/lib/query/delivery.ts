@@ -45,6 +45,8 @@ export const delivery = {
 			// Track what operations succeeded
 			let copied = false;
 			let written = false;
+			const fastOutputMode = settings.value['output.fastMode'];
+			const preserveClipboard = !fastOutputMode;
 
 			// Shows transcription result and offers manual copy action
 			const offerManualCopy = () =>
@@ -147,8 +149,15 @@ export const delivery = {
 
 			// Main delivery flow - operations are independent
 
-			// Check if user wants to copy to clipboard
-			if (settings.value['transcription.copyToClipboardOnSuccess']) {
+			// Fast cursor paste already leaves the transcript in the clipboard,
+			// so skip the extra copy step when both outputs are enabled.
+			if (
+				settings.value['transcription.copyToClipboardOnSuccess'] &&
+				!(
+					settings.value['transcription.writeToCursorOnSuccess'] &&
+					fastOutputMode
+				)
+			) {
 				const { error: copyError } = await rpc.text.copyToClipboard({
 					text,
 				});
@@ -163,9 +172,16 @@ export const delivery = {
 			if (settings.value['transcription.writeToCursorOnSuccess']) {
 				const { error: writeError } = await rpc.text.writeToCursor({
 					text,
+					preserveClipboard,
 				});
 				if (!writeError) {
 					written = true;
+					if (
+						fastOutputMode &&
+						settings.value['transcription.copyToClipboardOnSuccess']
+					) {
+						copied = true;
+					}
 					// Optionally simulate Enter keystroke after successful write
 					if (settings.value['transcription.simulateEnterAfterOutput']) {
 						const { error: enterError } =
@@ -228,6 +244,8 @@ export const delivery = {
 			// Track what operations succeeded
 			let copied = false;
 			let written = false;
+			const fastOutputMode = settings.value['output.fastMode'];
+			const preserveClipboard = !fastOutputMode;
 
 			// Shows transformation result and offers manual copy action
 			const offerManualCopy = () =>
@@ -330,8 +348,15 @@ export const delivery = {
 
 			// Main delivery flow - operations are independent
 
-			// Check if user wants to copy to clipboard
-			if (settings.value['transformation.copyToClipboardOnSuccess']) {
+			// Fast cursor paste already leaves the transformed text in the clipboard,
+			// so skip the extra copy step when both outputs are enabled.
+			if (
+				settings.value['transformation.copyToClipboardOnSuccess'] &&
+				!(
+					settings.value['transformation.writeToCursorOnSuccess'] &&
+					fastOutputMode
+				)
+			) {
 				const { error: copyError } = await rpc.text.copyToClipboard({
 					text,
 				});
@@ -346,9 +371,16 @@ export const delivery = {
 			if (settings.value['transformation.writeToCursorOnSuccess']) {
 				const { error: writeError } = await rpc.text.writeToCursor({
 					text,
+					preserveClipboard,
 				});
 				if (!writeError) {
 					written = true;
+					if (
+						fastOutputMode &&
+						settings.value['transformation.copyToClipboardOnSuccess']
+					) {
+						copied = true;
+					}
 					// Optionally simulate Enter keystroke after successful write
 					if (settings.value['transformation.simulateEnterAfterOutput']) {
 						const { error: enterError } =
