@@ -16,7 +16,7 @@
 	import {
 		clearCachedLocalModelValidity,
 		downloadLocalModelToDestination,
-		validateLocalModelInstall,
+		validateConfiguredLocalModelPath,
 	} from '$lib/components/settings/local-models';
 	import { settings } from '$lib/state/settings.svelte';
 
@@ -87,7 +87,10 @@
 		await tryAsync({
 			try: async () => {
 				const path = await ensureModelDestinationPath();
-				const isValid = await validateLocalModelInstall(model, path);
+				const isValid = await validateConfiguredLocalModelPath(
+					model.engine,
+					path,
+				);
 
 				if (!isValid) {
 					modelState = { type: 'not-downloaded' };
@@ -120,9 +123,9 @@
 				await refreshStatus();
 				if (modelState.type === 'ready' || modelState.type === 'active') {
 					if (modelState.type === 'ready') {
-						await activateModel();
+						await activateModel({ showToast: false });
+						toast.success('Model activated');
 					}
-					toast.success('Model already downloaded and activated');
 					return;
 				}
 
@@ -138,6 +141,11 @@
 							},
 						});
 						break;
+				}
+
+				const isValid = await validateConfiguredLocalModelPath(model.engine, path);
+				if (!isValid) {
+					throw new Error('Downloaded model did not pass runtime validation.');
 				}
 
 				// After download, activate the model

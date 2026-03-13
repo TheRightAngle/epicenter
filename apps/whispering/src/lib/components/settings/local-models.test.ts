@@ -12,7 +12,11 @@ type FakeEntry =
 	| { kind: 'dir' }
 	| { kind: 'file'; data: Uint8Array };
 
-function createFakeFs() {
+function createFakeFs({
+	renameFailures = [],
+}: {
+	renameFailures?: Array<{ from: string; to: string }>;
+} = {}) {
 	const entries = new Map<string, FakeEntry>();
 	const writeCalls: string[] = [];
 	const renameCalls: Array<{ from: string; to: string }> = [];
@@ -79,6 +83,15 @@ function createFakeFs() {
 			const normalizedFrom = normalize(from);
 			const normalizedTo = normalize(to);
 			renameCalls.push({ from: normalizedFrom, to: normalizedTo });
+			if (
+				renameFailures.some(
+					(failure) =>
+						normalize(failure.from) === normalizedFrom &&
+						normalize(failure.to) === normalizedTo,
+				)
+			) {
+				throw new Error(`rename failed: ${normalizedFrom} -> ${normalizedTo}`);
+			}
 			ensureParentDirs(normalizedTo);
 			const movedEntries = [...entries.entries()].filter(
 				([key]) => key === normalizedFrom || key.startsWith(`${normalizedFrom}/`),
@@ -158,6 +171,7 @@ describe('local-models', () => {
 				'whispercpp',
 				manualModelPath,
 				fs,
+				async () => true,
 			),
 		).toBeTrue();
 		expect(getCachedLocalModelValidity(manualModelPath)).toBeTrue();
@@ -181,9 +195,32 @@ describe('local-models', () => {
 		await fs.writeFile(`${manualModelPath}/vocab.txt`, new Uint8Array([4]));
 
 		expect(
-			await validateConfiguredLocalModelPath('parakeet', manualModelPath, fs),
+			await validateConfiguredLocalModelPath(
+				'parakeet',
+				manualModelPath,
+				fs,
+				async () => true,
+			),
 		).toBeTrue();
 		expect(getCachedLocalModelValidity(manualModelPath)).toBeTrue();
+	});
+
+	test('manual model readiness follows the probe result instead of filesystem shape alone', async () => {
+		clearCachedLocalModelValidity();
+		const fs = createFakeFs();
+		const manualModelPath = '/models/whisper/custom-medium-q5_0.gguf';
+
+		await fs.writeFile(manualModelPath, new Uint8Array([1, 2, 3]));
+
+		expect(
+			await validateConfiguredLocalModelPath(
+				'whispercpp',
+				manualModelPath,
+				fs,
+				async () => false,
+			),
+		).toBeFalse();
+		expect(getCachedLocalModelValidity(manualModelPath)).toBeFalse();
 	});
 
 	test('failed multi-file downloads clean up staged files and never activate the final directory', async () => {
@@ -267,5 +304,52 @@ describe('local-models', () => {
 			},
 		]);
 		expect(await fs.exists(destinationPath)).toBeTrue();
+	});
+
+	test('failed promotion keeps the existing installed model intact', async () => {
+		const destinationPath = '/models/whisper/ggml-tiny.bin';
+		const fs = createFakeFs({
+			renameFailures: [
+				{
+					from: '/models/whisper/ggml-tiny.bin.download-tiny',
+					to: destinationPath,
+				},
+			],
+		});
+		const model: LocalModelConfig = {
+			id: 'tiny',
+			name: 'Tiny',
+			description: 'Tiny whisper model',
+			size: '1 B',
+			sizeBytes: 1,
+			engine: 'whispercpp',
+			file: {
+				url: 'https://example.com/tiny.bin',
+				filename: 'ggml-tiny.bin',
+			},
+		};
+
+		await fs.writeFile(destinationPath, new Uint8Array([7]));
+
+		await expect(
+			downloadLocalModelToDestination({
+				model,
+				destinationPath,
+				fs,
+				fetchImpl: async () => createResponse(['a']),
+				onProgress: () => undefined,
+			}),
+		).rejects.toThrow(
+			'rename failed: /models/whisper/ggml-tiny.bin.download-tiny -> /models/whisper/ggml-tiny.bin',
+		);
+
+		expect(await fs.exists(destinationPath)).toBeTrue();
+		expect(await fs.stat(destinationPath)).toMatchObject({
+			isDirectory: false,
+			size: 1,
+		});
+		expect(
+			[...fs.entries.keys()].some((path) => path.includes('.download-')),
+		).toBeFalse();
 	});
 });

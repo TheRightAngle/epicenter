@@ -1,3 +1,4 @@
+import { invoke } from '@tauri-apps/api/core';
 import { join as tauriJoin } from '@tauri-apps/api/path';
 import {
 	exists as tauriExists,
@@ -49,6 +50,11 @@ type FetchResponse = {
 type DownloadDeps = FsDeps & {
 	fetchImpl(url: string): Promise<FetchResponse>;
 };
+
+type ProbeModelInstall = (
+	serviceId: TranscriptionService['id'],
+	modelPath: string,
+) => Promise<boolean>;
 
 type InstalledWhisperCatalogEntry = {
 	id: string;
@@ -151,6 +157,25 @@ const defaultFsDeps: FsDeps = {
 	join: tauriJoin,
 };
 
+const defaultProbeModelInstall: ProbeModelInstall = async (
+	serviceId,
+	modelPath,
+) => {
+	if (!window.__TAURI_INTERNALS__) {
+		return false;
+	}
+
+	try {
+		await invoke('validate_local_transcription_model', {
+			serviceId,
+			modelPath,
+		});
+		return true;
+	} catch {
+		return false;
+	}
+};
+
 const localModelValidityCache = new Map<string, boolean>();
 
 const localModelCatalog = {
@@ -181,6 +206,7 @@ export async function validateConfiguredLocalModelPath(
 	serviceId: TranscriptionService['id'],
 	modelPath: string,
 	fs: FsDeps = defaultFsDeps,
+	probeModelInstall: ProbeModelInstall = defaultProbeModelInstall,
 ): Promise<boolean> {
 	if (!modelPath) {
 		clearCachedLocalModelValidity(modelPath);
@@ -188,9 +214,15 @@ export async function validateConfiguredLocalModelPath(
 	}
 
 	const model = findInstalledLocalModel(serviceId, modelPath);
-	const isValid = model
+	const passesPreflight = model
 		? await validateLocalModelInstall(model, modelPath, fs)
-		: await validateManualLocalModelInstall(serviceId, modelPath, fs);
+		: await validateManualLocalModelShape(serviceId, modelPath, fs);
+	if (!passesPreflight) {
+		localModelValidityCache.set(modelPath, false);
+		return false;
+	}
+
+	const isValid = await probeModelInstall(serviceId, modelPath);
 	localModelValidityCache.set(modelPath, isValid);
 	return isValid;
 }
@@ -244,9 +276,11 @@ export async function downloadLocalModelToDestination({
 		fetchImpl,
 	};
 	const stagingPath = `${destinationPath}.download-${model.id}`;
+	const backupPath = `${destinationPath}.rollback-${model.id}`;
 	const isDirectoryModel = model.engine !== 'whispercpp';
 
 	await cleanupPath(stagingPath, isDirectoryModel, deps);
+	await cleanupPath(backupPath, isDirectoryModel, deps);
 
 	if (
 		await deps.exists(destinationPath) &&
@@ -298,12 +332,37 @@ export async function downloadLocalModelToDestination({
 			throw new Error('Downloaded model did not pass validation.');
 		}
 
-		await cleanupPath(destinationPath, isDirectoryModel, deps);
-		await deps.rename(stagingPath, destinationPath);
-		localModelValidityCache.set(destinationPath, true);
+		let hasBackup = false;
+		if (await deps.exists(destinationPath)) {
+			await deps.rename(destinationPath, backupPath);
+			hasBackup = true;
+		}
+
+		try {
+			await deps.rename(stagingPath, destinationPath);
+		} catch (promotionError) {
+			await restoreDownloadedModelBackup({
+				destinationPath,
+				backupPath,
+				hasBackup,
+				isDirectoryModel,
+				fs: deps,
+			});
+			throw promotionError;
+		}
+
+		if (hasBackup) {
+			await cleanupPath(backupPath, isDirectoryModel, deps);
+		}
+
+		clearCachedLocalModelValidity(destinationPath);
 	} catch (error) {
 		await cleanupPath(stagingPath, isDirectoryModel, deps);
-		localModelValidityCache.set(destinationPath, false);
+		if (await deps.exists(destinationPath)) {
+			clearCachedLocalModelValidity(destinationPath);
+		} else {
+			localModelValidityCache.set(destinationPath, false);
+		}
 		throw error;
 	}
 }
@@ -353,7 +412,33 @@ async function cleanupPath(
 	await fs.remove(path, { recursive });
 }
 
-async function validateManualLocalModelInstall(
+async function restoreDownloadedModelBackup({
+	destinationPath,
+	backupPath,
+	hasBackup,
+	isDirectoryModel,
+	fs,
+}: {
+	destinationPath: string;
+	backupPath: string;
+	hasBackup: boolean;
+	isDirectoryModel: boolean;
+	fs: FsDeps;
+}) {
+	if (!hasBackup) {
+		return;
+	}
+
+	if (await fs.exists(destinationPath)) {
+		await cleanupPath(destinationPath, isDirectoryModel, fs);
+	}
+
+	if (await fs.exists(backupPath)) {
+		await fs.rename(backupPath, destinationPath);
+	}
+}
+
+async function validateManualLocalModelShape(
 	serviceId: TranscriptionService['id'],
 	path: string,
 	fs: FsDeps,

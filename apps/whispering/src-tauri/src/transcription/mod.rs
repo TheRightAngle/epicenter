@@ -9,10 +9,11 @@ use std::io::Write;
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 #[cfg(not(target_os = "windows"))]
-use transcribe_rs::onnx::moonshine::{MoonshineParams, MoonshineVariant};
-use transcribe_rs::onnx::parakeet::{ParakeetParams, TimestampGranularity};
+use transcribe_rs::onnx::moonshine::{MoonshineModel, MoonshineParams, MoonshineVariant};
+use transcribe_rs::onnx::parakeet::{ParakeetModel, ParakeetParams, TimestampGranularity};
+use transcribe_rs::onnx::Quantization;
 #[cfg(not(target_os = "windows"))]
-use transcribe_rs::whisper_cpp::WhisperInferenceParams;
+use transcribe_rs::whisper_cpp::{WhisperEngine, WhisperInferenceParams};
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -479,6 +480,79 @@ fn extract_samples_from_wav(wav_data: Vec<u8>) -> Result<Vec<f32>, Transcription
 }
 
 #[cfg(not(target_os = "windows"))]
+fn extract_moonshine_variant_from_model_path(model_path: &str) -> MoonshineVariant {
+    let dir_name = std::path::Path::new(model_path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
+
+    let parts: Vec<&str> = dir_name.split('-').collect();
+    let variant = parts.get(1).copied().unwrap_or("tiny");
+
+    debug!(
+        "[Transcription] extracted Moonshine variant='{}' from path '{}'",
+        variant, dir_name
+    );
+
+    match variant {
+        "base" => MoonshineVariant::Base,
+        "tiny" => MoonshineVariant::Tiny,
+        _ => {
+            warn!(
+                "[Transcription] unknown Moonshine variant '{}' in path '{}', defaulting to tiny",
+                variant, dir_name
+            );
+            MoonshineVariant::Tiny
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn validate_local_transcription_model(
+    service_id: String,
+    model_path: String,
+) -> Result<(), TranscriptionError> {
+    let model_path = PathBuf::from(model_path);
+
+    match service_id.as_str() {
+        #[cfg(not(target_os = "windows"))]
+        "whispercpp" => WhisperEngine::load(&model_path)
+            .map(|_| ())
+            .map_err(|e| TranscriptionError::ModelLoadError {
+                message: e.to_string(),
+            }),
+        #[cfg(target_os = "windows")]
+        "whispercpp" => Err(TranscriptionError::ModelLoadError {
+            message: "Whisper C++ is not available on Windows due to build compatibility issues. Please use Parakeet for local transcription.".to_string(),
+        }),
+        "parakeet" => ParakeetModel::load(&model_path, &Quantization::Int8)
+            .map(|_| ())
+            .map_err(|e| TranscriptionError::ModelLoadError {
+                message: e.to_string(),
+            }),
+        #[cfg(not(target_os = "windows"))]
+        "moonshine" => {
+            let variant = extract_moonshine_variant_from_model_path(
+                model_path.to_str().unwrap_or_default(),
+            );
+
+            MoonshineModel::load(&model_path, variant, &Quantization::FP32)
+                .map(|_| ())
+                .map_err(|e| TranscriptionError::ModelLoadError {
+                    message: e.to_string(),
+                })
+        }
+        #[cfg(target_os = "windows")]
+        "moonshine" => Err(TranscriptionError::ModelLoadError {
+            message: "Moonshine is not available on Windows due to build compatibility issues. Please use Parakeet for local transcription.".to_string(),
+        }),
+        _ => Err(TranscriptionError::ModelLoadError {
+            message: format!("Unsupported local transcription service: {}", service_id),
+        }),
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
 #[tauri::command]
 pub async fn transcribe_audio_whisper(
     audio_data: Vec<u8>,
@@ -707,33 +781,7 @@ pub async fn transcribe_audio_moonshine(
 
     // Extract variant from model path directory name
     // Expected format: moonshine-{variant}-{lang} (e.g., "moonshine-tiny-en", "moonshine-base-en")
-    let model_params = {
-        let dir_name = std::path::Path::new(&model_path)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("");
-
-        // Parse directory name: moonshine-{variant}-{lang}
-        let parts: Vec<&str> = dir_name.split('-').collect();
-        let variant = parts.get(1).copied().unwrap_or("tiny");
-
-        debug!(
-            "[Transcription] extracted Moonshine variant='{}' from path '{}'",
-            variant, dir_name
-        );
-
-        match variant {
-            "base" => MoonshineVariant::Base,
-            "tiny" => MoonshineVariant::Tiny,
-            _ => {
-                warn!(
-                    "[Transcription] unknown Moonshine variant '{}' in path '{}', defaulting to tiny",
-                    variant, dir_name
-                );
-                MoonshineVariant::Tiny
-            }
-        }
-    };
+    let model_params = extract_moonshine_variant_from_model_path(&model_path);
 
     // Get or load the model using the persistent model manager
     let engine_arc = model_manager

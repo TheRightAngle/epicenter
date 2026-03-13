@@ -11,7 +11,8 @@ use recorder::commands::{
 
 pub mod transcription;
 use transcription::{
-    transcribe_audio_moonshine, transcribe_audio_parakeet, transcribe_audio_whisper, ModelManager,
+    transcribe_audio_moonshine, transcribe_audio_parakeet, transcribe_audio_whisper,
+    validate_local_transcription_model, ModelManager,
 };
 
 pub mod windows_path;
@@ -160,6 +161,7 @@ pub async fn run() {
         start_recording,
         stop_recording,
         cancel_recording,
+        validate_local_transcription_model,
         transcribe_audio_whisper,
         transcribe_audio_parakeet,
         transcribe_audio_moonshine,
