@@ -297,6 +297,35 @@ describe('CpalRecorderServiceLive', () => {
 		expect(commandLog()).toEqual(['stop_recording', 'close_recording_session']);
 	});
 
+	test('returns an in-memory wav blob when stopRecording returns audio data', async () => {
+		invokeMock.mockImplementation(async (command: string) => {
+			switch (command) {
+				case 'stop_recording':
+					return {
+						sampleRate: 16000,
+						channels: 1,
+						durationSeconds: 1,
+						audioData: [0, 0.25, -0.25, 0.5],
+					};
+				case 'close_recording_session':
+					return undefined;
+				default:
+					throw new Error(`Unexpected command ${command}`);
+			}
+		});
+
+		const { CpalRecorderServiceLive } = await loadCpalModule();
+		const result = await CpalRecorderServiceLive.stopRecording({
+			sendStatus: () => undefined,
+		});
+
+		expect(result.data).toBeInstanceOf(Blob);
+		expect(result.data?.type).toBe('audio/wav');
+		expect(result.data?.size).toBeGreaterThan(44);
+		expect(pathToBlobMock).not.toHaveBeenCalled();
+		expect(commandLog()).toEqual(['stop_recording', 'close_recording_session']);
+	});
+
 	test('closes the session when stop_recording itself fails', async () => {
 		invokeMock.mockImplementation(async (command: string) => {
 			switch (command) {

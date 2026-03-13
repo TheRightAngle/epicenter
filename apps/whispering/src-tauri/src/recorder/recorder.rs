@@ -42,21 +42,60 @@ enum RecorderCmd {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RecorderWriteMode {
     Inline,
-    Buffered,
+    BufferedMemory,
 }
 
 #[derive(Debug)]
-enum BufferedAudioChunk {
+enum InMemoryAudioBuffer {
     F32(Vec<f32>),
     I16(Vec<i16>),
     U16(Vec<u16>),
 }
 
-#[derive(Debug)]
-enum BufferedWriterCmd {
-    Audio(BufferedAudioChunk),
-    Flush(mpsc::Sender<Result<()>>),
-    Shutdown(mpsc::Sender<Result<()>>),
+impl InMemoryAudioBuffer {
+    fn new(sample_format: SampleFormat) -> Result<Self> {
+        match sample_format {
+            SampleFormat::F32 => Ok(Self::F32(Vec::new())),
+            SampleFormat::I16 => Ok(Self::I16(Vec::new())),
+            SampleFormat::U16 => Ok(Self::U16(Vec::new())),
+            _ => Err(format!(
+                "Unsupported sample format for in-memory capture: {:?}",
+                sample_format
+            )),
+        }
+    }
+
+    fn append_f32(&mut self, samples: &[f32]) {
+        if let Self::F32(buffer) = self {
+            buffer.extend_from_slice(samples);
+        }
+    }
+
+    fn append_i16(&mut self, samples: &[i16]) {
+        if let Self::I16(buffer) = self {
+            buffer.extend_from_slice(samples);
+        }
+    }
+
+    fn append_u16(&mut self, samples: &[u16]) {
+        if let Self::U16(buffer) = self {
+            buffer.extend_from_slice(samples);
+        }
+    }
+
+    fn take_f32_samples(&mut self) -> Vec<f32> {
+        match self {
+            Self::F32(samples) => std::mem::take(samples),
+            Self::I16(samples) => std::mem::take(samples)
+                .into_iter()
+                .map(|sample| sample as f32 / i16::MAX as f32)
+                .collect(),
+            Self::U16(samples) => std::mem::take(samples)
+                .into_iter()
+                .map(|sample| (sample as f32 / u16::MAX as f32) * 2.0 - 1.0)
+                .collect(),
+        }
+    }
 }
 
 /// Simplified recorder state
@@ -65,12 +104,12 @@ pub struct RecorderState {
     worker_handle: Option<JoinHandle<()>>,
     writer: Option<Arc<Mutex<WavWriter>>>,
     write_mode: RecorderWriteMode,
-    buffered_writer_tx: Option<mpsc::SyncSender<BufferedWriterCmd>>,
-    buffered_writer_handle: Option<JoinHandle<()>>,
+    in_memory_audio: Option<Arc<Mutex<InMemoryAudioBuffer>>>,
     is_recording: Arc<AtomicBool>,
     sample_rate: u32,
     channels: u16,
     file_path: Option<PathBuf>,
+    current_recording_id: Option<String>,
 }
 
 impl RecorderState {
@@ -80,12 +119,12 @@ impl RecorderState {
             worker_handle: None,
             writer: None,
             write_mode: RecorderWriteMode::Inline,
-            buffered_writer_tx: None,
-            buffered_writer_handle: None,
+            in_memory_audio: None,
             is_recording: Arc::new(AtomicBool::new(false)),
             sample_rate: 0,
             channels: 0,
             file_path: None,
+            current_recording_id: None,
         }
     }
 
@@ -134,22 +173,26 @@ impl RecorderState {
         let sample_rate = config.sample_rate();
         let channels = config.channels();
 
-        // Create WAV writer
-        let writer = WavWriter::new(file_path.clone(), sample_rate, channels)
-            .map_err(|e| format!("Failed to create WAV file: {}", e))?;
-        let writer = Arc::new(Mutex::new(writer));
         let write_mode = if experimental_buffered_capture {
-            RecorderWriteMode::Buffered
+            RecorderWriteMode::BufferedMemory
         } else {
             RecorderWriteMode::Inline
         };
-        let (buffered_writer_tx, buffered_writer_handle) =
-            if write_mode == RecorderWriteMode::Buffered {
-                let (tx, handle) = spawn_buffered_writer_thread(writer.clone());
-                (Some(tx), Some(handle))
-            } else {
-                (None, None)
-            };
+        let writer = if write_mode == RecorderWriteMode::Inline {
+            Some(Arc::new(Mutex::new(
+                WavWriter::new(file_path.clone(), sample_rate, channels)
+                    .map_err(|e| format!("Failed to create WAV file: {}", e))?,
+            )))
+        } else {
+            None
+        };
+        let in_memory_audio = if write_mode == RecorderWriteMode::BufferedMemory {
+            Some(Arc::new(Mutex::new(InMemoryAudioBuffer::new(
+                sample_format,
+            )?)))
+        } else {
+            None
+        };
 
         // Create stream config
         let stream_config = cpal::StreamConfig {
@@ -168,7 +211,7 @@ impl RecorderState {
         // Clone for the worker thread
         let writer_clone = writer.clone();
         let is_recording_clone = is_recording.clone();
-        let buffered_writer_tx_for_stream = buffered_writer_tx.clone();
+        let in_memory_audio_for_stream = in_memory_audio.clone();
         let write_mode_for_stream = write_mode;
 
         // Create the worker thread that owns the stream
@@ -181,7 +224,7 @@ impl RecorderState {
                 is_recording_clone,
                 write_mode_for_stream,
                 writer_clone,
-                buffered_writer_tx_for_stream,
+                in_memory_audio_for_stream,
             ) {
                 Ok(s) => s,
                 Err(e) => {
@@ -224,13 +267,17 @@ impl RecorderState {
         // Store everything
         self.cmd_tx = Some(cmd_tx);
         self.worker_handle = Some(worker);
-        self.writer = Some(writer);
+        self.writer = writer;
         self.write_mode = write_mode;
-        self.buffered_writer_tx = buffered_writer_tx;
-        self.buffered_writer_handle = buffered_writer_handle;
+        self.in_memory_audio = in_memory_audio;
         self.sample_rate = sample_rate;
         self.channels = channels;
-        self.file_path = Some(file_path);
+        self.file_path = if write_mode == RecorderWriteMode::Inline {
+            Some(file_path)
+        } else {
+            None
+        };
+        self.current_recording_id = Some(recording_id);
 
         info!(
             "Recording session initialized: {} Hz, {} channels, file: {:?}",
@@ -269,7 +316,15 @@ impl RecorderState {
                 .map_err(|e| format!("Failed to receive stop confirmation: {}", e))?;
         }
 
-        self.flush_buffered_writer()?;
+        if self.write_mode == RecorderWriteMode::BufferedMemory {
+            let recording = self.finalize_in_memory_audio()?;
+            info!(
+                "Recording stopped in memory: {:.2}s, samples: {}",
+                recording.duration_seconds,
+                recording.audio_data.len()
+            );
+            return Ok(recording);
+        }
 
         // Finalize the WAV file and get metadata
         let (sample_rate, channels, duration) = if let Some(writer) = &self.writer {
@@ -344,10 +399,6 @@ impl RecorderState {
             }
         }
 
-        if let Err(error) = self.shutdown_buffered_writer() {
-            cleanup_errors.push(error);
-        }
-
         // Finalize and drop the writer
         if let Some(writer) = self.writer.take() {
             match writer.lock() {
@@ -364,7 +415,9 @@ impl RecorderState {
 
         // Clear state
         self.write_mode = RecorderWriteMode::Inline;
+        self.in_memory_audio = None;
         self.file_path = None;
+        self.current_recording_id = None;
         self.sample_rate = 0;
         self.channels = 0;
 
@@ -379,62 +432,31 @@ impl RecorderState {
     /// Get current recording ID if actively recording
     pub fn get_current_recording_id(&self) -> Option<String> {
         if self.is_recording.load(Ordering::Acquire) {
-            self.file_path
-                .as_ref()
-                .and_then(|path| path.file_stem())
-                .and_then(|stem| stem.to_str())
-                .map(|s| s.to_string())
+            self.current_recording_id.clone()
         } else {
             None
         }
     }
 
-    fn flush_buffered_writer(&self) -> Result<()> {
-        let Some(tx) = &self.buffered_writer_tx else {
-            return Ok(());
-        };
+    fn finalize_in_memory_audio(&mut self) -> Result<AudioRecording> {
+        let in_memory_audio = self
+            .in_memory_audio
+            .as_ref()
+            .ok_or_else(|| "No in-memory audio buffer initialized".to_string())?;
+        let mut in_memory_audio = in_memory_audio
+            .lock()
+            .map_err(|e| format!("Failed to lock in-memory audio buffer: {}", e))?;
+        let audio_data = in_memory_audio.take_f32_samples();
+        let duration_seconds =
+            audio_data.len() as f32 / (self.sample_rate as f32 * self.channels as f32);
 
-        let (reply_tx, reply_rx) = mpsc::channel();
-        tx.send(BufferedWriterCmd::Flush(reply_tx))
-            .map_err(|e| format!("Failed to send flush command: {}", e))?;
-        reply_rx
-            .recv()
-            .map_err(|e| format!("Failed to receive flush confirmation: {}", e))?
-    }
-
-    fn shutdown_buffered_writer(&mut self) -> Result<()> {
-        let mut cleanup_errors = Vec::new();
-
-        if let Some(tx) = self.buffered_writer_tx.take() {
-            let (reply_tx, reply_rx) = mpsc::channel();
-            if let Err(e) = tx.send(BufferedWriterCmd::Shutdown(reply_tx)) {
-                cleanup_errors.push(format!("Failed to send buffered writer shutdown: {}", e));
-            } else {
-                match reply_rx.recv() {
-                    Ok(Ok(())) => {}
-                    Ok(Err(e)) => cleanup_errors.push(e),
-                    Err(err) => cleanup_errors.push(format!(
-                        "Failed to receive buffered writer shutdown: {}",
-                        err
-                    )),
-                }
-            }
-        }
-
-        if let Some(handle) = self.buffered_writer_handle.take() {
-            if let Err(panic) = handle.join() {
-                cleanup_errors.push(format!(
-                    "Failed to join buffered writer thread: {}",
-                    panic_payload_message(&panic)
-                ));
-            }
-        }
-
-        if cleanup_errors.is_empty() {
-            Ok(())
-        } else {
-            Err(cleanup_errors.join("; "))
-        }
+        Ok(AudioRecording {
+            audio_data,
+            sample_rate: self.sample_rate,
+            channels: self.channels,
+            duration_seconds,
+            file_path: None,
+        })
     }
 }
 
@@ -498,87 +520,6 @@ fn panic_payload_message(panic: &Box<dyn Any + Send + 'static>) -> String {
     } else {
         "unknown panic".to_string()
     }
-}
-
-fn spawn_buffered_writer_thread(
-    writer: Arc<Mutex<WavWriter>>,
-) -> (mpsc::SyncSender<BufferedWriterCmd>, JoinHandle<()>) {
-    let (tx, rx) = mpsc::sync_channel(16);
-
-    let handle = thread::spawn(move || {
-        let mut first_error: Option<String> = None;
-
-        loop {
-            match rx.recv() {
-                Ok(BufferedWriterCmd::Audio(chunk)) => {
-                    handle_buffered_audio_chunk(&writer, &mut first_error, chunk)
-                }
-                Ok(BufferedWriterCmd::Flush(reply_tx)) => {
-                    let result = flush_buffered_writer_inner(&writer, &first_error);
-                    let _ = reply_tx.send(result);
-                }
-                Ok(BufferedWriterCmd::Shutdown(reply_tx)) => {
-                    let result = flush_buffered_writer_inner(&writer, &first_error);
-                    let _ = reply_tx.send(result);
-                    break;
-                }
-                Err(_) => break,
-            }
-        }
-    });
-
-    (tx, handle)
-}
-
-fn record_buffered_writer_error(first_error: &mut Option<String>, error: String) {
-    if first_error.is_none() {
-        error!("Buffered writer failed: {}", error);
-        *first_error = Some(error);
-    }
-}
-
-fn handle_buffered_audio_chunk(
-    writer: &Arc<Mutex<WavWriter>>,
-    first_error: &mut Option<String>,
-    chunk: BufferedAudioChunk,
-) {
-    if first_error.is_some() {
-        return;
-    }
-
-    let result = writer
-        .lock()
-        .map_err(|e| format!("Failed to lock writer: {}", e))
-        .and_then(|mut wav_writer| match chunk {
-            BufferedAudioChunk::F32(samples) => wav_writer
-                .write_samples_f32(&samples)
-                .map_err(|e| format!("Failed to write f32 samples: {}", e)),
-            BufferedAudioChunk::I16(samples) => wav_writer
-                .write_samples_i16(&samples)
-                .map_err(|e| format!("Failed to write i16 samples: {}", e)),
-            BufferedAudioChunk::U16(samples) => wav_writer
-                .write_samples_u16(&samples)
-                .map_err(|e| format!("Failed to write u16 samples: {}", e)),
-        });
-
-    if let Err(error) = result {
-        record_buffered_writer_error(first_error, error);
-    }
-}
-
-fn flush_buffered_writer_inner(
-    writer: &Arc<Mutex<WavWriter>>,
-    first_error: &Option<String>,
-) -> Result<()> {
-    if let Some(error) = first_error.clone() {
-        return Err(error);
-    }
-
-    writer
-        .lock()
-        .map_err(|e| format!("Failed to lock writer: {}", e))?
-        .flush()
-        .map_err(|e| format!("Failed to flush writer: {}", e))
 }
 
 #[cfg(test)]
@@ -728,87 +669,105 @@ fn build_input_stream(
     sample_format: SampleFormat,
     is_recording: Arc<AtomicBool>,
     write_mode: RecorderWriteMode,
-    writer: Arc<Mutex<WavWriter>>,
-    buffered_writer_tx: Option<mpsc::SyncSender<BufferedWriterCmd>>,
+    writer: Option<Arc<Mutex<WavWriter>>>,
+    in_memory_audio: Option<Arc<Mutex<InMemoryAudioBuffer>>>,
 ) -> Result<Stream> {
     let err_fn = |err| error!("Audio stream error: {}", err);
 
     let stream = match sample_format {
-        SampleFormat::F32 => device
-            .build_input_stream(
-                config,
-                move |data: &[f32], _: &_| {
-                    if is_recording.load(Ordering::Relaxed) {
-                        match write_mode {
-                            RecorderWriteMode::Inline => {
-                                if let Ok(mut w) = writer.lock() {
-                                    let _ = w.write_samples_f32(data);
+        SampleFormat::F32 => {
+            let writer = writer.clone();
+            let in_memory_audio = in_memory_audio.clone();
+            device
+                .build_input_stream(
+                    config,
+                    move |data: &[f32], _: &_| {
+                        if is_recording.load(Ordering::Relaxed) {
+                            match write_mode {
+                                RecorderWriteMode::Inline => {
+                                    if let Some(writer) = &writer {
+                                        if let Ok(mut w) = writer.lock() {
+                                            let _ = w.write_samples_f32(data);
+                                        }
+                                    }
                                 }
-                            }
-                            RecorderWriteMode::Buffered => {
-                                if let Some(tx) = &buffered_writer_tx {
-                                    let _ = tx.send(BufferedWriterCmd::Audio(
-                                        BufferedAudioChunk::F32(data.to_vec()),
-                                    ));
-                                }
-                            }
-                        }
-                    }
-                },
-                err_fn,
-                None,
-            )
-            .map_err(|e| format!("Failed to build F32 stream: {}", e))?,
-        SampleFormat::I16 => device
-            .build_input_stream(
-                config,
-                move |data: &[i16], _: &_| {
-                    if is_recording.load(Ordering::Relaxed) {
-                        match write_mode {
-                            RecorderWriteMode::Inline => {
-                                if let Ok(mut w) = writer.lock() {
-                                    let _ = w.write_samples_i16(data);
-                                }
-                            }
-                            RecorderWriteMode::Buffered => {
-                                if let Some(tx) = &buffered_writer_tx {
-                                    let _ = tx.send(BufferedWriterCmd::Audio(
-                                        BufferedAudioChunk::I16(data.to_vec()),
-                                    ));
+                                RecorderWriteMode::BufferedMemory => {
+                                    if let Some(in_memory_audio) = &in_memory_audio {
+                                        if let Ok(mut buffer) = in_memory_audio.lock() {
+                                            buffer.append_f32(data);
+                                        }
+                                    }
                                 }
                             }
                         }
-                    }
-                },
-                err_fn,
-                None,
-            )
-            .map_err(|e| format!("Failed to build I16 stream: {}", e))?,
-        SampleFormat::U16 => device
-            .build_input_stream(
-                config,
-                move |data: &[u16], _: &_| {
-                    if is_recording.load(Ordering::Relaxed) {
-                        match write_mode {
-                            RecorderWriteMode::Inline => {
-                                if let Ok(mut w) = writer.lock() {
-                                    let _ = w.write_samples_u16(data);
+                    },
+                    err_fn,
+                    None,
+                )
+                .map_err(|e| format!("Failed to build F32 stream: {}", e))?
+        }
+        SampleFormat::I16 => {
+            let writer = writer.clone();
+            let in_memory_audio = in_memory_audio.clone();
+            device
+                .build_input_stream(
+                    config,
+                    move |data: &[i16], _: &_| {
+                        if is_recording.load(Ordering::Relaxed) {
+                            match write_mode {
+                                RecorderWriteMode::Inline => {
+                                    if let Some(writer) = &writer {
+                                        if let Ok(mut w) = writer.lock() {
+                                            let _ = w.write_samples_i16(data);
+                                        }
+                                    }
                                 }
-                            }
-                            RecorderWriteMode::Buffered => {
-                                if let Some(tx) = &buffered_writer_tx {
-                                    let _ = tx.send(BufferedWriterCmd::Audio(
-                                        BufferedAudioChunk::U16(data.to_vec()),
-                                    ));
+                                RecorderWriteMode::BufferedMemory => {
+                                    if let Some(in_memory_audio) = &in_memory_audio {
+                                        if let Ok(mut buffer) = in_memory_audio.lock() {
+                                            buffer.append_i16(data);
+                                        }
+                                    }
                                 }
                             }
                         }
-                    }
-                },
-                err_fn,
-                None,
-            )
-            .map_err(|e| format!("Failed to build U16 stream: {}", e))?,
+                    },
+                    err_fn,
+                    None,
+                )
+                .map_err(|e| format!("Failed to build I16 stream: {}", e))?
+        }
+        SampleFormat::U16 => {
+            let writer = writer.clone();
+            let in_memory_audio = in_memory_audio.clone();
+            device
+                .build_input_stream(
+                    config,
+                    move |data: &[u16], _: &_| {
+                        if is_recording.load(Ordering::Relaxed) {
+                            match write_mode {
+                                RecorderWriteMode::Inline => {
+                                    if let Some(writer) = &writer {
+                                        if let Ok(mut w) = writer.lock() {
+                                            let _ = w.write_samples_u16(data);
+                                        }
+                                    }
+                                }
+                                RecorderWriteMode::BufferedMemory => {
+                                    if let Some(in_memory_audio) = &in_memory_audio {
+                                        if let Ok(mut buffer) = in_memory_audio.lock() {
+                                            buffer.append_u16(data);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    err_fn,
+                    None,
+                )
+                .map_err(|e| format!("Failed to build U16 stream: {}", e))?
+        }
         _ => return Err(format!("Unsupported sample format: {:?}", sample_format)),
     };
 
