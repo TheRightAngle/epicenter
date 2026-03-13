@@ -100,11 +100,18 @@ describe('CpalRecorderServiceLive', () => {
 					return undefined;
 				case 'start_recording':
 					throw new Error('start boom');
+				case 'stop_recording':
+					return {
+						sampleRate: 16000,
+						channels: 1,
+						durationSeconds: 0,
+						filePath: '/tmp/rec-1.wav',
+					};
 				case 'close_recording_session':
 					return undefined;
 				default:
 					throw new Error(`Unexpected command ${command}`);
-			}
+				}
 		});
 
 		const { CpalRecorderServiceLive } = await loadCpalModule();
@@ -124,8 +131,10 @@ describe('CpalRecorderServiceLive', () => {
 			'enumerate_recording_devices',
 			'init_recording_session',
 			'start_recording',
+			'stop_recording',
 			'close_recording_session',
 		]);
+		expect(removeMock).toHaveBeenCalledWith('/tmp/rec-1.wav');
 	});
 
 	test('closes the session when stopRecording returns no file path', async () => {

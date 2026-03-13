@@ -60,72 +60,81 @@ export const recorder = {
 
 	startRecording: defineMutation({
 		mutationKey: recorderKeys.startRecording,
-		mutationFn: async ({ toastId }: { toastId: string }) => {
-			// Generate a unique recording ID that will serve as the file name
-			const recordingId = nanoid();
+			mutationFn: async ({ toastId }: { toastId: string }) => {
+				try {
+					// Generate a unique recording ID that will serve as the file name
+					const recordingId = nanoid();
 
-			// Store the recording ID so it can be reused when stopping
-			currentRecordingId = recordingId;
+					// Store the recording ID so it can be reused when stopping
+					currentRecordingId = recordingId;
 
-			// Prepare recording parameters based on which method we're using
-			const baseParams = {
-				recordingId,
-			};
+					// Prepare recording parameters based on which method we're using
+					const baseParams = {
+						recordingId,
+					};
 
-			// Resolve the output folder - use default if null
-			const outputFolder = window.__TAURI_INTERNALS__
-				? (settings.value['recording.cpal.outputFolder'] ??
-					(await PATHS.DB.RECORDINGS()))
-				: '';
+					// Resolve the output folder - use default if null
+					const outputFolder = window.__TAURI_INTERNALS__
+						? (settings.value['recording.cpal.outputFolder'] ??
+							(await PATHS.DB.RECORDINGS()))
+						: '';
 
-			const paramsMap = {
-				navigator: {
-					...baseParams,
-					method: 'navigator' as const,
-					selectedDeviceId: settings.value['recording.navigator.deviceId'],
-					bitrateKbps: settings.value['recording.navigator.bitrateKbps'],
-				},
-				ffmpeg: {
-					...baseParams,
-					method: 'ffmpeg' as const,
-					selectedDeviceId: settings.value['recording.ffmpeg.deviceId'],
-					globalOptions: settings.value['recording.ffmpeg.globalOptions'],
-					inputOptions: settings.value['recording.ffmpeg.inputOptions'],
-					outputOptions: settings.value['recording.ffmpeg.outputOptions'],
-					outputFolder,
-				},
-				cpal: {
-					...baseParams,
-					method: 'cpal' as const,
-					selectedDeviceId: settings.value['recording.cpal.deviceId'],
-					outputFolder,
-					sampleRate: settings.value['recording.cpal.sampleRate'],
-				},
-			} as const;
+					const paramsMap = {
+						navigator: {
+							...baseParams,
+							method: 'navigator' as const,
+							selectedDeviceId: settings.value['recording.navigator.deviceId'],
+							bitrateKbps: settings.value['recording.navigator.bitrateKbps'],
+						},
+						ffmpeg: {
+							...baseParams,
+							method: 'ffmpeg' as const,
+							selectedDeviceId: settings.value['recording.ffmpeg.deviceId'],
+							globalOptions: settings.value['recording.ffmpeg.globalOptions'],
+							inputOptions: settings.value['recording.ffmpeg.inputOptions'],
+							outputOptions: settings.value['recording.ffmpeg.outputOptions'],
+							outputFolder,
+						},
+						cpal: {
+							...baseParams,
+							method: 'cpal' as const,
+							selectedDeviceId: settings.value['recording.cpal.deviceId'],
+							outputFolder,
+							sampleRate: settings.value['recording.cpal.sampleRate'],
+						},
+					} as const;
 
-			const params =
-				paramsMap[
-					!window.__TAURI_INTERNALS__
-						? 'navigator'
-						: settings.value['recording.method']
-				];
+					const params =
+						paramsMap[
+							!window.__TAURI_INTERNALS__
+								? 'navigator'
+								: settings.value['recording.method']
+						];
 
-				const { data: deviceAcquisitionOutcome, error: startRecordingError } =
-					await recorderService().startRecording(params, {
-						sendStatus: (options) => notify.loading({ id: toastId, ...options }),
+					const { data: deviceAcquisitionOutcome, error: startRecordingError } =
+						await recorderService().startRecording(params, {
+							sendStatus: (options) => notify.loading({ id: toastId, ...options }),
 					});
 
 				if (startRecordingError) {
 					currentRecordingId = null;
+						return WhisperingErr({
+							title: '❌ Failed to start recording',
+							serviceError: startRecordingError,
+						});
+					}
+					return Ok(deviceAcquisitionOutcome);
+				} catch (error) {
+					currentRecordingId = null;
 					return WhisperingErr({
 						title: '❌ Failed to start recording',
-						serviceError: startRecordingError,
+						description:
+							error instanceof Error ? error.message : 'Unknown start recording error.',
 					});
-			}
-			return Ok(deviceAcquisitionOutcome);
-		},
-		onSettled: invalidateRecorderState,
-	}),
+				}
+			},
+			onSettled: invalidateRecorderState,
+		}),
 
 	stopRecording: defineMutation({
 		mutationKey: recorderKeys.stopRecording,

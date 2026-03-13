@@ -142,14 +142,14 @@ export async function getRecordingStream({
 	>
 > {
 	// Try preferred device first if specified
-	if (!selectedDeviceId) {
-		// No device selected
-		sendStatus({
-			title: '🔍 No Device Selected',
-			description:
-				"No worries! We'll find the best microphone for you automatically...",
-		});
-	} else {
+		if (!selectedDeviceId) {
+			// No device selected
+			sendStatus({
+				title: '🔍 No Device Selected',
+				description:
+					"We'll use an available microphone automatically...",
+			});
+		} else {
 		sendStatus({
 			title: '🎯 Connecting Device',
 			description:

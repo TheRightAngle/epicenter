@@ -42,6 +42,44 @@ const closeRecordingSession = async ({
 	}
 };
 
+const discardRecordingSession = async ({
+	sendStatus,
+}: {
+	sendStatus: (args: { title: string; description: string }) => void;
+}) => {
+	sendStatus({
+		title: '🛑 Discarding Recording',
+		description: 'Cleaning up the partial recording...',
+	});
+
+	try {
+		const { data: audioRecording, error: stopRecordingError } =
+			await invoke<AudioRecording>('stop_recording');
+		if (stopRecordingError) {
+			console.error(
+				'Failed to stop partially started recording:',
+				stopRecordingError,
+			);
+			return;
+		}
+
+		if (audioRecording.filePath) {
+			const { error: removeError } = await tryAsync({
+				try: () => remove(audioRecording.filePath!),
+				catch: (error) => RecorderError.FileDeleteFailed({ cause: error }),
+			});
+			if (removeError) {
+				console.error(
+					'Failed to delete partially started recording file:',
+					removeError,
+				);
+			}
+		}
+	} finally {
+		await closeRecordingSession({ sendStatus });
+	}
+};
+
 /**
  * Enumerates available recording devices from the system.
  */
@@ -195,7 +233,7 @@ export const CpalRecorderServiceLive: RecorderService = {
 			const { error: startRecordingError } =
 				await invoke<void>('start_recording');
 			if (startRecordingError) {
-				await closeRecordingSession({ sendStatus });
+				await discardRecordingSession({ sendStatus });
 				return RecorderError.StartFailed({ cause: startRecordingError });
 			}
 

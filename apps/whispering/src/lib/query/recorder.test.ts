@@ -166,4 +166,18 @@ describe('recorder.startRecording', () => {
 		expect(stopResult.error?.name).toBe('WhisperingError');
 		expect(stopResult.error?.title).toBe('❌ Missing recording ID');
 	});
+
+	test('clears stale currentRecordingId when start throws', async () => {
+		startRecordingMock.mockRejectedValue(new Error('start threw'));
+
+		const { recorder } = await loadRecorderModule();
+		const startResult = await recorder.startRecording({ toastId: 'toast-start' });
+		const stopResult = await recorder.stopRecording({ toastId: 'toast-stop' });
+
+		expect(startResult.error?.name).toBe('WhisperingError');
+		expect(startResult.error?.title).toBe('❌ Failed to start recording');
+		expect(startResult.error?.description).toBe('start threw');
+		expect(stopResult.error?.name).toBe('WhisperingError');
+		expect(stopResult.error?.title).toBe('❌ Missing recording ID');
+	});
 });
