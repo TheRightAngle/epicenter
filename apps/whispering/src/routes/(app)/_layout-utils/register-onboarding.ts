@@ -1,6 +1,7 @@
 import { rpc } from '$lib/query';
 import {
 	getSelectedTranscriptionService,
+	refreshTranscriptionServiceConfiguration,
 	isTranscriptionServiceConfigured,
 } from '$lib/settings/transcription-validation';
 
@@ -8,7 +9,7 @@ import {
  * Checks if the user has configured the necessary API keys/settings for their selected transcription service.
  * Shows an onboarding toast if configuration is missing.
  */
-export function registerOnboarding() {
+export async function registerOnboarding() {
 	const selectedService = getSelectedTranscriptionService();
 
 	// Check transcription service configuration
@@ -26,7 +27,12 @@ export function registerOnboarding() {
 		return;
 	}
 
-	if (!isTranscriptionServiceConfigured(selectedService)) {
+	const isConfigured =
+		selectedService.location === 'local'
+			? await refreshTranscriptionServiceConfiguration(selectedService)
+			: isTranscriptionServiceConfigured(selectedService);
+
+	if (!isConfigured) {
 		const missingConfig = (
 			{
 				cloud: `${selectedService.name} API key`,
