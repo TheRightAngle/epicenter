@@ -8,10 +8,16 @@
 	import X from '@lucide/svelte/icons/x';
 	import { join } from '@tauri-apps/api/path';
 	import { exists, mkdir, remove } from '@tauri-apps/plugin-fs';
+	import { onMount } from 'svelte';
 	import { toast } from 'svelte-sonner';
 	import { extractErrorMessage } from 'wellcrafted/error';
 	import { Ok, tryAsync } from 'wellcrafted/result';
 	import { PATHS } from '$lib/constants/paths';
+	import {
+		getSharedLocalModelDownloadState,
+		startSharedLocalModelDownload,
+		subscribeSharedLocalModelDownload,
+	} from '$lib/components/settings/local-model-downloads';
 	import type { LocalModelConfig } from '$lib/services/transcription/local/types';
 	import {
 		clearCachedLocalModelValidity,
@@ -33,6 +39,7 @@
 		| { type: 'active' };
 
 	let modelState = $state<ModelState>({ type: 'not-downloaded' });
+	const getSharedDownloadKey = () => `${model.engine}:${model.id}`;
 
 	/**
 	 * Calculates the destination path where this model will be downloaded and stored,
@@ -75,6 +82,22 @@
 	}
 
 	// Check model status on mount and when settings change
+	onMount(() =>
+		subscribeSharedLocalModelDownload(getSharedDownloadKey(), (downloadState) => {
+			if (downloadState.isDownloading) {
+				modelState = {
+					type: 'downloading',
+					progress: downloadState.progress,
+				};
+				return;
+			}
+
+			if (modelState.type === 'downloading') {
+				void refreshStatus();
+			}
+		}),
+	);
+
 	$effect(() => {
 		// React to settings changes for this engine
 		const settingsKey = `transcription.${model.engine}.modelPath` as const;
@@ -84,6 +107,17 @@
 	});
 
 	async function refreshStatus() {
+		const downloadState = getSharedLocalModelDownloadState(
+			getSharedDownloadKey(),
+		);
+		if (downloadState.isDownloading) {
+			modelState = {
+				type: 'downloading',
+				progress: downloadState.progress,
+			};
+			return;
+		}
+
 		await tryAsync({
 			try: async () => {
 				const path = await ensureModelDestinationPath();
@@ -112,19 +146,26 @@
 	}
 
 	async function downloadModel() {
-		if (modelState.type === 'downloading') return;
+		if (
+			getSharedLocalModelDownloadState(getSharedDownloadKey()).isDownloading
+		)
+			return;
 
-		modelState = { type: 'downloading', progress: 0 };
 		let path = '';
 
 		await tryAsync({
 			try: async () => {
 				path = await ensureModelDestinationPath();
 
-				// Check if already exists
-				await refreshStatus();
-				if (modelState.type === 'ready' || modelState.type === 'active') {
-					if (modelState.type === 'ready') {
+				const isAlreadyInstalled = await validateConfiguredLocalModelPath(
+					model.engine,
+					path,
+				);
+				if (isAlreadyInstalled) {
+					const settingsKey = `transcription.${model.engine}.modelPath` as const;
+					const isActive = settings.value[settingsKey] === path;
+					modelState = isActive ? { type: 'active' } : { type: 'ready' };
+					if (!isActive) {
 						const didActivate = await activateModel({
 							path,
 							showToast: false,
@@ -136,19 +177,22 @@
 					return;
 				}
 
-				switch (model.engine) {
-					case 'whispercpp':
-					case 'parakeet':
-					case 'moonshine':
-						await downloadLocalModelToDestination({
-							model,
-							destinationPath: path,
-							onProgress: (progress) => {
-								modelState = { type: 'downloading', progress };
-							},
-						});
-						break;
-				}
+				await startSharedLocalModelDownload(
+					getSharedDownloadKey(),
+					async (updateProgress) => {
+						switch (model.engine) {
+							case 'whispercpp':
+							case 'parakeet':
+							case 'moonshine':
+								await downloadLocalModelToDestination({
+									model,
+									destinationPath: path,
+									onProgress: updateProgress,
+								});
+								break;
+						}
+					},
+				);
 
 				const isValid = await validateConfiguredLocalModelPath(model.engine, path);
 				if (!isValid) {
