@@ -65,12 +65,14 @@ const discardRecordingSession = async ({
 const formatCleanupAwareError = ({
 	primaryError,
 	cleanupError,
+	cleanupAction,
 }: {
 	primaryError: { message?: string } | unknown;
 	cleanupError: { message?: string } | unknown;
+	cleanupAction: string;
 }) =>
 	new Error(
-		`${extractErrorMessage(primaryError)} Cleanup failed while discarding the partial recording: ${extractErrorMessage(cleanupError)}`,
+		`${extractErrorMessage(primaryError)} Cleanup failed while ${cleanupAction}: ${extractErrorMessage(cleanupError)}`,
 	);
 
 /**
@@ -216,14 +218,15 @@ export const CpalRecorderServiceLive: RecorderService = {
 			const { error: discardError } = await discardRecordingSession({
 				sendStatus,
 			});
-			return RecorderError.InitFailed({
-				cause: discardError
-					? formatCleanupAwareError({
-							primaryError: initRecordingSessionError,
-							cleanupError: discardError,
-						})
-					: initRecordingSessionError,
-			});
+				return RecorderError.InitFailed({
+					cause: discardError
+						? formatCleanupAwareError({
+								primaryError: initRecordingSessionError,
+								cleanupError: discardError,
+								cleanupAction: 'discarding the partial recording',
+							})
+						: initRecordingSessionError,
+				});
 		}
 
 		sendStatus({
@@ -236,15 +239,16 @@ export const CpalRecorderServiceLive: RecorderService = {
 			const { error: discardError } = await discardRecordingSession({
 				sendStatus,
 			});
-			return RecorderError.StartFailed({
-				cause: discardError
-					? formatCleanupAwareError({
-							primaryError: startRecordingError,
-							cleanupError: discardError,
-						})
-					: startRecordingError,
-			});
-		}
+				return RecorderError.StartFailed({
+					cause: discardError
+						? formatCleanupAwareError({
+								primaryError: startRecordingError,
+								cleanupError: discardError,
+								cleanupAction: 'discarding the partial recording',
+							})
+						: startRecordingError,
+				});
+			}
 
 		return Ok(deviceOutcome);
 	},
@@ -258,35 +262,53 @@ export const CpalRecorderServiceLive: RecorderService = {
 	stopRecording: async ({
 		sendStatus,
 	}): Promise<Result<Blob, RecorderError>> => {
-		try {
-			const { data: audioRecording, error: stopRecordingError } =
-				await invoke<AudioRecording>('stop_recording');
-			if (stopRecordingError) {
-				return RecorderError.StopFailed({ cause: stopRecordingError });
-			}
+		const { data: audioRecording, error: stopRecordingError } =
+			await invoke<AudioRecording>('stop_recording');
 
+		let primaryResult: Result<Blob, RecorderError>;
+		let consumedBackendStop = !stopRecordingError;
+
+		if (stopRecordingError) {
+			primaryResult = RecorderError.StopFailed({ cause: stopRecordingError });
+		} else {
 			const { filePath } = audioRecording;
-			// Desktop recorder should always write to a file
 			if (!filePath) {
-				return RecorderError.NoFilePath();
-			}
-
-			sendStatus({
-				title: '📁 Reading Recording',
-				description: 'Loading your recording from disk...',
-			});
-
-			const { data: blob, error: readRecordingFileError } =
-				await FsServiceLive.pathToBlob(filePath);
-			if (readRecordingFileError)
-				return RecorderError.ReadFileFailed({
-					cause: readRecordingFileError,
+				primaryResult = RecorderError.NoFilePath();
+			} else {
+				sendStatus({
+					title: '📁 Reading Recording',
+					description: 'Loading your recording from disk...',
 				});
 
-			return Ok(blob);
-		} finally {
-			await closeRecordingSession({ sendStatus });
+				const { data: blob, error: readRecordingFileError } =
+					await FsServiceLive.pathToBlob(filePath);
+				primaryResult = readRecordingFileError
+					? RecorderError.ReadFileFailed({
+							cause: readRecordingFileError,
+						})
+					: Ok(blob);
+			}
 		}
+
+		const { error: closeError } = await closeRecordingSession({ sendStatus });
+		if (closeError) {
+			if (primaryResult.error) {
+				return combineStopErrors({
+					primaryError: primaryResult.error,
+					closeError,
+					consumedBackendStop,
+				});
+			}
+			return RecorderError.StopFailed({
+				cause: formatCleanupAwareError({
+					primaryError: 'Recording stopped successfully.',
+					cleanupError: closeError,
+					cleanupAction: 'closing the recording session',
+				}),
+			});
+		}
+
+		return primaryResult;
 	},
 
 	/**
@@ -338,6 +360,38 @@ async function invoke<T>(command: string, args?: Record<string, unknown>) {
 	return tryAsync({
 		try: async () => await tauriInvoke<T>(command, args),
 		catch: (error) => RecorderError.InvokeFailed({ command, cause: error }),
+	});
+}
+
+function combineStopErrors({
+	primaryError,
+	closeError,
+	consumedBackendStop,
+}: {
+	primaryError: RecorderError;
+	closeError: RecorderError;
+	consumedBackendStop: boolean;
+}) {
+	const cleanupAction = consumedBackendStop
+		? 'closing the recording session after the backend stop was consumed'
+		: 'closing the recording session';
+
+	if (primaryError.message.startsWith('Unable to read recording file:')) {
+		return RecorderError.ReadFileFailed({
+			cause: formatCleanupAwareError({
+				primaryError,
+				cleanupError: closeError,
+				cleanupAction,
+			}),
+		});
+	}
+
+	return RecorderError.StopFailed({
+		cause: formatCleanupAwareError({
+			primaryError,
+			cleanupError: closeError,
+			cleanupAction,
+		}),
 	});
 }
 

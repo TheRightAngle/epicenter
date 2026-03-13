@@ -25,6 +25,10 @@ beforeEach(() => {
 	mock.restore();
 	invokeMock.mockReset();
 	pathToBlobMock.mockReset();
+	pathToBlobMock.mockResolvedValue({
+		data: new Blob(),
+		error: undefined,
+	});
 
 	mock.module('@tauri-apps/api/core', () => ({
 		invoke: invokeMock,
@@ -270,6 +274,78 @@ describe('CpalRecorderServiceLive', () => {
 
 		expect(result.error?.message).toContain('Unable to read recording file');
 		expect(commandLog()).toEqual(['stop_recording', 'close_recording_session']);
+	});
+
+	test('surfaces close_recording_session failure after a successful stop', async () => {
+		invokeMock.mockImplementation(async (command: string) => {
+			switch (command) {
+				case 'stop_recording':
+					return {
+						sampleRate: 16000,
+						channels: 1,
+						durationSeconds: 1,
+						filePath: '/tmp/rec.wav',
+					};
+				case 'close_recording_session':
+					throw new Error('close boom');
+				default:
+					throw new Error(`Unexpected command ${command}`);
+			}
+		});
+
+		const { CpalRecorderServiceLive } = await loadCpalModule();
+		const result = await CpalRecorderServiceLive.stopRecording({
+			sendStatus: () => undefined,
+		});
+
+		expect(result.error?.message).toContain('Failed to stop recording');
+		expect(result.error?.message).toContain('close boom');
+		expect(commandLog()).toEqual(['stop_recording', 'close_recording_session']);
+	});
+
+	test('treats post-stop read failures as terminal once the backend session is closed', async () => {
+		let stopCalls = 0;
+		invokeMock.mockImplementation(async (command: string) => {
+			switch (command) {
+				case 'stop_recording':
+					stopCalls += 1;
+					if (stopCalls === 1) {
+						return {
+							sampleRate: 16000,
+							channels: 1,
+							durationSeconds: 1,
+							filePath: '/tmp/rec.wav',
+						};
+					}
+					throw new Error('session already closed');
+				case 'close_recording_session':
+					return undefined;
+				default:
+					throw new Error(`Unexpected command ${command}`);
+			}
+		});
+		pathToBlobMock.mockResolvedValueOnce({
+			data: undefined,
+			error: new Error('read boom'),
+		});
+
+		const { CpalRecorderServiceLive } = await loadCpalModule();
+		const firstResult = await CpalRecorderServiceLive.stopRecording({
+			sendStatus: () => undefined,
+		});
+		const secondResult = await CpalRecorderServiceLive.stopRecording({
+			sendStatus: () => undefined,
+		});
+
+		expect(firstResult.error?.message).toContain('Unable to read recording file');
+		expect(secondResult.error?.message).toContain('Failed to stop recording');
+		expect(secondResult.error?.message).toContain('session already closed');
+		expect(commandLog()).toEqual([
+			'stop_recording',
+			'close_recording_session',
+			'stop_recording',
+			'close_recording_session',
+		]);
 	});
 
 	test('returns an error when cancel cleanup fails', async () => {

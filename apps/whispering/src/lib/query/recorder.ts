@@ -170,6 +170,9 @@ export const recorder = {
 				});
 
 			if (stopRecordingError) {
+				if (isDesktopCpalContext()) {
+					currentRecordingId = null;
+				}
 				return WhisperingErr({
 					title: '❌ Failed to stop recording',
 					serviceError: stopRecordingError,
@@ -242,4 +245,8 @@ async function recoverDesktopCpalRecordingId() {
 				error instanceof Error ? error.message : 'Unknown recording ID lookup error.',
 		};
 	}
+}
+
+function isDesktopCpalContext() {
+	return Boolean(window.__TAURI_INTERNALS__) && settings.value['recording.method'] === 'cpal';
 }

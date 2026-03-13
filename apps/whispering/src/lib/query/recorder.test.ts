@@ -204,7 +204,7 @@ describe('recorder.stopRecording', () => {
 		expect(invokeMock).toHaveBeenCalledWith('get_current_recording_id');
 	});
 
-	test('keeps a recovered recording id available until stop succeeds end-to-end', async () => {
+	test('treats recovered CPAL ids as terminal after post-stop failures', async () => {
 		invokeMock
 			.mockResolvedValueOnce('rec-backend')
 			.mockResolvedValueOnce(null);
@@ -226,9 +226,9 @@ describe('recorder.stopRecording', () => {
 		const secondStopResult = await recorder.stopRecording({ toastId: 'toast-stop-2' });
 
 		expect(firstStopResult.error?.title).toBe('❌ Failed to stop recording');
-		expect(secondStopResult.data?.recordingId).toBe('rec-backend');
-		expect(stopRecordingMock).toHaveBeenCalledTimes(2);
-		expect(invokeMock).toHaveBeenCalledTimes(1);
+		expect(secondStopResult.error?.title).toBe('❌ Missing recording ID');
+		expect(stopRecordingMock).toHaveBeenCalledTimes(1);
+		expect(invokeMock).toHaveBeenCalledTimes(2);
 	});
 
 	test('does not call backend stop when currentRecordingId is missing and cannot be recovered', async () => {
