@@ -101,6 +101,9 @@ export const Settings = type({
 	'transformation.simulateEnterAfterOutput': 'boolean = false',
 	'output.fastMode': 'boolean = false',
 	'system.minimizeToTray': 'boolean = false',
+	'notifications.toastVisibility': type
+		.enumerated('all', 'important-only', 'off')
+		.default('all'),
 
 	'system.alwaysOnTop': type
 		.enumerated(...ALWAYS_ON_TOP_MODES)
@@ -229,6 +232,9 @@ export const Settings = type({
 		'Systran/faster-distil-whisper-small.en',
 	),
 	'transcription.whispercpp.modelPath': "string = ''",
+	'transcription.parakeet.acceleration': type
+		.enumerated('cpu', 'directml')
+		.default('cpu'),
 	'transcription.parakeet.modelPath': "string = ''",
 	'transcription.moonshine.modelPath': "string = ''",
 

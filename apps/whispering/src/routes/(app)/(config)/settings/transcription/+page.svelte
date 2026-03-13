@@ -7,6 +7,7 @@
 	import * as Field from '@epicenter/ui/field';
 	import { Input } from '@epicenter/ui/input';
 	import { Link } from '@epicenter/ui/link';
+	import * as RadioGroup from '@epicenter/ui/radio-group';
 	import * as Select from '@epicenter/ui/select';
 	import { Textarea } from '@epicenter/ui/textarea';
 	import InfoIcon from '@lucide/svelte/icons/info';
@@ -23,6 +24,7 @@
 	import TranscriptionServiceSelect from '$lib/components/settings/TranscriptionServiceSelect.svelte';
 	import { SUPPORTED_LANGUAGES_OPTIONS } from '$lib/constants/languages';
 	import { TRANSCRIPTION } from '$lib/constants/transcription';
+	import { services } from '$lib/services';
 	import { MOONSHINE_MODELS } from '$lib/services/transcription/local/moonshine';
 	import { PARAKEET_MODELS } from '$lib/services/transcription/local/parakeet';
 	import { WHISPER_MODELS } from '$lib/services/transcription/local/whispercpp';
@@ -108,6 +110,13 @@
 			(i) => i.value === settings.value['transcription.outputLanguage'],
 		)?.label,
 	);
+
+	const isWindowsDesktop = $derived.by(() => {
+		if (typeof window === 'undefined' || !window.__TAURI_INTERNALS__) {
+			return false;
+		}
+		return services.os.type() === 'windows';
+	});
 </script>
 
 <svelte:head> <title>Transcription Settings - Whispering</title> </svelte:head>
@@ -526,6 +535,52 @@
 			<div class="space-y-4">
 				<!-- Parakeet Model Selector Component -->
 				{#if window.__TAURI_INTERNALS__}
+					{#if isWindowsDesktop}
+					<Field.Field>
+						<Field.Label>Acceleration</Field.Label>
+						<Field.Description>
+							Choose how Whispering runs the Parakeet model on Windows. GPU
+							mode uses the system&apos;s default DirectML adapter.
+						</Field.Description>
+						<RadioGroup.Root
+							bind:value={() =>
+								settings.value['transcription.parakeet.acceleration'],
+								(value) =>
+									settings.updateKey(
+										'transcription.parakeet.acceleration',
+										value,
+									)}
+						>
+							{#each [
+								{
+									value: 'cpu',
+									label: 'CPU',
+									description: 'Use the standard local CPU execution path.',
+								},
+								{
+									value: 'directml',
+									label: 'GPU (DirectML)',
+									description:
+										'Use Windows DirectML acceleration on the default GPU adapter.',
+								},
+							] as option (option.value)}
+								<Field.Label for="parakeet-acceleration-{option.value}">
+									<Field.Field orientation="horizontal">
+										<Field.Content>
+											<Field.Title>{option.label}</Field.Title>
+											<Field.Description>{option.description}</Field.Description>
+										</Field.Content>
+										<RadioGroup.Item
+											value={option.value}
+											id="parakeet-acceleration-{option.value}"
+										/>
+									</Field.Field>
+								</Field.Label>
+							{/each}
+						</RadioGroup.Root>
+					</Field.Field>
+					{/if}
+
 					<LocalModelSelector
 						models={PARAKEET_MODELS}
 						title="Parakeet Model"

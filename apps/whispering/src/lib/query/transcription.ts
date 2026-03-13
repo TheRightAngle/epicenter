@@ -265,9 +265,19 @@ export async function transcribeBlob(
 					// Pure Rust audio conversion now handles most formats without FFmpeg
 					// Only compressed formats (MP3, M4A) require FFmpeg, which will be
 					// handled automatically as a fallback in the Rust conversion pipeline
+					const parakeetAccelerationMode =
+						typeof window !== 'undefined' &&
+						window.__TAURI_INTERNALS__ &&
+						services.os.type() === 'windows'
+							? settings.value['transcription.parakeet.acceleration']
+							: 'cpu';
+
 					return await services.transcriptions.parakeet.transcribe(
 						audioToTranscribe,
-						{ modelPath: settings.value['transcription.parakeet.modelPath'] },
+						{
+							modelPath: settings.value['transcription.parakeet.modelPath'],
+							accelerationMode: parakeetAccelerationMode,
+						},
 					);
 				}
 				case 'moonshine': {

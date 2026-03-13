@@ -3,7 +3,7 @@ mod model_manager;
 
 use error::TranscriptionError;
 use log::{debug, error, info, warn};
-pub use model_manager::ModelManager;
+pub use model_manager::{ModelManager, ParakeetAccelerationMode};
 use std::io::Write;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
@@ -665,12 +665,14 @@ pub async fn transcribe_audio_whisper(
 pub async fn transcribe_audio_parakeet(
     audio_data: Vec<u8>,
     model_path: String,
+    acceleration_mode: String,
     model_manager: tauri::State<'_, ModelManager>,
 ) -> Result<String, TranscriptionError> {
     info!(
-        "[Transcription] starting Parakeet transcription: audio_bytes={} model_path={}",
+        "[Transcription] starting Parakeet transcription: audio_bytes={} model_path={} acceleration_mode={}",
         audio_data.len(),
-        model_path
+        model_path,
+        acceleration_mode,
     );
 
     // Convert audio to 16kHz mono format
@@ -693,10 +695,16 @@ pub async fn transcribe_audio_parakeet(
         return Ok(String::new());
     }
 
+    let acceleration_mode = ParakeetAccelerationMode::parse(&acceleration_mode)
+        .map_err(|e| TranscriptionError::GpuError { message: e })?;
+
     // Get or load the model using the persistent model manager
     let engine_arc = model_manager
-        .get_or_load_parakeet(PathBuf::from(&model_path))
-        .map_err(|e| TranscriptionError::ModelLoadError { message: e })?;
+        .get_or_load_parakeet(PathBuf::from(&model_path), acceleration_mode)
+        .map_err(|e| match acceleration_mode {
+            ParakeetAccelerationMode::DirectML => TranscriptionError::GpuError { message: e },
+            ParakeetAccelerationMode::Cpu => TranscriptionError::ModelLoadError { message: e },
+        })?;
     debug!("[Transcription] Parakeet model ready: {}", model_path);
 
     let params = ParakeetParams {
