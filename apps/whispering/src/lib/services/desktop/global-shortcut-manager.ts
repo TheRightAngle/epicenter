@@ -126,11 +126,18 @@ export const GlobalShortcutManagerLive = {
 		 * NOTE: We often get "RegisterEventHotKey failed for <key>" errors when
 		 * registering global shortcuts, even though the shortcut was valid and
 		 * registered successfully. This is a known issue with the underlying system
-		 * API on certain platforms. We gracefully return Ok(undefined) in these
-		 * cases to avoid propagating the error as an unnecessary error toast,
-		 * allowing the shortcut system to continue functioning for other valid keys.
+		 * API on certain platforms. Only suppress the error if the OS reports the
+		 * shortcut as registered despite the thrown error.
 		 */
-		if (registerError) return Ok(undefined);
+		if (registerError) {
+			const { data: isRegisteredDespiteError } = await tryAsync({
+				try: () => tauriIsRegistered(accelerator),
+				catch: () => Ok(false),
+			});
+			if (!isRegisteredDespiteError) {
+				return Err(registerError);
+			}
+		}
 
 		return Ok(undefined);
 	},
