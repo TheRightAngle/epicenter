@@ -236,6 +236,8 @@ impl RecorderState {
 
     /// Cancel recording - stop and delete the file
     pub fn cancel_recording(&mut self) -> Result<()> {
+        let file_path = self.file_path.clone();
+
         // Send stop command
         if let Some(tx) = &self.cmd_tx {
             let (reply_tx, reply_rx) = mpsc::channel();
@@ -243,14 +245,15 @@ impl RecorderState {
             let _ = reply_rx.recv(); // Wait for confirmation but ignore errors during cancel
         }
 
-        // Delete the file if it exists
-        if let Some(file_path) = &self.file_path {
-            std::fs::remove_file(file_path).ok(); // Ignore errors
-            debug!("Deleted recording file: {:?}", file_path);
-        }
-
         // Clear the session
         self.close_session()?;
+
+        // Delete the file if it exists
+        if let Some(file_path) = &file_path {
+            std::fs::remove_file(file_path)
+                .map_err(|e| format!("Failed to delete recording file {:?}: {}", file_path, e))?;
+            debug!("Deleted recording file: {:?}", file_path);
+        }
 
         Ok(())
     }
@@ -318,6 +321,39 @@ fn find_device(host: &cpal::Host, device_name: &str) -> Result<Device> {
     }
 
     Err(format!("Device '{}' not found", device_name))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RecorderState;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn cancel_recording_propagates_delete_failures_after_cleanup() {
+        let unique_suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_dir =
+            std::env::temp_dir().join(format!("whispering-cancel-recording-{unique_suffix}"));
+
+        fs::create_dir(&temp_dir).unwrap();
+
+        let mut recorder = RecorderState::new();
+        recorder.file_path = Some(temp_dir.clone());
+        recorder.sample_rate = 16_000;
+        recorder.channels = 1;
+
+        let error = recorder.cancel_recording().unwrap_err();
+
+        assert!(error.contains("Failed to delete recording file"));
+        assert!(recorder.file_path.is_none());
+        assert_eq!(recorder.sample_rate, 0);
+        assert_eq!(recorder.channels, 0);
+
+        fs::remove_dir_all(temp_dir).unwrap();
+    }
 }
 
 /// Get optimal configuration for voice recording

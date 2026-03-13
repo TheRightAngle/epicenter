@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
 import { QueryClient } from '@tanstack/query-core';
 import { createQueryFactories } from 'wellcrafted/query';
 
+const invokeMock = mock<any>(async () => null);
 const startRecordingMock = mock<any>(async () => ({
 	data: undefined,
 	error: undefined,
@@ -21,6 +22,7 @@ async function loadRecorderModule() {
 
 beforeEach(() => {
 	mock.restore();
+	invokeMock.mockReset();
 	startRecordingMock.mockReset();
 	stopRecordingMock.mockReset();
 	enumerateDevicesMock.mockReset();
@@ -39,9 +41,14 @@ beforeEach(() => {
 	enumerateDevicesMock.mockResolvedValue({ data: [], error: undefined });
 	getRecorderStateMock.mockResolvedValue({ data: 'IDLE', error: undefined });
 	recordingsPathMock.mockResolvedValue('/tmp/recordings');
+	invokeMock.mockResolvedValue(null);
 
 	const queryClient = new QueryClient();
 	const { defineMutation, defineQuery } = createQueryFactories(queryClient);
+
+	mock.module('@tauri-apps/api/core', () => ({
+		invoke: invokeMock,
+	}));
 
 	mock.module('$lib/services', () => ({
 		desktopServices: {
@@ -185,12 +192,25 @@ describe('recorder.startRecording', () => {
 });
 
 describe('recorder.stopRecording', () => {
-	test('does not call backend stop when currentRecordingId is missing', async () => {
+	test('recovers the active CPAL recording id from backend state before stopping', async () => {
+		invokeMock.mockResolvedValue('rec-backend');
+
+		const { recorder } = await loadRecorderModule();
+		const stopResult = await recorder.stopRecording({ toastId: 'toast-stop' });
+
+		expect(stopResult.data?.recordingId).toBe('rec-backend');
+		expect(stopResult.data?.blob).toBeInstanceOf(Blob);
+		expect(stopRecordingMock).toHaveBeenCalledTimes(1);
+		expect(invokeMock).toHaveBeenCalledWith('get_current_recording_id');
+	});
+
+	test('does not call backend stop when currentRecordingId is missing and cannot be recovered', async () => {
 		const { recorder } = await loadRecorderModule();
 		const stopResult = await recorder.stopRecording({ toastId: 'toast-stop' });
 
 		expect(stopResult.error?.name).toBe('WhisperingError');
 		expect(stopResult.error?.title).toBe('❌ Missing recording ID');
 		expect(stopRecordingMock).not.toHaveBeenCalled();
+		expect(invokeMock).toHaveBeenCalledWith('get_current_recording_id');
 	});
 });

@@ -1,4 +1,5 @@
 import { nanoid } from 'nanoid/non-secure';
+import { invoke as tauriInvoke } from '@tauri-apps/api/core';
 import { Ok } from 'wellcrafted/result';
 import type { WhisperingRecordingState } from '$lib/constants/audio';
 import { PATHS } from '$lib/constants/paths';
@@ -139,7 +140,8 @@ export const recorder = {
 	stopRecording: defineMutation({
 		mutationKey: recorderKeys.stopRecording,
 		mutationFn: async ({ toastId }: { toastId: string }) => {
-			const recordingId = currentRecordingId;
+			const recordingId =
+				currentRecordingId ?? (await recoverDesktopCpalRecordingId());
 			if (!recordingId) {
 				return WhisperingErr({
 					title: '❌ Missing recording ID',
@@ -206,4 +208,15 @@ export function recorderService() {
 		cpal: desktopServices.cpalRecorder,
 	};
 	return recorderMap[settings.value['recording.method']];
+}
+
+async function recoverDesktopCpalRecordingId() {
+	if (!window.__TAURI_INTERNALS__) return null;
+	if (settings.value['recording.method'] !== 'cpal') return null;
+
+	try {
+		return await tauriInvoke<string | null>('get_current_recording_id');
+	} catch {
+		return null;
+	}
 }
