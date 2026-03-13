@@ -99,6 +99,9 @@ export const Settings = type({
 	'transformation.copyToClipboardOnSuccess': 'boolean = true',
 	'transformation.writeToCursorOnSuccess': 'boolean = false',
 	'transformation.simulateEnterAfterOutput': 'boolean = false',
+	'notifications.toastVisibility': type
+		.enumerated('all', 'important-only', 'off')
+		.default('all'),
 
 	'system.alwaysOnTop': type
 		.enumerated(...ALWAYS_ON_TOP_MODES)

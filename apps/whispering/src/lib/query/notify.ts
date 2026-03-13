@@ -1,9 +1,12 @@
 import { Ok } from 'wellcrafted/result';
+import { nanoid } from 'nanoid/non-secure';
 import { dev } from '$app/environment';
 import { notificationLog } from '$lib/components/NotificationLog.svelte';
 import { defineMutation } from '$lib/query/client';
 import { services } from '$lib/services';
 import type { UnifiedNotificationOptions } from '$lib/services/notifications/types';
+import { settings } from '$lib/state/settings.svelte';
+import { shouldShowToast } from './toast-visibility';
 
 // Create a mutation for a specific variant
 const createNotifyMutation = (
@@ -40,8 +43,12 @@ const createNotifyMutation = (
 			// Add to notification log
 			notificationLog.addLog(fullOptions);
 
-			// Always show toast
-			const toastId = services.toast.show(fullOptions);
+			const toastId = shouldShowToast(
+				settings.value['notifications.toastVisibility'],
+				variant,
+			)
+				? services.toast.show(fullOptions)
+				: fullOptions.id ?? nanoid();
 
 			// Also show OS notification (system notifications or browser/extension notifications)
 			// We exclude 'loading' notifications because:

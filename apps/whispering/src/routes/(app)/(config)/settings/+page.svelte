@@ -25,6 +25,12 @@
 		{ value: '100', label: '100 Recordings' },
 	];
 
+	const toastVisibilityItems = [
+		{ value: 'all', label: 'All toasts' },
+		{ value: 'important-only', label: 'Important only' },
+		{ value: 'off', label: 'Off' },
+	];
+
 	const retentionLabel = $derived(
 		retentionItems.find(
 			(i) => i.value === settings.value['database.recordingRetentionStrategy'],
@@ -34,6 +40,12 @@
 	const maxRecordingLabel = $derived(
 		maxRecordingItems.find(
 			(i) => i.value === settings.value['database.maxRecordingCount'],
+		)?.label,
+	);
+
+	const toastVisibilityLabel = $derived(
+		toastVisibilityItems.find(
+			(i) => i.value === settings.value['notifications.toastVisibility'],
 		)?.label,
 	);
 
@@ -162,6 +174,29 @@
 				{/if}
 			</Field.Group>
 		</Field.Set>
+
+		<Field.Separator />
+
+		<Field.Field>
+			<Field.Label for="toast-visibility">Toast Visibility</Field.Label>
+			<Field.Description>
+				Controls in-app toasts only. System notifications stay the same.
+			</Field.Description>
+			<Select.Root
+				type="single"
+				bind:value={() => settings.value['notifications.toastVisibility'],
+					(v) => settings.updateKey('notifications.toastVisibility', v)}
+			>
+				<Select.Trigger id="toast-visibility" class="w-full">
+					{toastVisibilityLabel ?? 'Select toast visibility'}
+				</Select.Trigger>
+				<Select.Content>
+					{#each toastVisibilityItems as item}
+						<Select.Item value={item.value} label={item.label} />
+					{/each}
+				</Select.Content>
+			</Select.Root>
+		</Field.Field>
 
 		<Field.Separator />
 
