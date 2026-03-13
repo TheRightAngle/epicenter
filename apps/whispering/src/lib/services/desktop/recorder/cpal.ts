@@ -1,5 +1,4 @@
 import { invoke as tauriInvoke } from '@tauri-apps/api/core';
-import { remove } from '@tauri-apps/plugin-fs';
 import { Err, Ok, type Result, tryAsync } from 'wellcrafted/result';
 import type {
 	CancelRecordingResult,
@@ -26,6 +25,64 @@ type AudioRecording = {
 	durationSeconds: number;
 	filePath?: string;
 };
+
+const closeRecordingSession = async ({
+	sendStatus,
+}: {
+	sendStatus: (args: { title: string; description: string }) => void;
+}): Promise<Result<void, RecorderError>> => {
+	sendStatus({
+		title: '🔄 Closing Session',
+		description: 'Cleaning up recording resources...',
+	});
+	const { error: closeError } = await invoke<void>('close_recording_session');
+	if (closeError) {
+		console.error('Failed to close recording session:', closeError);
+		return Err(closeError);
+	}
+	return Ok(undefined);
+};
+
+const discardRecordingSession = async ({
+	sendStatus,
+}: {
+	sendStatus: (args: { title: string; description: string }) => void;
+}): Promise<Result<void, RecorderError>> => {
+	sendStatus({
+		title: '🛑 Discarding Recording',
+		description: 'Cleaning up the partial recording...',
+	});
+
+	const { error: cancelError } = await invoke<void>('cancel_recording');
+	if (cancelError) {
+		console.error('Failed to cancel recording session:', cancelError);
+		const { error: closeError } = await closeRecordingSession({ sendStatus });
+		if (closeError) {
+			return RecorderError.StopFailed({
+				cause: formatCleanupAwareError({
+					primaryError: cancelError,
+					cleanupError: closeError,
+					cleanupAction: 'closing the recording session after cancel_recording failed',
+				}),
+			});
+		}
+		return Err(cancelError);
+	}
+	return Ok(undefined);
+};
+
+const formatCleanupAwareError = ({
+	primaryError,
+	cleanupError,
+	cleanupAction,
+}: {
+	primaryError: { message?: string } | unknown;
+	cleanupError: { message?: string } | unknown;
+	cleanupAction: string;
+}) =>
+	new Error(
+		`${extractErrorMessage(primaryError)} Cleanup failed while ${cleanupAction}: ${extractErrorMessage(cleanupError)}`,
+	);
 
 /**
  * Enumerates available recording devices from the system.
@@ -111,8 +168,7 @@ export const CpalRecorderServiceLive: RecorderService = {
 			if (!selectedDeviceId) {
 				sendStatus({
 					title: '🔍 No Device Selected',
-					description:
-						"No worries! We'll find the best microphone for you automatically...",
+					description: "We'll use an available microphone automatically...",
 				});
 				return Ok({
 					outcome: 'fallback',
@@ -167,20 +223,41 @@ export const CpalRecorderServiceLive: RecorderService = {
 				sampleRate: sampleRateNum,
 			},
 		);
-		if (initRecordingSessionError)
-			return RecorderError.InitFailed({
-				cause: initRecordingSessionError,
+		if (initRecordingSessionError) {
+			const { error: discardError } = await discardRecordingSession({
+				sendStatus,
 			});
+				return RecorderError.InitFailed({
+					cause: discardError
+						? formatCleanupAwareError({
+								primaryError: initRecordingSessionError,
+								cleanupError: discardError,
+								cleanupAction: 'discarding the partial recording',
+							})
+						: initRecordingSessionError,
+				});
+		}
 
 		sendStatus({
 			title: '🎙️ Starting Recording',
 			description:
 				'Recording session initialized, now starting to capture audio...',
 		});
-		const { error: startRecordingError } =
-			await invoke<void>('start_recording');
-		if (startRecordingError)
-			return RecorderError.StartFailed({ cause: startRecordingError });
+		const { error: startRecordingError } = await invoke<void>('start_recording');
+		if (startRecordingError) {
+			const { error: discardError } = await discardRecordingSession({
+				sendStatus,
+			});
+				return RecorderError.StartFailed({
+					cause: discardError
+						? formatCleanupAwareError({
+								primaryError: startRecordingError,
+								cleanupError: discardError,
+								cleanupAction: 'discarding the partial recording',
+							})
+						: startRecordingError,
+				});
+			}
 
 		return Ok(deviceOutcome);
 	},
@@ -196,41 +273,51 @@ export const CpalRecorderServiceLive: RecorderService = {
 	}): Promise<Result<Blob, RecorderError>> => {
 		const { data: audioRecording, error: stopRecordingError } =
 			await invoke<AudioRecording>('stop_recording');
+
+		let primaryResult: Result<Blob, RecorderError>;
+		let consumedBackendStop = !stopRecordingError;
+
 		if (stopRecordingError) {
-			return RecorderError.StopFailed({ cause: stopRecordingError });
+			primaryResult = RecorderError.StopFailed({ cause: stopRecordingError });
+		} else {
+			const { filePath } = audioRecording;
+			if (!filePath) {
+				primaryResult = RecorderError.NoFilePath();
+			} else {
+				sendStatus({
+					title: '📁 Reading Recording',
+					description: 'Loading your recording from disk...',
+				});
+
+				const { data: blob, error: readRecordingFileError } =
+					await FsServiceLive.pathToBlob(filePath);
+				primaryResult = readRecordingFileError
+					? RecorderError.ReadFileFailed({
+							cause: readRecordingFileError,
+						})
+					: Ok(blob);
+			}
 		}
 
-		const { filePath } = audioRecording;
-		// Desktop recorder should always write to a file
-		if (!filePath) {
-			return RecorderError.NoFilePath();
-		}
-		// audioRecording is now AudioRecordingWithFile
-
-		// Read the WAV file from disk
-		sendStatus({
-			title: '📁 Reading Recording',
-			description: 'Loading your recording from disk...',
-		});
-
-		const { data: blob, error: readRecordingFileError } =
-			await FsServiceLive.pathToBlob(filePath);
-		if (readRecordingFileError)
-			return RecorderError.ReadFileFailed({
-				cause: readRecordingFileError,
-			});
-		// Close the recording session after stopping
-		sendStatus({
-			title: '🔄 Closing Session',
-			description: 'Cleaning up recording resources...',
-		});
-		const { error: closeError } = await invoke<void>('close_recording_session');
+		const { error: closeError } = await closeRecordingSession({ sendStatus });
 		if (closeError) {
-			// Log but don't fail the stop operation
-			console.error('Failed to close recording session:', closeError);
+			if (primaryResult.error) {
+				return combineStopErrors({
+					primaryError: primaryResult.error,
+					closeError,
+					consumedBackendStop,
+				});
+			}
+			return RecorderError.StopFailed({
+				cause: formatCleanupAwareError({
+					primaryError: 'Recording stopped successfully.',
+					cleanupError: closeError,
+					cleanupAction: 'closing the recording session',
+				}),
+			});
 		}
 
-		return Ok(blob);
+		return primaryResult;
 	},
 
 	/**
@@ -262,34 +349,9 @@ export const CpalRecorderServiceLive: RecorderService = {
 				'Safely stopping your recording and cleaning up resources...',
 		});
 
-		// First get the recording data to know if there's a file to delete
-		const { data: audioRecording } =
-			await invoke<AudioRecording>('stop_recording');
-
-		// If there's a file path, delete the file using Tauri FS plugin
-		if (audioRecording?.filePath) {
-			const { filePath } = audioRecording;
-			const { error: removeError } = await tryAsync({
-				try: () => remove(filePath),
-				catch: (error) => RecorderError.FileDeleteFailed({ cause: error }),
-			});
-			if (removeError)
-				sendStatus({
-					title: '❌ Error Deleting Recording File',
-					description:
-						"We couldn't delete the recording file. Continuing with the cancellation process...",
-				});
-		}
-
-		// Close the recording session after cancelling
-		sendStatus({
-			title: '🔄 Closing Session',
-			description: 'Cleaning up recording resources...',
-		});
-		const { error: closeError } = await invoke<void>('close_recording_session');
-		if (closeError) {
-			// Log but don't fail the cancel operation
-			console.error('Failed to close recording session:', closeError);
+		const { error: discardError } = await discardRecordingSession({ sendStatus });
+		if (discardError) {
+			return Err(discardError);
 		}
 
 		return Ok({ status: 'cancelled' });
@@ -308,4 +370,54 @@ async function invoke<T>(command: string, args?: Record<string, unknown>) {
 		try: async () => await tauriInvoke<T>(command, args),
 		catch: (error) => RecorderError.InvokeFailed({ command, cause: error }),
 	});
+}
+
+function combineStopErrors({
+	primaryError,
+	closeError,
+	consumedBackendStop,
+}: {
+	primaryError: RecorderError;
+	closeError: RecorderError;
+	consumedBackendStop: boolean;
+}) {
+	const cleanupAction = consumedBackendStop
+		? 'closing the recording session after the backend stop was consumed'
+		: 'closing the recording session';
+
+	if (primaryError.message.startsWith('Unable to read recording file:')) {
+		return RecorderError.ReadFileFailed({
+			cause: formatCleanupAwareError({
+				primaryError,
+				cleanupError: closeError,
+				cleanupAction,
+			}),
+		});
+	}
+
+	return RecorderError.StopFailed({
+		cause: formatCleanupAwareError({
+			primaryError,
+			cleanupError: closeError,
+			cleanupAction,
+		}),
+	});
+}
+
+function extractErrorMessage(cause: { message?: string } | unknown) {
+	if (cause instanceof Error) return cause.message;
+	if (typeof cause === 'object' && cause && 'message' in cause) {
+		return String(cause.message);
+	}
+	if (
+		typeof cause === 'object' &&
+		cause &&
+		'error' in cause &&
+		typeof cause.error === 'object' &&
+		cause.error &&
+		'message' in cause.error
+	) {
+		return String(cause.error.message);
+	}
+	return String(cause);
 }

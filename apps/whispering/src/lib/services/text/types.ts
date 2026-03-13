@@ -57,6 +57,7 @@ export type TextService = {
 	 */
 	writeToCursor: (
 		text: string,
+		options?: { preserveClipboard?: boolean },
 	) => MaybePromise<Result<void, TextError | WhisperingError>>;
 
 	/**

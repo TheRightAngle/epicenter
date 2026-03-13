@@ -1,11 +1,15 @@
 import { nanoid } from 'nanoid/non-secure';
+import { invoke as tauriInvoke } from '@tauri-apps/api/core';
 import { Ok } from 'wellcrafted/result';
 import type { WhisperingRecordingState } from '$lib/constants/audio';
 import { PATHS } from '$lib/constants/paths';
 import { defineMutation, defineQuery, queryClient } from '$lib/query/client';
 import { WhisperingErr } from '$lib/result';
 import { desktopServices, services } from '$lib/services';
+import { getFileExtensionFromFfmpegOptions } from '$lib/services/desktop/recorder/ffmpeg';
+import type { Device } from '$lib/services/types';
 import { settings } from '$lib/state/settings.svelte';
+import { disambiguateDeviceLabels } from '../services/device-labels';
 import { notify } from './notify';
 
 const recorderKeys = {
@@ -21,9 +25,33 @@ const recorderKeys = {
  * This ensures the same ID is used from recording start through database save.
  */
 let currentRecordingId: string | null = null;
+let currentRecordingSourceFilePath: string | null = null;
 
 const invalidateRecorderState = () =>
 	queryClient.invalidateQueries({ queryKey: recorderKeys.recorderState });
+
+async function resolveDesktopSourceFilePath(
+	recordingId: string,
+): Promise<string | null> {
+	if (!window.__TAURI_INTERNALS__) return null;
+	const { join } = await import('@tauri-apps/api/path');
+
+	const outputFolder =
+		settings.value['recording.cpal.outputFolder'] ?? (await PATHS.DB.RECORDINGS());
+
+	switch (settings.value['recording.method']) {
+		case 'cpal':
+			return await join(outputFolder, `${recordingId}.wav`);
+		case 'ffmpeg': {
+			const extension = getFileExtensionFromFfmpegOptions(
+				settings.value['recording.ffmpeg.outputOptions'],
+			);
+			return await join(outputFolder, `${recordingId}.${extension}`);
+		}
+		case 'navigator':
+			return null;
+	}
+}
 
 export const recorder = {
 	// Query that enumerates available recording devices with labels
@@ -37,7 +65,19 @@ export const recorder = {
 					serviceError: error,
 				});
 			}
-			return Ok(data);
+
+			let richerDevices: Device[] | undefined;
+
+			if (
+				window.__TAURI_INTERNALS__ &&
+				settings.value['recording.method'] !== 'navigator'
+			) {
+				const { data: navigatorDevices } =
+					await services.navigatorRecorder.enumerateDevices();
+				richerDevices = navigatorDevices ?? undefined;
+			}
+
+			return Ok(disambiguateDeviceLabels(data, richerDevices));
 		},
 	}),
 
@@ -61,67 +101,81 @@ export const recorder = {
 	startRecording: defineMutation({
 		mutationKey: recorderKeys.startRecording,
 		mutationFn: async ({ toastId }: { toastId: string }) => {
-			// Generate a unique recording ID that will serve as the file name
-			const recordingId = nanoid();
+			try {
+				// Generate a unique recording ID that will serve as the file name
+				const recordingId = nanoid();
 
-			// Store the recording ID so it can be reused when stopping
-			currentRecordingId = recordingId;
+				// Store the recording ID so it can be reused when stopping
+				currentRecordingId = recordingId;
+				currentRecordingSourceFilePath =
+					await resolveDesktopSourceFilePath(recordingId);
 
-			// Prepare recording parameters based on which method we're using
-			const baseParams = {
-				recordingId,
-			};
+				// Prepare recording parameters based on which method we're using
+				const baseParams = {
+					recordingId,
+				};
 
-			// Resolve the output folder - use default if null
-			const outputFolder = window.__TAURI_INTERNALS__
-				? (settings.value['recording.cpal.outputFolder'] ??
-					(await PATHS.DB.RECORDINGS()))
-				: '';
+				// Resolve the output folder - use default if null
+				const outputFolder = window.__TAURI_INTERNALS__
+					? (settings.value['recording.cpal.outputFolder'] ??
+						(await PATHS.DB.RECORDINGS()))
+					: '';
 
-			const paramsMap = {
-				navigator: {
-					...baseParams,
-					method: 'navigator' as const,
-					selectedDeviceId: settings.value['recording.navigator.deviceId'],
-					bitrateKbps: settings.value['recording.navigator.bitrateKbps'],
-				},
-				ffmpeg: {
-					...baseParams,
-					method: 'ffmpeg' as const,
-					selectedDeviceId: settings.value['recording.ffmpeg.deviceId'],
-					globalOptions: settings.value['recording.ffmpeg.globalOptions'],
-					inputOptions: settings.value['recording.ffmpeg.inputOptions'],
-					outputOptions: settings.value['recording.ffmpeg.outputOptions'],
-					outputFolder,
-				},
-				cpal: {
-					...baseParams,
-					method: 'cpal' as const,
-					selectedDeviceId: settings.value['recording.cpal.deviceId'],
-					outputFolder,
-					sampleRate: settings.value['recording.cpal.sampleRate'],
-				},
-			} as const;
+				const paramsMap = {
+					navigator: {
+						...baseParams,
+						method: 'navigator' as const,
+						selectedDeviceId: settings.value['recording.navigator.deviceId'],
+						bitrateKbps: settings.value['recording.navigator.bitrateKbps'],
+					},
+					ffmpeg: {
+						...baseParams,
+						method: 'ffmpeg' as const,
+						selectedDeviceId: settings.value['recording.ffmpeg.deviceId'],
+						globalOptions: settings.value['recording.ffmpeg.globalOptions'],
+						inputOptions: settings.value['recording.ffmpeg.inputOptions'],
+						outputOptions: settings.value['recording.ffmpeg.outputOptions'],
+						outputFolder,
+					},
+					cpal: {
+						...baseParams,
+						method: 'cpal' as const,
+						selectedDeviceId: settings.value['recording.cpal.deviceId'],
+						outputFolder,
+						sampleRate: settings.value['recording.cpal.sampleRate'],
+					},
+				} as const;
 
-			const params =
-				paramsMap[
-					!window.__TAURI_INTERNALS__
-						? 'navigator'
-						: settings.value['recording.method']
-				];
+				const params =
+					paramsMap[
+						!window.__TAURI_INTERNALS__
+							? 'navigator'
+							: settings.value['recording.method']
+					];
 
-			const { data: deviceAcquisitionOutcome, error: startRecordingError } =
-				await recorderService().startRecording(params, {
-					sendStatus: (options) => notify.loading({ id: toastId, ...options }),
-				});
+				const { data: deviceAcquisitionOutcome, error: startRecordingError } =
+					await recorderService().startRecording(params, {
+						sendStatus: (options) => notify.loading({ id: toastId, ...options }),
+					});
 
-			if (startRecordingError) {
+				if (startRecordingError) {
+					currentRecordingId = null;
+					currentRecordingSourceFilePath = null;
+					return WhisperingErr({
+						title: '❌ Failed to start recording',
+						serviceError: startRecordingError,
+					});
+				}
+				return Ok(deviceAcquisitionOutcome);
+			} catch (error) {
+				currentRecordingId = null;
+				currentRecordingSourceFilePath = null;
 				return WhisperingErr({
 					title: '❌ Failed to start recording',
-					serviceError: startRecordingError,
+					description:
+						error instanceof Error ? error.message : 'Unknown start recording error.',
 				});
 			}
-			return Ok(deviceAcquisitionOutcome);
 		},
 		onSettled: invalidateRecorderState,
 	}),
@@ -129,27 +183,23 @@ export const recorder = {
 	stopRecording: defineMutation({
 		mutationKey: recorderKeys.stopRecording,
 		mutationFn: async ({ toastId }: { toastId: string }) => {
-			const { data: blob, error: stopRecordingError } =
-				await recorderService().stopRecording({
-					sendStatus: (options) => notify.loading({ id: toastId, ...options }),
-				});
-
-			if (stopRecordingError) {
-				// Reset recording ID on error
-				currentRecordingId = null;
-				return WhisperingErr({
-					title: '❌ Failed to stop recording',
-					serviceError: stopRecordingError,
-				});
-			}
-
-			// Retrieve the stored recording ID
-			const recordingId = currentRecordingId;
-
-			// Reset the recording ID now that we've retrieved it
-			currentRecordingId = null;
-
+			let recordingId = currentRecordingId;
 			if (!recordingId) {
+				const {
+					recordingId: recoveredRecordingId,
+					lookupError,
+				} = await recoverDesktopCpalRecordingId();
+				if (lookupError) {
+					return WhisperingErr({
+						title: '❌ Failed to recover recording ID',
+						description: lookupError,
+					});
+				}
+				recordingId = recoveredRecordingId;
+			}
+			if (!recordingId) {
+				currentRecordingId = null;
+				currentRecordingSourceFilePath = null;
 				return WhisperingErr({
 					title: '❌ Missing recording ID',
 					description:
@@ -157,8 +207,32 @@ export const recorder = {
 				});
 			}
 
+			currentRecordingId = recordingId;
+			if (!currentRecordingSourceFilePath) {
+				currentRecordingSourceFilePath =
+					await resolveDesktopSourceFilePath(recordingId);
+			}
+			const { data: blob, error: stopRecordingError } =
+				await recorderService().stopRecording({
+					sendStatus: (options) => notify.loading({ id: toastId, ...options }),
+				});
+
+			if (stopRecordingError) {
+				if (isDesktopCpalContext()) {
+					currentRecordingId = null;
+					currentRecordingSourceFilePath = null;
+				}
+				return WhisperingErr({
+					title: '❌ Failed to stop recording',
+					serviceError: stopRecordingError,
+				});
+			}
+
+			const sourceFilePath = currentRecordingSourceFilePath;
+			currentRecordingId = null;
+			currentRecordingSourceFilePath = null;
 			// Return both blob and recordingId so they can be used together
-			return Ok({ blob, recordingId });
+			return Ok({ blob, recordingId, sourceFilePath });
 		},
 		onSettled: invalidateRecorderState,
 	}),
@@ -173,6 +247,7 @@ export const recorder = {
 
 			// Reset recording ID when canceling
 			currentRecordingId = null;
+			currentRecordingSourceFilePath = null;
 
 			if (cancelRecordingError) {
 				return WhisperingErr({
@@ -200,4 +275,30 @@ export function recorderService() {
 		cpal: desktopServices.cpalRecorder,
 	};
 	return recorderMap[settings.value['recording.method']];
+}
+
+async function recoverDesktopCpalRecordingId() {
+	if (!window.__TAURI_INTERNALS__) {
+		return { recordingId: null, lookupError: null };
+	}
+	if (settings.value['recording.method'] !== 'cpal') {
+		return { recordingId: null, lookupError: null };
+	}
+
+	try {
+		return {
+			recordingId: await tauriInvoke<string | null>('get_current_recording_id'),
+			lookupError: null,
+		};
+	} catch (error) {
+		return {
+			recordingId: null,
+			lookupError:
+				error instanceof Error ? error.message : 'Unknown recording ID lookup error.',
+		};
+	}
+}
+
+function isDesktopCpalContext() {
+	return Boolean(window.__TAURI_INTERNALS__) && settings.value['recording.method'] === 'cpal';
 }

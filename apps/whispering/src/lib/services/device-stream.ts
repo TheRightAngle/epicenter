@@ -12,6 +12,7 @@ import type {
 	UpdateStatusMessageFn,
 } from '$lib/services/types';
 import { asDeviceIdentifier } from '$lib/services/types';
+import { disambiguateDeviceLabels } from './device-labels';
 
 const DeviceStreamError = defineErrors({
 	PermissionDenied: ({ cause }: { cause: unknown }) => ({
@@ -88,10 +89,12 @@ export async function enumerateDevices(): Promise<
 				(device) => device.kind === 'audioinput',
 			);
 			// On Web: Return Device objects with both ID and label
-			return audioInputDevices.map((device) => ({
-				id: asDeviceIdentifier(device.deviceId),
-				label: device.label,
-			}));
+			return disambiguateDeviceLabels(
+				audioInputDevices.map((device) => ({
+					id: asDeviceIdentifier(device.deviceId),
+					label: device.label,
+				})),
+			);
 		},
 		catch: (error) => DeviceStreamError.PermissionDenied({ cause: error }),
 	});
@@ -142,14 +145,14 @@ export async function getRecordingStream({
 	>
 > {
 	// Try preferred device first if specified
-	if (!selectedDeviceId) {
-		// No device selected
-		sendStatus({
-			title: '🔍 No Device Selected',
-			description:
-				"No worries! We'll find the best microphone for you automatically...",
-		});
-	} else {
+		if (!selectedDeviceId) {
+			// No device selected
+			sendStatus({
+				title: '🔍 No Device Selected',
+				description:
+					"We'll use an available microphone automatically...",
+			});
+		} else {
 		sendStatus({
 			title: '🎯 Connecting Device',
 			description:

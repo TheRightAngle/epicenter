@@ -7,22 +7,17 @@
 	import Download from '@lucide/svelte/icons/download';
 	import X from '@lucide/svelte/icons/x';
 	import { join } from '@tauri-apps/api/path';
-	import {
-		exists,
-		mkdir,
-		remove,
-		stat,
-		writeFile,
-	} from '@tauri-apps/plugin-fs';
-	import { fetch } from '@tauri-apps/plugin-http';
+	import { exists, mkdir, remove } from '@tauri-apps/plugin-fs';
 	import { toast } from 'svelte-sonner';
 	import { extractErrorMessage } from 'wellcrafted/error';
 	import { Ok, tryAsync } from 'wellcrafted/result';
 	import { PATHS } from '$lib/constants/paths';
+	import type { LocalModelConfig } from '$lib/services/transcription/local/types';
 	import {
-		isModelFileSizeValid,
-		type LocalModelConfig,
-	} from '$lib/services/transcription/local/types';
+		clearCachedLocalModelValidity,
+		downloadLocalModelToDestination,
+		validateConfiguredLocalModelPath,
+	} from '$lib/components/settings/local-models';
 	import { settings } from '$lib/state/settings.svelte';
 
 	let {
@@ -79,59 +74,6 @@
 		}
 	}
 
-	/**
-	 * Validates if a model is properly installed at the given path.
-	 */
-	async function isModelValid(path: string): Promise<boolean> {
-		switch (model.engine) {
-			case 'whispercpp': {
-				if (!(await exists(path))) return false;
-				// Check file size to detect corrupted/incomplete downloads
-				const { data: stats } = await tryAsync({
-					try: () => stat(path),
-					catch: () => Ok(null),
-				});
-				if (!stats) return false;
-				if (!isModelFileSizeValid(stats.size, model.sizeBytes)) {
-					console.warn(
-						`Model file appears corrupted: ${Math.round(stats.size / 1_000_000)}MB, expected ~${Math.round(model.sizeBytes / 1_000_000)}MB`,
-					);
-					return false;
-				}
-				return true;
-			}
-			case 'parakeet':
-			case 'moonshine': {
-				if (!(await exists(path))) return false;
-				// For multi-file models, path must be a directory containing all files
-				const { data: dirStats } = await tryAsync({
-					try: () => stat(path),
-					catch: () => Ok(null),
-				});
-				if (!dirStats?.isDirectory) return false;
-
-				// Check that all required files exist and have valid sizes
-				for (const file of model.files) {
-					const filePath = await join(path, file.filename);
-					if (!(await exists(filePath))) return false;
-					// Check file size to detect corrupted/incomplete downloads
-					const { data: fileStats } = await tryAsync({
-						try: () => stat(filePath),
-						catch: () => Ok(null),
-					});
-					if (!fileStats) return false;
-					if (!isModelFileSizeValid(fileStats.size, file.sizeBytes)) {
-						console.warn(
-							`${model.engine} file "${file.filename}" appears corrupted: ${Math.round(fileStats.size / 1_000_000)}MB, expected ~${Math.round(file.sizeBytes / 1_000_000)}MB`,
-						);
-						return false;
-					}
-				}
-				return true;
-			}
-		}
-	}
-
 	// Check model status on mount and when settings change
 	$effect(() => {
 		// React to settings changes for this engine
@@ -145,7 +87,10 @@
 		await tryAsync({
 			try: async () => {
 				const path = await ensureModelDestinationPath();
-				const isValid = await isModelValid(path);
+				const isValid = await validateConfiguredLocalModelPath(
+					model.engine,
+					path,
+				);
 
 				if (!isValid) {
 					modelState = { type: 'not-downloaded' };
@@ -170,123 +115,61 @@
 		if (modelState.type === 'downloading') return;
 
 		modelState = { type: 'downloading', progress: 0 };
+		let path = '';
 
 		await tryAsync({
 			try: async () => {
-				const downloadFileContent = async (
-					url: string,
-					sizeBytes: number,
-					filePath: string,
-					onProgress: (progress: number) => void,
-				): Promise<void> => {
-					const response = await fetch(url);
-					if (!response.ok) {
-						throw new Error(`Failed to download: ${response.status}`);
-					}
-
-					const contentLength = response.headers.get('content-length');
-					const totalBytes = contentLength
-						? Number.parseInt(contentLength, 10)
-						: sizeBytes;
-
-					const reader = response.body?.getReader();
-					if (!reader) {
-						throw new Error('Failed to read response body');
-					}
-
-					// Create or truncate the file first
-					await writeFile(filePath, new Uint8Array());
-
-					let downloadedBytes = 0;
-
-					while (true) {
-						const { done, value } = await reader.read();
-						if (done) break;
-
-						// Write each chunk directly to disk using append mode
-						await writeFile(filePath, value, { append: true });
-
-						downloadedBytes += value.length;
-						const progress = Math.round((downloadedBytes / totalBytes) * 100);
-						onProgress(progress);
-					}
-
-					// Validate download completeness
-					if (downloadedBytes < totalBytes) {
-						await remove(filePath);
-						const downloadedMB = Math.round(downloadedBytes / 1_000_000);
-						const expectedMB = Math.round(totalBytes / 1_000_000);
-						throw new Error(
-							`Download incomplete: received ${downloadedMB}MB but expected ${expectedMB}MB. Please check your network connection and try again.`,
-						);
-					}
-				};
-
-				const path = await ensureModelDestinationPath();
+				path = await ensureModelDestinationPath();
 
 				// Check if already exists
 				await refreshStatus();
 				if (modelState.type === 'ready' || modelState.type === 'active') {
 					if (modelState.type === 'ready') {
-						await activateModel();
+						const didActivate = await activateModel({
+							path,
+							showToast: false,
+						});
+						if (didActivate) {
+							toast.success('Model activated');
+						}
 					}
-					toast.success('Model already downloaded and activated');
 					return;
 				}
 
 				switch (model.engine) {
-					case 'whispercpp': {
-						// Single file download for Whisper
-						await downloadFileContent(
-							model.file.url,
-							model.sizeBytes,
-							path,
-							(progress) => {
+					case 'whispercpp':
+					case 'parakeet':
+					case 'moonshine':
+						await downloadLocalModelToDestination({
+							model,
+							destinationPath: path,
+							onProgress: (progress) => {
 								modelState = { type: 'downloading', progress };
 							},
-						);
+						});
 						break;
-					}
-					case 'parakeet':
-					case 'moonshine': {
-						// Multiple file downloads for multi-file models
-						const totalBytes = model.sizeBytes;
-						let downloadedBytes = 0;
+				}
 
-						// Create directory for model files
-						await mkdir(path, { recursive: true });
-
-						for (const file of model.files) {
-							const filePath = await join(path, file.filename);
-							await downloadFileContent(
-								file.url,
-								file.sizeBytes,
-								filePath,
-								(fileProgress) => {
-									const overallProgress = Math.round(
-										((downloadedBytes + (file.sizeBytes * fileProgress) / 100) /
-											totalBytes) *
-											100,
-									);
-									modelState = {
-										type: 'downloading',
-										progress: overallProgress,
-									};
-								},
-							);
-							downloadedBytes += file.sizeBytes;
-						}
-						break;
-					}
+				const isValid = await validateConfiguredLocalModelPath(model.engine, path);
+				if (!isValid) {
+					throw new Error('Downloaded model did not pass runtime validation.');
 				}
 
 				// After download, activate the model
-				await activateModel();
+				const didActivate = await activateModel({
+					path,
+					showToast: false,
+				});
+				if (!didActivate) {
+					modelState = { type: 'ready' };
+					return;
+				}
 				modelState = { type: 'active' };
 				toast.success('Model downloaded and activated successfully');
 			},
 			catch: (error) => {
 				console.error('Download failed:', error);
+				clearCachedLocalModelValidity(path);
 				toast.error('Failed to download model', {
 					description: extractErrorMessage(error),
 				});
@@ -296,13 +179,34 @@
 		});
 	}
 
-	async function activateModel() {
-		const path = await ensureModelDestinationPath();
-		const settingsKey = `transcription.${model.engine}.modelPath` as const;
+	async function activateModel({
+		path,
+		showToast = true,
+	}: {
+		path?: string;
+		showToast?: boolean;
+	} = {}) {
+		const { data: didActivate } = await tryAsync({
+			try: async () => {
+				const destinationPath = path ?? (await ensureModelDestinationPath());
+				const settingsKey = `transcription.${model.engine}.modelPath` as const;
 
-		settings.updateKey(settingsKey, path);
-		// The settings watcher will update modelState to 'active'
-		toast.success('Model activated');
+				settings.updateKey(settingsKey, destinationPath);
+				// The settings watcher will update modelState to 'active'
+				if (showToast) {
+					toast.success('Model activated');
+				}
+				return true;
+			},
+			catch: (error) => {
+				toast.error('Failed to activate model', {
+					description: extractErrorMessage(error),
+				});
+				return Ok(false);
+			},
+		});
+
+		return didActivate ?? false;
 	}
 
 	async function deleteModel() {
@@ -321,6 +225,7 @@
 				if (settings.value[settingsKey] === path) {
 					settings.updateKey(settingsKey, '');
 				}
+				clearCachedLocalModelValidity(path);
 
 				modelState = { type: 'not-downloaded' };
 				toast.success('Model deleted');
