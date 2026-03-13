@@ -177,6 +177,24 @@ describe('local-models', () => {
 		expect(getCachedLocalModelValidity(manualModelPath)).toBeTrue();
 	});
 
+	test('manual paths that reuse a prebuilt filename still validate through the manual probe path', async () => {
+		clearCachedLocalModelValidity();
+		const fs = createFakeFs();
+		const manualModelPath = '/external-models/ggml-tiny.bin';
+
+		await fs.writeFile(manualModelPath, new Uint8Array([1, 2, 3]));
+
+		expect(
+			await validateConfiguredLocalModelPath(
+				'whispercpp',
+				manualModelPath,
+				fs,
+				async () => true,
+			),
+		).toBeTrue();
+		expect(getCachedLocalModelValidity(manualModelPath)).toBeTrue();
+	});
+
 	test('manually selected parakeet directories stay configured when they contain the required runtime files', async () => {
 		clearCachedLocalModelValidity();
 		const fs = createFakeFs();
@@ -221,6 +239,26 @@ describe('local-models', () => {
 			),
 		).toBeFalse();
 		expect(getCachedLocalModelValidity(manualModelPath)).toBeFalse();
+	});
+
+	test('empty local-model validation does not clear cached validity for other configured services', async () => {
+		clearCachedLocalModelValidity();
+		const fs = createFakeFs();
+		const manualModelPath = '/models/whisper/custom-medium-q5_0.gguf';
+
+		await fs.writeFile(manualModelPath, new Uint8Array([1, 2, 3]));
+		await validateConfiguredLocalModelPath(
+			'whispercpp',
+			manualModelPath,
+			fs,
+			async () => true,
+		);
+
+		expect(getCachedLocalModelValidity(manualModelPath)).toBeTrue();
+		expect(
+			await validateConfiguredLocalModelPath('parakeet', '', fs, async () => true),
+		).toBeFalse();
+		expect(getCachedLocalModelValidity(manualModelPath)).toBeTrue();
 	});
 
 	test('failed multi-file downloads clean up staged files and never activate the final directory', async () => {
@@ -304,6 +342,35 @@ describe('local-models', () => {
 			},
 		]);
 		expect(await fs.exists(destinationPath)).toBeTrue();
+	});
+
+	test('downloads batch streamed writes before appending to disk', async () => {
+		const fs = createFakeFs();
+		const model: LocalModelConfig = {
+			id: 'tiny',
+			name: 'Tiny',
+			description: 'Tiny whisper model',
+			size: '6 B',
+			sizeBytes: 6,
+			engine: 'whispercpp',
+			file: {
+				url: 'https://example.com/tiny.bin',
+				filename: 'ggml-tiny.bin',
+			},
+		};
+
+		await downloadLocalModelToDestination({
+			model,
+			destinationPath: '/models/whisper/ggml-tiny.bin',
+			fs,
+			fetchImpl: async () => createResponse(['a', 'b', 'c', 'd', 'e', 'f']),
+			onProgress: () => undefined,
+		});
+
+		expect(fs.writeCalls).toEqual([
+			'/models/whisper/ggml-tiny.bin.download-tiny',
+			'/models/whisper/ggml-tiny.bin.download-tiny',
+		]);
 	});
 
 	test('failed promotion keeps the existing installed model intact', async () => {

@@ -115,16 +115,23 @@
 		if (modelState.type === 'downloading') return;
 
 		modelState = { type: 'downloading', progress: 0 };
-		const path = await ensureModelDestinationPath();
+		let path = '';
 
 		await tryAsync({
 			try: async () => {
+				path = await ensureModelDestinationPath();
+
 				// Check if already exists
 				await refreshStatus();
 				if (modelState.type === 'ready' || modelState.type === 'active') {
 					if (modelState.type === 'ready') {
-						await activateModel({ showToast: false });
-						toast.success('Model activated');
+						const didActivate = await activateModel({
+							path,
+							showToast: false,
+						});
+						if (didActivate) {
+							toast.success('Model activated');
+						}
 					}
 					return;
 				}
@@ -149,7 +156,14 @@
 				}
 
 				// After download, activate the model
-				await activateModel({ showToast: false });
+				const didActivate = await activateModel({
+					path,
+					showToast: false,
+				});
+				if (!didActivate) {
+					modelState = { type: 'ready' };
+					return;
+				}
 				modelState = { type: 'active' };
 				toast.success('Model downloaded and activated successfully');
 			},
@@ -166,18 +180,33 @@
 	}
 
 	async function activateModel({
+		path,
 		showToast = true,
 	}: {
+		path?: string;
 		showToast?: boolean;
 	} = {}) {
-		const path = await ensureModelDestinationPath();
-		const settingsKey = `transcription.${model.engine}.modelPath` as const;
+		const { data: didActivate } = await tryAsync({
+			try: async () => {
+				const destinationPath = path ?? (await ensureModelDestinationPath());
+				const settingsKey = `transcription.${model.engine}.modelPath` as const;
 
-		settings.updateKey(settingsKey, path);
-		// The settings watcher will update modelState to 'active'
-		if (showToast) {
-			toast.success('Model activated');
-		}
+				settings.updateKey(settingsKey, destinationPath);
+				// The settings watcher will update modelState to 'active'
+				if (showToast) {
+					toast.success('Model activated');
+				}
+				return true;
+			},
+			catch: (error) => {
+				toast.error('Failed to activate model', {
+					description: extractErrorMessage(error),
+				});
+				return Ok(false);
+			},
+		});
+
+		return didActivate ?? false;
 	}
 
 	async function deleteModel() {

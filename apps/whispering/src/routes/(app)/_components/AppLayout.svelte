@@ -46,7 +46,9 @@
 		window.goto = goto;
 		syncLocalShortcutsWithSettings();
 		resetLocalShortcutsToDefaultIfDuplicates();
-		void registerOnboarding();
+		void registerOnboarding().catch((error) => {
+			console.error('Failed to register onboarding state:', error);
+		});
 		cleanupAccessibilityPermission = registerAccessibilityPermission();
 		cleanupMicrophonePermission = registerMicrophonePermission();
 

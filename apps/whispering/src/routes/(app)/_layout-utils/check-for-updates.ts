@@ -8,6 +8,10 @@ import {
 import { rpc } from '$lib/query';
 
 export async function checkForUpdates() {
+	if (!shouldCheckForUpdates()) {
+		return;
+	}
+
 	const { error } = await tryAsync({
 		try: async () => {
 			const update = await (shouldUseMockUpdates() ? mockCheck() : check());
@@ -126,4 +130,12 @@ Audio processing is now 50% faster thanks to optimized buffering and parallel pr
  */
 function shouldUseMockUpdates(): boolean {
 	return import.meta.env.DEV;
+}
+
+function shouldCheckForUpdates(): boolean {
+	if (shouldUseMockUpdates()) {
+		return true;
+	}
+
+	return import.meta.env.VITE_WHISPERING_ENABLE_UPDATES === 'true';
 }

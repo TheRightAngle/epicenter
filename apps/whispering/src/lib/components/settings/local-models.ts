@@ -185,6 +185,7 @@ const localModelCatalog = {
 } as const;
 
 const VALID_WHISPER_MODEL_EXTENSIONS = ['.bin', '.gguf', '.ggml'] as const;
+const DOWNLOAD_WRITE_BATCH_BYTES = 1024 * 1024;
 
 const MOONSHINE_DIRECTORY_NAME_PATTERN = new RegExp(
 	`^moonshine-(${MOONSHINE_VARIANTS.join('|')})-(${MOONSHINE_LANGUAGES.join('|')})$`,
@@ -195,7 +196,7 @@ export function getCachedLocalModelValidity(path: string): boolean {
 }
 
 export function clearCachedLocalModelValidity(path?: string) {
-	if (path) {
+	if (path !== undefined) {
 		localModelValidityCache.delete(path);
 		return;
 	}
@@ -371,6 +372,10 @@ function findInstalledLocalModel(
 	serviceId: TranscriptionService['id'],
 	modelPath: string,
 ): ValidatableLocalModel | undefined {
+	if (!isManagedPrebuiltModelPath(serviceId, modelPath)) {
+		return undefined;
+	}
+
 	const pathTail = getPathTail(modelPath);
 
 	switch (serviceId) {
@@ -395,6 +400,33 @@ function getPathTail(path: string) {
 	return path.split(/[\\/]/).filter(Boolean).pop() ?? '';
 }
 
+function isManagedPrebuiltModelPath(
+	serviceId: TranscriptionService['id'],
+	modelPath: string,
+) {
+	const normalizedPath = modelPath.replace(/\\/g, '/');
+
+	switch (serviceId) {
+		case 'whispercpp':
+			return (
+				normalizedPath.startsWith('models/whisper/') ||
+				normalizedPath.includes('/models/whisper/')
+			);
+		case 'parakeet':
+			return (
+				normalizedPath.startsWith('models/parakeet/') ||
+				normalizedPath.includes('/models/parakeet/')
+			);
+		case 'moonshine':
+			return (
+				normalizedPath.startsWith('models/moonshine/') ||
+				normalizedPath.includes('/models/moonshine/')
+			);
+		default:
+			return false;
+	}
+}
+
 async function safeStat(path: string, fs: FsDeps) {
 	try {
 		return await fs.stat(path);
@@ -403,11 +435,7 @@ async function safeStat(path: string, fs: FsDeps) {
 	}
 }
 
-async function cleanupPath(
-	path: string,
-	recursive: boolean,
-	fs: FsDeps,
-) {
+async function cleanupPath(path: string, recursive: boolean, fs: FsDeps) {
 	if (!(await fs.exists(path))) return;
 	await fs.remove(path, { recursive });
 }
@@ -562,15 +590,40 @@ async function downloadFileToPath({
 	await deps.writeFile(filePath, new Uint8Array());
 
 	let downloadedBytes = 0;
+	let pendingBytes = 0;
+	let pendingChunks: Uint8Array[] = [];
+
+	const flushPendingChunks = async () => {
+		if (pendingBytes === 0) return;
+
+		const batch = new Uint8Array(pendingBytes);
+		let offset = 0;
+		for (const chunk of pendingChunks) {
+			batch.set(chunk, offset);
+			offset += chunk.length;
+		}
+
+		await deps.writeFile(filePath, batch, { append: true });
+		pendingChunks = [];
+		pendingBytes = 0;
+	};
+
 	while (true) {
 		const { done, value } = await reader.read();
 		if (done) break;
 		if (!value) continue;
 
-		await deps.writeFile(filePath, value, { append: true });
+		pendingChunks.push(value);
+		pendingBytes += value.length;
 		downloadedBytes += value.length;
 		onProgress(Math.round((downloadedBytes / totalBytes) * 100));
+
+		if (pendingBytes >= DOWNLOAD_WRITE_BATCH_BYTES) {
+			await flushPendingChunks();
+		}
 	}
+
+	await flushPendingChunks();
 
 	if (downloadedBytes < totalBytes) {
 		throw new Error(

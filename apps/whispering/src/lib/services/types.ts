@@ -45,11 +45,11 @@ export type UpdateStatusMessageFn = (args: {
  * { outcome: 'success', deviceId: 'preferred-device-id' as DeviceIdentifier }
  *
  * // Fallback: No device selected, used default
- * // Status message: "🔍 No Device Selected" -> "Using your default microphone instead"
+ * // Status message: "🔍 No Device Selected" -> "Using an available microphone instead"
  * {
  *   outcome: 'fallback',
  *   reason: 'no-device-selected',
- *   deviceId: 'default' as DeviceIdentifier
+ *   deviceId: 'some-available-device' as DeviceIdentifier
  * }
  *
  * // Fallback: Preferred device unavailable, used alternative
