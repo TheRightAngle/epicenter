@@ -31,6 +31,7 @@
 		registerAccessibilityPermission,
 		registerMicrophonePermission,
 	} from '../_layout-utils/register-permissions';
+	import { registerWindowScaleRecovery } from '../_layout-utils/register-window-scale-recovery';
 	import { syncIconWithRecorderState } from '../_layout-utils/syncIconWithRecorderState.svelte';
 
 	const getRecorderStateQuery = createQuery(
@@ -39,6 +40,7 @@
 
 	let cleanupAccessibilityPermission: (() => void) | undefined;
 	let cleanupMicrophonePermission: (() => void) | undefined;
+	let cleanupWindowScaleRecovery: (() => void) | undefined;
 
 	onMount(() => {
 		// Sync operations - run immediately, these are fast
@@ -55,6 +57,13 @@
 		if (window.__TAURI_INTERNALS__) {
 			syncGlobalShortcutsWithSettings();
 			resetGlobalShortcutsToDefaultIfDuplicates();
+			void registerWindowScaleRecovery()
+				.then((cleanup) => {
+					cleanupWindowScaleRecovery = cleanup;
+				})
+				.catch((error) => {
+					console.error('Failed to register window scale recovery:', error);
+				});
 
 			// Async operations - fire and forget, don't block UI rendering
 			// These show toasts/notifications on completion, no need to await
@@ -73,6 +82,7 @@
 	onDestroy(() => {
 		cleanupAccessibilityPermission?.();
 		cleanupMicrophonePermission?.();
+		cleanupWindowScaleRecovery?.();
 	});
 
 	if (window.__TAURI_INTERNALS__) {
