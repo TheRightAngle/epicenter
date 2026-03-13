@@ -1,0 +1,169 @@
+import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
+import { QueryClient } from '@tanstack/query-core';
+import { createQueryFactories } from 'wellcrafted/query';
+
+const startRecordingMock = mock<any>(async () => ({
+	data: undefined,
+	error: undefined,
+}));
+const stopRecordingMock = mock<any>(async () => ({
+	data: new Blob(['audio']),
+	error: undefined,
+}));
+const enumerateDevicesMock = mock<any>(async () => ({ data: [], error: undefined }));
+const getRecorderStateMock = mock<any>(async () => ({ data: 'IDLE', error: undefined }));
+const notifyLoadingMock = mock<any>(() => undefined);
+const recordingsPathMock = mock<any>(async () => '/tmp/recordings');
+
+async function loadRecorderModule() {
+	return await import('./recorder');
+}
+
+beforeEach(() => {
+	mock.restore();
+	startRecordingMock.mockReset();
+	stopRecordingMock.mockReset();
+	enumerateDevicesMock.mockReset();
+	getRecorderStateMock.mockReset();
+	notifyLoadingMock.mockReset();
+	recordingsPathMock.mockReset();
+
+	startRecordingMock.mockResolvedValue({
+		data: undefined,
+		error: undefined,
+	});
+	stopRecordingMock.mockResolvedValue({
+		data: new Blob(['audio']),
+		error: undefined,
+	});
+	enumerateDevicesMock.mockResolvedValue({ data: [], error: undefined });
+	getRecorderStateMock.mockResolvedValue({ data: 'IDLE', error: undefined });
+	recordingsPathMock.mockResolvedValue('/tmp/recordings');
+
+	const queryClient = new QueryClient();
+	const { defineMutation, defineQuery } = createQueryFactories(queryClient);
+
+	mock.module('$lib/services', () => ({
+		desktopServices: {
+			cpalRecorder: {
+				enumerateDevices: enumerateDevicesMock,
+				getRecorderState: getRecorderStateMock,
+				startRecording: startRecordingMock,
+				stopRecording: stopRecordingMock,
+				cancelRecording: mock(async () => ({
+					data: { status: 'cancelled' },
+					error: undefined,
+				})),
+			},
+			ffmpegRecorder: {
+				enumerateDevices: enumerateDevicesMock,
+				getRecorderState: getRecorderStateMock,
+				startRecording: startRecordingMock,
+				stopRecording: stopRecordingMock,
+				cancelRecording: mock(async () => ({
+					data: { status: 'cancelled' },
+					error: undefined,
+				})),
+			},
+		},
+		services: {
+			navigatorRecorder: {
+				enumerateDevices: enumerateDevicesMock,
+				getRecorderState: getRecorderStateMock,
+				startRecording: startRecordingMock,
+				stopRecording: stopRecordingMock,
+				cancelRecording: mock(async () => ({
+					data: { status: 'cancelled' },
+					error: undefined,
+				})),
+			},
+		},
+	}));
+
+	mock.module('$lib/state/settings.svelte', () => ({
+		settings: {
+			value: {
+				'recording.method': 'cpal',
+				'recording.cpal.outputFolder': '/tmp/out',
+				'recording.cpal.deviceId': null,
+				'recording.cpal.sampleRate': '16000',
+				'recording.ffmpeg.deviceId': null,
+				'recording.ffmpeg.globalOptions': '',
+				'recording.ffmpeg.inputOptions': '',
+				'recording.ffmpeg.outputOptions': '',
+				'recording.navigator.deviceId': null,
+				'recording.navigator.bitrateKbps': '96',
+			},
+		},
+	}));
+
+	mock.module('$lib/constants/paths', () => ({
+		PATHS: {
+			DB: {
+				RECORDINGS: recordingsPathMock,
+			},
+		},
+	}));
+
+	mock.module('$lib/query/client', () => ({
+		queryClient,
+		defineMutation,
+		defineQuery,
+	}));
+
+	mock.module('$lib/result', () => ({
+		WhisperingErr: ({
+			title,
+			description,
+			serviceError,
+		}: {
+			title: string;
+			description?: string;
+			serviceError?: { message?: string };
+		}) => ({
+			data: undefined,
+			error: {
+				name: 'WhisperingError',
+				severity: 'error',
+				title,
+				description: description ?? serviceError?.message ?? '',
+			},
+		}),
+	}));
+
+	mock.module('./notify', () => ({
+		notify: {
+			loading: notifyLoadingMock,
+		},
+	}));
+
+	Object.assign(globalThis, {
+		window: {
+		__TAURI_INTERNALS__: {},
+		} as Window & { __TAURI_INTERNALS__?: unknown },
+	});
+});
+
+afterEach(() => {
+	mock.restore();
+});
+
+describe('recorder.startRecording', () => {
+	test('clears stale currentRecordingId when start fails', async () => {
+		startRecordingMock.mockResolvedValue({
+			data: undefined,
+			error: {
+				name: 'RecorderError',
+				message: 'start failed',
+			} as never,
+		});
+
+		const { recorder } = await loadRecorderModule();
+		const startResult = await recorder.startRecording({ toastId: 'toast-start' });
+		const stopResult = await recorder.stopRecording({ toastId: 'toast-stop' });
+
+		expect(startResult.error?.name).toBe('WhisperingError');
+		expect(stopResult.error?.name).toBe('WhisperingError');
+		expect(stopResult.error?.title).toBe('❌ Missing recording ID');
+	});
+});

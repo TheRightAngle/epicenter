@@ -313,15 +313,15 @@ export const FfmpegRecorderServiceLive: RecorderService = {
 				});
 			}
 
-			if (!selectedDeviceId) {
-				sendStatus({
-					title: '🔍 No Device Selected',
-					description:
-						"No worries! We'll find the best microphone for you automatically...",
-				});
-				return Ok({
-					outcome: 'fallback',
-					reason: 'no-device-selected',
+				if (!selectedDeviceId) {
+					sendStatus({
+						title: '🔍 No Device Selected',
+						description:
+							"We'll use an available microphone automatically...",
+					});
+					return Ok({
+						outcome: 'fallback',
+						reason: 'no-device-selected',
 					deviceId: fallbackDeviceId,
 				});
 			}

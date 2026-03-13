@@ -27,6 +27,21 @@ type AudioRecording = {
 	filePath?: string;
 };
 
+const closeRecordingSession = async ({
+	sendStatus,
+}: {
+	sendStatus: (args: { title: string; description: string }) => void;
+}) => {
+	sendStatus({
+		title: '🔄 Closing Session',
+		description: 'Cleaning up recording resources...',
+	});
+	const { error: closeError } = await invoke<void>('close_recording_session');
+	if (closeError) {
+		console.error('Failed to close recording session:', closeError);
+	}
+};
+
 /**
  * Enumerates available recording devices from the system.
  */
@@ -108,15 +123,15 @@ export const CpalRecorderServiceLive: RecorderService = {
 				});
 			}
 
-			if (!selectedDeviceId) {
-				sendStatus({
-					title: '🔍 No Device Selected',
-					description:
-						"No worries! We'll find the best microphone for you automatically...",
-				});
-				return Ok({
-					outcome: 'fallback',
-					reason: 'no-device-selected',
+				if (!selectedDeviceId) {
+					sendStatus({
+						title: '🔍 No Device Selected',
+						description:
+							"We'll use an available microphone automatically...",
+					});
+					return Ok({
+						outcome: 'fallback',
+						reason: 'no-device-selected',
 					deviceId: fallbackDeviceId,
 				});
 			}
@@ -172,18 +187,20 @@ export const CpalRecorderServiceLive: RecorderService = {
 				cause: initRecordingSessionError,
 			});
 
-		sendStatus({
-			title: '🎙️ Starting Recording',
-			description:
-				'Recording session initialized, now starting to capture audio...',
-		});
-		const { error: startRecordingError } =
-			await invoke<void>('start_recording');
-		if (startRecordingError)
-			return RecorderError.StartFailed({ cause: startRecordingError });
+			sendStatus({
+				title: '🎙️ Starting Recording',
+				description:
+					'Recording session initialized, now starting to capture audio...',
+			});
+			const { error: startRecordingError } =
+				await invoke<void>('start_recording');
+			if (startRecordingError) {
+				await closeRecordingSession({ sendStatus });
+				return RecorderError.StartFailed({ cause: startRecordingError });
+			}
 
-		return Ok(deviceOutcome);
-	},
+			return Ok(deviceOutcome);
+		},
 
 	/**
 	 * Stops the current recording session and returns the recorded audio as a Blob.
@@ -196,42 +213,35 @@ export const CpalRecorderServiceLive: RecorderService = {
 	}): Promise<Result<Blob, RecorderError>> => {
 		const { data: audioRecording, error: stopRecordingError } =
 			await invoke<AudioRecording>('stop_recording');
-		if (stopRecordingError) {
-			return RecorderError.StopFailed({ cause: stopRecordingError });
-		}
+			if (stopRecordingError) {
+				return RecorderError.StopFailed({ cause: stopRecordingError });
+			}
+			try {
+				const { filePath } = audioRecording;
+				// Desktop recorder should always write to a file
+				if (!filePath) {
+					return RecorderError.NoFilePath();
+				}
+				// audioRecording is now AudioRecordingWithFile
 
-		const { filePath } = audioRecording;
-		// Desktop recorder should always write to a file
-		if (!filePath) {
-			return RecorderError.NoFilePath();
-		}
-		// audioRecording is now AudioRecordingWithFile
+				// Read the WAV file from disk
+				sendStatus({
+					title: '📁 Reading Recording',
+					description: 'Loading your recording from disk...',
+				});
 
-		// Read the WAV file from disk
-		sendStatus({
-			title: '📁 Reading Recording',
-			description: 'Loading your recording from disk...',
-		});
+				const { data: blob, error: readRecordingFileError } =
+					await FsServiceLive.pathToBlob(filePath);
+				if (readRecordingFileError)
+					return RecorderError.ReadFileFailed({
+						cause: readRecordingFileError,
+					});
 
-		const { data: blob, error: readRecordingFileError } =
-			await FsServiceLive.pathToBlob(filePath);
-		if (readRecordingFileError)
-			return RecorderError.ReadFileFailed({
-				cause: readRecordingFileError,
-			});
-		// Close the recording session after stopping
-		sendStatus({
-			title: '🔄 Closing Session',
-			description: 'Cleaning up recording resources...',
-		});
-		const { error: closeError } = await invoke<void>('close_recording_session');
-		if (closeError) {
-			// Log but don't fail the stop operation
-			console.error('Failed to close recording session:', closeError);
-		}
-
-		return Ok(blob);
-	},
+				return Ok(blob);
+			} finally {
+				await closeRecordingSession({ sendStatus });
+			}
+		},
 
 	/**
 	 * Cancels the current recording session and cleans up resources.

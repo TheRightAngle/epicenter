@@ -110,16 +110,17 @@ export const recorder = {
 						: settings.value['recording.method']
 				];
 
-			const { data: deviceAcquisitionOutcome, error: startRecordingError } =
-				await recorderService().startRecording(params, {
-					sendStatus: (options) => notify.loading({ id: toastId, ...options }),
-				});
+				const { data: deviceAcquisitionOutcome, error: startRecordingError } =
+					await recorderService().startRecording(params, {
+						sendStatus: (options) => notify.loading({ id: toastId, ...options }),
+					});
 
-			if (startRecordingError) {
-				return WhisperingErr({
-					title: '❌ Failed to start recording',
-					serviceError: startRecordingError,
-				});
+				if (startRecordingError) {
+					currentRecordingId = null;
+					return WhisperingErr({
+						title: '❌ Failed to start recording',
+						serviceError: startRecordingError,
+					});
 			}
 			return Ok(deviceAcquisitionOutcome);
 		},
