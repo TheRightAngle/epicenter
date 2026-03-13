@@ -131,8 +131,6 @@ export const recorder = {
 
 				// Store the recording ID so it can be reused when stopping
 				currentRecordingId = recordingId;
-				currentRecordingSourceFilePath =
-					await resolveDesktopSourceFilePath(recordingId);
 
 				// Prepare recording parameters based on which method we're using
 				const baseParams = {
@@ -178,6 +176,10 @@ export const recorder = {
 							? 'navigator'
 							: settings.value['recording.method']
 					];
+				currentRecordingSourceFilePath =
+					params.method === 'cpal' && params.experimentalBufferedCapture
+						? null
+						: await resolveDesktopSourceFilePath(recordingId);
 
 				const { data: deviceAcquisitionOutcome, error: startRecordingError } =
 					await recorderService().startRecording(params, {
