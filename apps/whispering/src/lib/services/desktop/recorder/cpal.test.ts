@@ -153,6 +153,27 @@ describe('CpalRecorderServiceLive', () => {
 		expect(commandLog()).toEqual(['stop_recording', 'close_recording_session']);
 	});
 
+	test('closes the session when stop_recording itself fails', async () => {
+		invokeMock.mockImplementation(async (command: string) => {
+			switch (command) {
+				case 'stop_recording':
+					throw new Error('stop boom');
+				case 'close_recording_session':
+					return undefined;
+				default:
+					throw new Error(`Unexpected command ${command}`);
+			}
+		});
+
+		const { CpalRecorderServiceLive } = await loadCpalModule();
+		const result = await CpalRecorderServiceLive.stopRecording({
+			sendStatus: () => undefined,
+		});
+
+		expect(result.error?.message).toContain('Failed to stop recording');
+		expect(commandLog()).toEqual(['stop_recording', 'close_recording_session']);
+	});
+
 	test('closes the session when reading the stopped recording file fails', async () => {
 		invokeMock.mockImplementation(async (command: string) => {
 			switch (command) {

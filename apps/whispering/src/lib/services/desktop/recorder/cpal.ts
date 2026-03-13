@@ -211,12 +211,13 @@ export const CpalRecorderServiceLive: RecorderService = {
 	stopRecording: async ({
 		sendStatus,
 	}): Promise<Result<Blob, RecorderError>> => {
-		const { data: audioRecording, error: stopRecordingError } =
-			await invoke<AudioRecording>('stop_recording');
+		try {
+			const { data: audioRecording, error: stopRecordingError } =
+				await invoke<AudioRecording>('stop_recording');
 			if (stopRecordingError) {
 				return RecorderError.StopFailed({ cause: stopRecordingError });
 			}
-			try {
+
 				const { filePath } = audioRecording;
 				// Desktop recorder should always write to a file
 				if (!filePath) {
@@ -237,10 +238,10 @@ export const CpalRecorderServiceLive: RecorderService = {
 						cause: readRecordingFileError,
 					});
 
-				return Ok(blob);
-			} finally {
-				await closeRecordingSession({ sendStatus });
-			}
+			return Ok(blob);
+		} finally {
+			await closeRecordingSession({ sendStatus });
+		}
 		},
 
 	/**
