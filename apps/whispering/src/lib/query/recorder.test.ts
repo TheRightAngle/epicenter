@@ -204,6 +204,33 @@ describe('recorder.stopRecording', () => {
 		expect(invokeMock).toHaveBeenCalledWith('get_current_recording_id');
 	});
 
+	test('keeps a recovered recording id available until stop succeeds end-to-end', async () => {
+		invokeMock
+			.mockResolvedValueOnce('rec-backend')
+			.mockResolvedValueOnce(null);
+		stopRecordingMock
+			.mockResolvedValueOnce({
+				data: undefined,
+				error: {
+					name: 'RecorderError',
+					message: 'read failed',
+				},
+			})
+			.mockResolvedValueOnce({
+				data: new Blob(['audio']),
+				error: undefined,
+			});
+
+		const { recorder } = await loadRecorderModule();
+		const firstStopResult = await recorder.stopRecording({ toastId: 'toast-stop-1' });
+		const secondStopResult = await recorder.stopRecording({ toastId: 'toast-stop-2' });
+
+		expect(firstStopResult.error?.title).toBe('❌ Failed to stop recording');
+		expect(secondStopResult.data?.recordingId).toBe('rec-backend');
+		expect(stopRecordingMock).toHaveBeenCalledTimes(2);
+		expect(invokeMock).toHaveBeenCalledTimes(1);
+	});
+
 	test('does not call backend stop when currentRecordingId is missing and cannot be recovered', async () => {
 		const { recorder } = await loadRecorderModule();
 		const stopResult = await recorder.stopRecording({ toastId: 'toast-stop' });
@@ -212,5 +239,17 @@ describe('recorder.stopRecording', () => {
 		expect(stopResult.error?.title).toBe('❌ Missing recording ID');
 		expect(stopRecordingMock).not.toHaveBeenCalled();
 		expect(invokeMock).toHaveBeenCalledWith('get_current_recording_id');
+	});
+
+	test('surfaces backend recording id lookup failures distinctly', async () => {
+		invokeMock.mockRejectedValue(new Error('lookup boom'));
+
+		const { recorder } = await loadRecorderModule();
+		const stopResult = await recorder.stopRecording({ toastId: 'toast-stop' });
+
+		expect(stopResult.error?.name).toBe('WhisperingError');
+		expect(stopResult.error?.title).toBe('❌ Failed to recover recording ID');
+		expect(stopResult.error?.description).toBe('lookup boom');
+		expect(stopRecordingMock).not.toHaveBeenCalled();
 	});
 });

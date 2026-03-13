@@ -140,9 +140,22 @@ export const recorder = {
 	stopRecording: defineMutation({
 		mutationKey: recorderKeys.stopRecording,
 		mutationFn: async ({ toastId }: { toastId: string }) => {
-			const recordingId =
-				currentRecordingId ?? (await recoverDesktopCpalRecordingId());
+			let recordingId = currentRecordingId;
 			if (!recordingId) {
+				const {
+					recordingId: recoveredRecordingId,
+					lookupError,
+				} = await recoverDesktopCpalRecordingId();
+				if (lookupError) {
+					return WhisperingErr({
+						title: '❌ Failed to recover recording ID',
+						description: lookupError,
+					});
+				}
+				recordingId = recoveredRecordingId;
+			}
+			if (!recordingId) {
+				currentRecordingId = null;
 				return WhisperingErr({
 					title: '❌ Missing recording ID',
 					description:
@@ -150,21 +163,20 @@ export const recorder = {
 				});
 			}
 
-			currentRecordingId = null;
+			currentRecordingId = recordingId;
 			const { data: blob, error: stopRecordingError } =
 				await recorderService().stopRecording({
 					sendStatus: (options) => notify.loading({ id: toastId, ...options }),
 				});
 
 			if (stopRecordingError) {
-				// Reset recording ID on error
-				currentRecordingId = null;
 				return WhisperingErr({
 					title: '❌ Failed to stop recording',
 					serviceError: stopRecordingError,
 				});
 			}
 
+			currentRecordingId = null;
 			// Return both blob and recordingId so they can be used together
 			return Ok({ blob, recordingId });
 		},
@@ -211,12 +223,23 @@ export function recorderService() {
 }
 
 async function recoverDesktopCpalRecordingId() {
-	if (!window.__TAURI_INTERNALS__) return null;
-	if (settings.value['recording.method'] !== 'cpal') return null;
+	if (!window.__TAURI_INTERNALS__) {
+		return { recordingId: null, lookupError: null };
+	}
+	if (settings.value['recording.method'] !== 'cpal') {
+		return { recordingId: null, lookupError: null };
+	}
 
 	try {
-		return await tauriInvoke<string | null>('get_current_recording_id');
-	} catch {
-		return null;
+		return {
+			recordingId: await tauriInvoke<string | null>('get_current_recording_id'),
+			lookupError: null,
+		};
+	} catch (error) {
+		return {
+			recordingId: null,
+			lookupError:
+				error instanceof Error ? error.message : 'Unknown recording ID lookup error.',
+		};
 	}
 }
