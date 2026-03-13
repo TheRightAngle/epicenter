@@ -1,4 +1,4 @@
-Function WhisperingRunDeferredCleanup
+Function un.WhisperingRunDeferredCleanup
   SetShellVarContext current
 
   RMDir /r /REBOOTOK "$APPDATA\${BUNDLEID}"
@@ -11,6 +11,6 @@ FunctionEnd
 !macro NSIS_HOOK_POSTUNINSTALL
   ${If} $DeleteAppDataCheckboxState = 1
   ${AndIf} $UpdateMode <> 1
-    Call WhisperingRunDeferredCleanup
+    Call un.WhisperingRunDeferredCleanup
   ${EndIf}
 !macroend

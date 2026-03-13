@@ -29,5 +29,7 @@ describe("Windows uninstall packaging", () => {
 		expect(installerHooks).toContain("$LOCALAPPDATA\\Whispering");
 		expect(installerHooks).toContain("$APPDATA\\${BUNDLEID}");
 		expect(installerHooks).toContain("$LOCALAPPDATA\\${BUNDLEID}");
+		expect(installerHooks).toContain("Function un.WhisperingRunDeferredCleanup");
+		expect(installerHooks).toContain("Call un.WhisperingRunDeferredCleanup");
 	});
 });
