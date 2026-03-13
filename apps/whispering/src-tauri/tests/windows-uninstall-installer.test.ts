@@ -13,15 +13,34 @@ function findLine(lines: string[], needle: string) {
 	return index;
 }
 
+function findLineInRange(
+	lines: string[],
+	needle: string,
+	startIndex: number,
+	endIndex: number,
+) {
+	const index = lines.findIndex(
+		(line, lineIndex) =>
+			lineIndex >= startIndex &&
+			lineIndex <= endIndex &&
+			line.includes(needle),
+	);
+	expect(index).toBeGreaterThanOrEqual(0);
+	return index;
+}
+
 function findBlockEnd(lines: string[], ifIndex: number) {
 	let depth = 0;
 
 	for (let index = ifIndex; index < lines.length; index += 1) {
 		const line = lines[index].trim();
+		if (line.startsWith("${ElseIf}") || line.startsWith("${Else}")) {
+			continue;
+		}
+
 		if (
 			line.startsWith("${If}") ||
 			line.startsWith("${IfThen}") ||
-			line.startsWith("${ElseIf}") ||
 			line.startsWith("${IfNot}")
 		) {
 			depth += 1;
@@ -87,6 +106,44 @@ describe("Windows uninstall installer wiring", () => {
 		expect(template).toContain(
 			"SendMessage $DeleteAppDataCheckbox ${BM_SETCHECK} ${BST_CHECKED} 0",
 		);
+		const sameVersionBranchIndex = findLine(
+			templateLines,
+			"${If} $R0 = 0 ; Same version, proceed",
+		);
+		const sameVersionBranchEnd = findBlockEnd(templateLines, sameVersionBranchIndex);
+		const sameVersionProceedIndex = findLineInRange(
+			templateLines,
+			"${If} $R1 = 1",
+			sameVersionBranchIndex,
+			sameVersionBranchEnd,
+		);
+		const sameVersionUninstallElseIndex = findLineInRange(
+			templateLines,
+			"${Else}                    ; User chose to uninstall",
+			sameVersionProceedIndex,
+			sameVersionBranchEnd,
+		);
+		const sameVersionMaintenanceModeIndex = findLineInRange(
+			templateLines,
+			"StrCpy $MaintenanceUninstallMode 1",
+			sameVersionUninstallElseIndex,
+			sameVersionBranchEnd,
+		);
+		const sameVersionReinstallGotoIndex = findLineInRange(
+			templateLines,
+			"Goto reinst_uninstall",
+			sameVersionMaintenanceModeIndex,
+			sameVersionBranchEnd,
+		);
+		expect(sameVersionProceedIndex).toBeGreaterThan(sameVersionBranchIndex);
+		expect(sameVersionUninstallElseIndex).toBeGreaterThan(sameVersionProceedIndex);
+		expect(sameVersionMaintenanceModeIndex).toBeGreaterThan(
+			sameVersionUninstallElseIndex,
+		);
+		expect(sameVersionReinstallGotoIndex).toBeGreaterThan(
+			sameVersionMaintenanceModeIndex,
+		);
+		expect(sameVersionReinstallGotoIndex).toBeLessThan(sameVersionBranchEnd);
 		const maintenanceGuardIndex = findLine(
 			templateLines,
 			"${If} $MaintenanceUninstallMode = 1",
