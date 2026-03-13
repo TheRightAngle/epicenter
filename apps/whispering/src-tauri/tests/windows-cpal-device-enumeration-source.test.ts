@@ -13,5 +13,6 @@ describe('Windows CPAL device enumeration wiring', () => {
 		expect(recorderSource).toContain('device.description()');
 		expect(recorderSource).toContain('.extended()');
 		expect(recorderSource).toContain('host.device_by_id(&device_id)');
+		expect(recorderSource).toContain('.collect::<Result<Vec<_>>>()?;');
 	});
 });

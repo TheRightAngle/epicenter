@@ -104,7 +104,7 @@ impl RecorderState {
                 let label = format_device_label(&device)?;
                 Ok(RecordingDeviceInfo { id, label })
             })
-            .collect();
+            .collect::<Result<Vec<_>>>()?;
 
         Ok(devices)
     }
@@ -508,59 +508,17 @@ fn spawn_buffered_writer_thread(
     let handle = thread::spawn(move || {
         let mut first_error: Option<String> = None;
 
-        let mut record_error = |error: String| {
-            if first_error.is_none() {
-                error!("Buffered writer failed: {}", error);
-                first_error = Some(error);
-            }
-        };
-
-        let mut handle_audio_chunk = |chunk: BufferedAudioChunk| {
-            if first_error.is_some() {
-                return;
-            }
-
-            let result = writer
-                .lock()
-                .map_err(|e| format!("Failed to lock writer: {}", e))
-                .and_then(|mut wav_writer| match chunk {
-                    BufferedAudioChunk::F32(samples) => wav_writer
-                        .write_samples_f32(&samples)
-                        .map_err(|e| format!("Failed to write f32 samples: {}", e)),
-                    BufferedAudioChunk::I16(samples) => wav_writer
-                        .write_samples_i16(&samples)
-                        .map_err(|e| format!("Failed to write i16 samples: {}", e)),
-                    BufferedAudioChunk::U16(samples) => wav_writer
-                        .write_samples_u16(&samples)
-                        .map_err(|e| format!("Failed to write u16 samples: {}", e)),
-                });
-
-            if let Err(error) = result {
-                record_error(error);
-            }
-        };
-
-        let mut flush_writer = || -> Result<()> {
-            if let Some(error) = first_error.clone() {
-                return Err(error);
-            }
-
-            writer
-                .lock()
-                .map_err(|e| format!("Failed to lock writer: {}", e))?
-                .flush()
-                .map_err(|e| format!("Failed to flush writer: {}", e))
-        };
-
         loop {
             match rx.recv() {
-                Ok(BufferedWriterCmd::Audio(chunk)) => handle_audio_chunk(chunk),
+                Ok(BufferedWriterCmd::Audio(chunk)) => {
+                    handle_buffered_audio_chunk(&writer, &mut first_error, chunk)
+                }
                 Ok(BufferedWriterCmd::Flush(reply_tx)) => {
-                    let result = flush_writer();
+                    let result = flush_buffered_writer_inner(&writer, &first_error);
                     let _ = reply_tx.send(result);
                 }
                 Ok(BufferedWriterCmd::Shutdown(reply_tx)) => {
-                    let result = flush_writer();
+                    let result = flush_buffered_writer_inner(&writer, &first_error);
                     let _ = reply_tx.send(result);
                     break;
                 }
@@ -570,6 +528,57 @@ fn spawn_buffered_writer_thread(
     });
 
     (tx, handle)
+}
+
+fn record_buffered_writer_error(first_error: &mut Option<String>, error: String) {
+    if first_error.is_none() {
+        error!("Buffered writer failed: {}", error);
+        *first_error = Some(error);
+    }
+}
+
+fn handle_buffered_audio_chunk(
+    writer: &Arc<Mutex<WavWriter>>,
+    first_error: &mut Option<String>,
+    chunk: BufferedAudioChunk,
+) {
+    if first_error.is_some() {
+        return;
+    }
+
+    let result = writer
+        .lock()
+        .map_err(|e| format!("Failed to lock writer: {}", e))
+        .and_then(|mut wav_writer| match chunk {
+            BufferedAudioChunk::F32(samples) => wav_writer
+                .write_samples_f32(&samples)
+                .map_err(|e| format!("Failed to write f32 samples: {}", e)),
+            BufferedAudioChunk::I16(samples) => wav_writer
+                .write_samples_i16(&samples)
+                .map_err(|e| format!("Failed to write i16 samples: {}", e)),
+            BufferedAudioChunk::U16(samples) => wav_writer
+                .write_samples_u16(&samples)
+                .map_err(|e| format!("Failed to write u16 samples: {}", e)),
+        });
+
+    if let Err(error) = result {
+        record_buffered_writer_error(first_error, error);
+    }
+}
+
+fn flush_buffered_writer_inner(
+    writer: &Arc<Mutex<WavWriter>>,
+    first_error: &Option<String>,
+) -> Result<()> {
+    if let Some(error) = first_error.clone() {
+        return Err(error);
+    }
+
+    writer
+        .lock()
+        .map_err(|e| format!("Failed to lock writer: {}", e))?
+        .flush()
+        .map_err(|e| format!("Failed to flush writer: {}", e))
 }
 
 #[cfg(test)]
