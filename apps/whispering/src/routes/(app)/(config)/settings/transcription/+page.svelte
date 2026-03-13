@@ -11,6 +11,7 @@
 	import * as Select from '@epicenter/ui/select';
 	import { Textarea } from '@epicenter/ui/textarea';
 	import InfoIcon from '@lucide/svelte/icons/info';
+	import { onMount } from 'svelte';
 	import CopyablePre from '$lib/components/copyable/CopyablePre.svelte';
 	import {
 		CompressionBody,
@@ -27,6 +28,7 @@
 	import { services } from '$lib/services';
 	import { MOONSHINE_MODELS } from '$lib/services/transcription/local/moonshine';
 	import { PARAKEET_MODELS } from '$lib/services/transcription/local/parakeet';
+	import type { DirectMlAdapter } from '$lib/services/transcription/local/types';
 	import { WHISPER_MODELS } from '$lib/services/transcription/local/whispercpp';
 	import { settings } from '$lib/state/settings.svelte';
 	import { createCopyFn } from '$lib/utils/createCopyFn';
@@ -117,6 +119,48 @@
 		}
 		return services.os.type() === 'windows';
 	});
+
+	let directmlAdapters = $state<DirectMlAdapter[]>([]);
+	let directmlAdapterError = $state<string | null>(null);
+
+	const parakeetDirectmlAdapterItems = $derived.by(() => {
+		const adapterItems = directmlAdapters.map((adapter) => ({
+			value: String(adapter.deviceId),
+			label: adapter.isDefault ? `${adapter.name} (Default)` : adapter.name,
+		}));
+
+		return [
+			{ value: 'auto', label: 'Auto (default adapter)' },
+			...adapterItems,
+		];
+	});
+
+	const parakeetDirectmlAdapterLabel = $derived(
+		parakeetDirectmlAdapterItems.find(
+			(item) =>
+				item.value === settings.value['transcription.parakeet.directmlAdapter'],
+		)?.label,
+	);
+
+	onMount(() => {
+		if (!window.__TAURI_INTERNALS__ || !isWindowsDesktop) {
+			return;
+		}
+
+		void loadDirectmlAdapters();
+	});
+
+	async function loadDirectmlAdapters() {
+		const result = await services.transcriptions.parakeet.listDirectMLAdapters();
+		if (result.error) {
+			directmlAdapters = [];
+			directmlAdapterError = result.error.description;
+			return;
+		}
+
+		directmlAdapters = result.data;
+		directmlAdapterError = null;
+	}
 </script>
 
 <svelte:head> <title>Transcription Settings - Whispering</title> </svelte:head>
@@ -539,8 +583,7 @@
 					<Field.Field>
 						<Field.Label>Acceleration</Field.Label>
 						<Field.Description>
-							Choose how Whispering runs the Parakeet model on Windows. GPU
-							mode uses the system&apos;s default DirectML adapter.
+							Choose how Whispering runs the Parakeet model on Windows.
 						</Field.Description>
 						<RadioGroup.Root
 							bind:value={() =>
@@ -561,7 +604,7 @@
 									value: 'directml',
 									label: 'GPU (DirectML)',
 									description:
-										'Use Windows DirectML acceleration on the default GPU adapter.',
+										'Use Windows DirectML acceleration and optionally target a specific GPU adapter.',
 								},
 							] as option (option.value)}
 								<Field.Label for="parakeet-acceleration-{option.value}">
@@ -579,6 +622,44 @@
 							{/each}
 						</RadioGroup.Root>
 					</Field.Field>
+
+					{#if settings.value['transcription.parakeet.acceleration'] ===
+						'directml'}
+						<Field.Field>
+							<Field.Label for="parakeet-directml-adapter">GPU Adapter</Field.Label>
+							<Select.Root
+								type="single"
+								bind:value={() =>
+									settings.value['transcription.parakeet.directmlAdapter'],
+									(value) =>
+										settings.updateKey(
+											'transcription.parakeet.directmlAdapter',
+											value,
+										)}
+							>
+								<Select.Trigger id="parakeet-directml-adapter" class="w-full">
+									{parakeetDirectmlAdapterLabel ?? 'Auto (default adapter)'}
+								</Select.Trigger>
+								<Select.Content>
+									{#each parakeetDirectmlAdapterItems as item (item.value)}
+										<Select.Item value={item.value} label={item.label}>
+											{item.label}
+										</Select.Item>
+									{/each}
+								</Select.Content>
+							</Select.Root>
+							<Field.Description>
+								Choose which Windows GPU DirectML should use. Auto follows the
+								system default adapter.
+							</Field.Description>
+							{#if directmlAdapterError}
+								<Field.Description>
+									Unable to list GPU adapters right now. Auto still uses the
+									system default adapter.
+								</Field.Description>
+							{/if}
+						</Field.Field>
+					{/if}
 					{/if}
 
 					<LocalModelSelector

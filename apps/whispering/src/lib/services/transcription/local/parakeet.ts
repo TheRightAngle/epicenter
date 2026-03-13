@@ -5,6 +5,7 @@ import { extractErrorMessage } from 'wellcrafted/error';
 import { Ok, type Result, tryAsync } from 'wellcrafted/result';
 import { WhisperingErr, type WhisperingError } from '$lib/result';
 import type {
+	DirectMlAdapter,
 	ParakeetAccelerationMode,
 	ParakeetModelConfig,
 } from './types';
@@ -58,11 +59,30 @@ const ParakeetErrorType = type({
 });
 
 export const ParakeetTranscriptionServiceLive = {
+	async listDirectMLAdapters(): Promise<
+		Result<DirectMlAdapter[], WhisperingError>
+	> {
+		if (!window.__TAURI_INTERNALS__) {
+			return Ok([]);
+		}
+
+		return await tryAsync({
+			try: () => invoke<DirectMlAdapter[]>('list_directml_adapters'),
+			catch: (unknownError) =>
+				WhisperingErr({
+					title: '🖥️ Unable to list GPU adapters',
+					description: extractErrorMessage(unknownError),
+					action: { type: 'more-details', error: unknownError },
+				}),
+		});
+	},
+
 	async transcribe(
 		audioBlob: Blob,
 		options: {
 			modelPath: string;
 			accelerationMode: ParakeetAccelerationMode;
+			deviceId?: number | null;
 		},
 	): Promise<Result<string, WhisperingError>> {
 		// Pre-validation
@@ -127,6 +147,7 @@ export const ParakeetTranscriptionServiceLive = {
 					audioData: audioData,
 					modelPath: options.modelPath,
 					accelerationMode: options.accelerationMode,
+					deviceId: options.deviceId ?? null,
 				}),
 			catch: (unknownError) => {
 				const result = ParakeetErrorType(unknownError);

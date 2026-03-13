@@ -95,6 +95,14 @@ export const PARAKEET_ACCELERATION_MODES = ['cpu', 'directml'] as const;
 export type ParakeetAccelerationMode =
 	(typeof PARAKEET_ACCELERATION_MODES)[number];
 
+export type ParakeetDirectmlAdapterSetting = 'auto' | `${number}`;
+
+export type DirectMlAdapter = {
+	deviceId: number;
+	name: string;
+	isDefault: boolean;
+};
+
 /**
  * Configuration for Moonshine models, which consist of ONNX encoder/decoder files in a directory.
  * Moonshine is optimized for fast, efficient transcription with support for 8 languages.

@@ -29,14 +29,25 @@ impl Engine {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParakeetAccelerationMode {
     Cpu,
-    DirectML,
+    DirectML { device_id: Option<i32> },
 }
 
 impl ParakeetAccelerationMode {
-    pub fn parse(mode: &str) -> Result<Self, String> {
+    pub fn parse(mode: &str, device_id: Option<i32>) -> Result<Self, String> {
         match mode {
             "cpu" => Ok(Self::Cpu),
-            "directml" => Ok(Self::DirectML),
+            "directml" => {
+                #[cfg(target_os = "windows")]
+                {
+                    Ok(Self::DirectML { device_id })
+                }
+
+                #[cfg(not(target_os = "windows"))]
+                {
+                    let _ = device_id;
+                    Err("DirectML acceleration is only available on Windows.".to_string())
+                }
+            }
             _ => Err(format!("Unsupported Parakeet acceleration mode: {}", mode)),
         }
     }
@@ -44,14 +55,17 @@ impl ParakeetAccelerationMode {
     fn to_execution_provider(&self) -> Result<OnnxExecutionProvider, String> {
         match self {
             Self::Cpu => Ok(OnnxExecutionProvider::Cpu),
-            Self::DirectML => {
+            Self::DirectML { device_id } => {
                 #[cfg(target_os = "windows")]
                 {
-                    Ok(OnnxExecutionProvider::DirectML { device_id: None })
+                    Ok(OnnxExecutionProvider::DirectML {
+                        device_id: *device_id,
+                    })
                 }
 
                 #[cfg(not(target_os = "windows"))]
                 {
+                    let _ = device_id;
                     Err("DirectML acceleration is only available on Windows.".to_string())
                 }
             }
@@ -103,10 +117,9 @@ impl ModelManager {
         acceleration_mode: ParakeetAccelerationMode,
     ) -> Result<Arc<Mutex<Option<Engine>>>, String> {
         let mut engine_guard = recover_lock(&self.engine, "Engine", |engine| *engine = None);
-        let mut current_path_guard =
-            recover_lock(&self.current_model_path, "Model path", |path| {
-                *path = None;
-            });
+        let mut current_path_guard = recover_lock(&self.current_model_path, "Model path", |path| {
+            *path = None;
+        });
         let mut current_parakeet_mode_guard =
             recover_lock(&self.current_parakeet_mode, "Parakeet mode", |mode| {
                 *mode = None;
@@ -319,22 +332,14 @@ impl ModelManager {
             if let Some(mut engine) = engine_guard.take() {
                 engine.unload();
             }
-<<<<<<< ours
             let mut current_path_guard =
                 recover_lock(&self.current_model_path, "Model path", |path| *path = None);
             *current_path_guard = None;
-=======
-            if let Ok(mut current_path_guard) = self.current_model_path.lock() {
-                *current_path_guard = None;
-            } else {
-                error!("Model path mutex poisoned while clearing idle model path after unload");
-            }
-            if let Ok(mut current_parakeet_mode_guard) = self.current_parakeet_mode.lock() {
-                *current_parakeet_mode_guard = None;
-            } else {
-                error!("Parakeet mode mutex poisoned while clearing idle mode after unload");
-            }
->>>>>>> theirs
+            let mut current_parakeet_mode_guard =
+                recover_lock(&self.current_parakeet_mode, "Parakeet mode", |mode| {
+                    *mode = None
+                });
+            *current_parakeet_mode_guard = None;
         }
     }
 
@@ -343,21 +348,13 @@ impl ModelManager {
         if let Some(mut engine) = engine_guard.take() {
             engine.unload();
         }
-<<<<<<< ours
         let mut current_path_guard =
             recover_lock(&self.current_model_path, "Model path", |path| *path = None);
         *current_path_guard = None;
-=======
-        if let Ok(mut current_path_guard) = self.current_model_path.lock() {
-            *current_path_guard = None;
-        } else {
-            error!("Model path mutex poisoned while clearing model path after unload");
-        }
-        if let Ok(mut current_parakeet_mode_guard) = self.current_parakeet_mode.lock() {
-            *current_parakeet_mode_guard = None;
-        } else {
-            error!("Parakeet mode mutex poisoned while clearing mode after unload");
-        }
->>>>>>> theirs
+        let mut current_parakeet_mode_guard =
+            recover_lock(&self.current_parakeet_mode, "Parakeet mode", |mode| {
+                *mode = None
+            });
+        *current_parakeet_mode_guard = None;
     }
 }

@@ -4,6 +4,7 @@ mod model_manager;
 use error::TranscriptionError;
 use log::{debug, error, info, warn};
 pub use model_manager::{ModelManager, ParakeetAccelerationMode};
+use serde::Serialize;
 use std::io::Write;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
@@ -20,6 +21,10 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 use rubato::{
     Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction,
 };
+#[cfg(target_os = "windows")]
+use windows::Win32::Graphics::Dxgi::{
+    CreateDXGIFactory1, IDXGIFactory1, DXGI_ADAPTER_FLAG_SOFTWARE, DXGI_ERROR_NOT_FOUND,
+};
 
 /// Check if audio is already in whisper-compatible format (16kHz, mono, 16-bit PCM)
 fn is_valid_wav_format(audio_data: &[u8]) -> bool {
@@ -34,6 +39,69 @@ fn is_valid_wav_format(audio_data: &[u8]) -> bool {
     } else {
         false
     }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DirectMlAdapterInfo {
+    pub device_id: i32,
+    pub name: String,
+    pub is_default: bool,
+}
+
+#[cfg(target_os = "windows")]
+fn adapter_name_from_description(description: &[u16; 128]) -> String {
+    let end = description
+        .iter()
+        .position(|value| *value == 0)
+        .unwrap_or(description.len());
+    String::from_utf16_lossy(&description[..end])
+        .trim()
+        .to_string()
+}
+
+#[cfg(target_os = "windows")]
+fn enumerate_directml_adapters() -> Result<Vec<DirectMlAdapterInfo>, String> {
+    let factory = unsafe { CreateDXGIFactory1::<IDXGIFactory1>() }
+        .map_err(|error| format!("Failed to create DXGI factory: {}", error))?;
+
+    let mut adapters = Vec::new();
+    let mut index = 0u32;
+
+    loop {
+        let adapter = match unsafe { factory.EnumAdapters1(index) } {
+            Ok(adapter) => adapter,
+            Err(error) if error.code() == DXGI_ERROR_NOT_FOUND => break,
+            Err(error) => {
+                return Err(format!(
+                    "Failed to enumerate DirectML adapters at index {}: {}",
+                    index, error
+                ))
+            }
+        };
+
+        let description = unsafe { adapter.GetDesc1() }
+            .map_err(|error| format!("Failed to describe adapter {}: {}", index, error))?;
+
+        let is_software = (description.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32) != 0;
+
+        if !is_software {
+            adapters.push(DirectMlAdapterInfo {
+                device_id: index as i32,
+                name: adapter_name_from_description(&description.Description),
+                is_default: index == 0,
+            });
+        }
+
+        index += 1;
+    }
+
+    Ok(adapters)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn enumerate_directml_adapters() -> Result<Vec<DirectMlAdapterInfo>, String> {
+    Ok(vec![])
 }
 
 /// Convert audio to whisper-compatible format using pure Rust (no FFmpeg required)
@@ -662,17 +730,24 @@ pub async fn transcribe_audio_whisper(
 }
 
 #[tauri::command]
+pub async fn list_directml_adapters() -> Result<Vec<DirectMlAdapterInfo>, String> {
+    enumerate_directml_adapters()
+}
+
+#[tauri::command]
 pub async fn transcribe_audio_parakeet(
     audio_data: Vec<u8>,
     model_path: String,
     acceleration_mode: String,
+    device_id: Option<i32>,
     model_manager: tauri::State<'_, ModelManager>,
 ) -> Result<String, TranscriptionError> {
     info!(
-        "[Transcription] starting Parakeet transcription: audio_bytes={} model_path={} acceleration_mode={}",
+        "[Transcription] starting Parakeet transcription: audio_bytes={} model_path={} acceleration_mode={} device_id={:?}",
         audio_data.len(),
         model_path,
         acceleration_mode,
+        device_id,
     );
 
     // Convert audio to 16kHz mono format
@@ -695,14 +770,16 @@ pub async fn transcribe_audio_parakeet(
         return Ok(String::new());
     }
 
-    let acceleration_mode = ParakeetAccelerationMode::parse(&acceleration_mode)
+    let acceleration_mode = ParakeetAccelerationMode::parse(&acceleration_mode, device_id)
         .map_err(|e| TranscriptionError::GpuError { message: e })?;
 
     // Get or load the model using the persistent model manager
     let engine_arc = model_manager
         .get_or_load_parakeet(PathBuf::from(&model_path), acceleration_mode)
         .map_err(|e| match acceleration_mode {
-            ParakeetAccelerationMode::DirectML => TranscriptionError::GpuError { message: e },
+            ParakeetAccelerationMode::DirectML { .. } => {
+                TranscriptionError::GpuError { message: e }
+            }
             ParakeetAccelerationMode::Cpu => TranscriptionError::ModelLoadError { message: e },
         })?;
     debug!("[Transcription] Parakeet model ready: {}", model_path);

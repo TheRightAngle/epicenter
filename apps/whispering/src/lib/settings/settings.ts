@@ -235,6 +235,7 @@ export const Settings = type({
 	'transcription.parakeet.acceleration': type
 		.enumerated('cpu', 'directml')
 		.default('cpu'),
+	'transcription.parakeet.directmlAdapter': "string = 'auto'",
 	'transcription.parakeet.modelPath': "string = ''",
 	'transcription.moonshine.modelPath': "string = ''",
 

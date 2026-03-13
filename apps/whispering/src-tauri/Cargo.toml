@@ -59,6 +59,7 @@ nix = { version = "0.31.2", features = ["signal"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_Console"] }
+windows = { version = "0.58.0", features = ["Win32_Graphics_Dxgi"] }
 # Windows: Only parakeet is available due to MSVC runtime library conflicts (MT_StaticRelease vs MD_DynamicRelease)
 # - whisper-cpp: whisper-rs-sys conflicts with ort
 # - moonshine: Previously blocked by tokenizers/esaxx-rs CRT conflict.

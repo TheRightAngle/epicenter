@@ -9,6 +9,13 @@ describe('settings schema', () => {
 		expect(settingsSource).toContain(".default('cpu')");
 	});
 
+	test('defaults the Parakeet DirectML adapter selection to auto', () => {
+		const settingsSource = readFileSync(new URL('./settings.ts', import.meta.url), 'utf8');
+
+		expect(settingsSource).toContain("'transcription.parakeet.directmlAdapter'");
+		expect(settingsSource).toContain("'transcription.parakeet.directmlAdapter': \"string = 'auto'\"");
+	});
+
 	test('includes an all-toasts default for toast visibility', () => {
 		const settingsSource = readFileSync(new URL('./settings.ts', import.meta.url), 'utf8');
 

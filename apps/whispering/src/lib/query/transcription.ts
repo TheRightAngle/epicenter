@@ -271,12 +271,27 @@ export async function transcribeBlob(
 						services.os.type() === 'windows'
 							? settings.value['transcription.parakeet.acceleration']
 							: 'cpu';
+					const parakeetDirectmlAdapter =
+						typeof window !== 'undefined' &&
+						window.__TAURI_INTERNALS__ &&
+						services.os.type() === 'windows'
+							? settings.value['transcription.parakeet.directmlAdapter']
+							: 'auto';
+					const parsedParakeetDeviceId =
+						parakeetAccelerationMode === 'directml' &&
+						parakeetDirectmlAdapter !== 'auto'
+							? Number.parseInt(parakeetDirectmlAdapter, 10)
+							: null;
+					const parakeetDeviceId = Number.isFinite(parsedParakeetDeviceId)
+						? parsedParakeetDeviceId
+						: null;
 
 					return await services.transcriptions.parakeet.transcribe(
 						audioToTranscribe,
 						{
 							modelPath: settings.value['transcription.parakeet.modelPath'],
 							accelerationMode: parakeetAccelerationMode,
+							deviceId: parakeetDeviceId,
 						},
 					);
 				}

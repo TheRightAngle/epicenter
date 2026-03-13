@@ -10,6 +10,7 @@ describe('Parakeet DirectML Rust wiring', () => {
 
 		expect(transcriptionSource).toContain('transcribe_audio_parakeet');
 		expect(transcriptionSource).toContain('acceleration_mode: String');
+		expect(transcriptionSource).toContain('device_id: Option<i32>');
 		expect(transcriptionSource).toContain('get_or_load_parakeet(');
 		expect(transcriptionSource).toContain('acceleration_mode');
 	});
@@ -22,6 +23,7 @@ describe('Parakeet DirectML Rust wiring', () => {
 
 		expect(managerSource).toContain('ParakeetAccelerationMode');
 		expect(managerSource).toContain('current_parakeet_mode');
+		expect(managerSource).toContain('DirectML { device_id: Option<i32> }');
 	});
 
 	test('uses the vendored transcribe-rs crate with DirectML enabled on Windows', () => {
@@ -29,5 +31,16 @@ describe('Parakeet DirectML Rust wiring', () => {
 
 		expect(cargoSource).toContain('path = "vendor/transcribe-rs"');
 		expect(cargoSource).toContain('features = ["onnx", "directml"]');
+	});
+
+	test('registers a Windows DirectML adapter enumeration command', () => {
+		const libSource = readFileSync(new URL('../src/lib.rs', import.meta.url), 'utf8');
+		const transcriptionSource = readFileSync(
+			new URL('../src/transcription/mod.rs', import.meta.url),
+			'utf8',
+		);
+
+		expect(transcriptionSource).toContain('list_directml_adapters');
+		expect(libSource).toContain('list_directml_adapters');
 	});
 });
