@@ -1,6 +1,7 @@
 mod error;
 mod model_manager;
 
+use audioadapter_buffers::direct::SequentialSliceOfVecs;
 use error::TranscriptionError;
 use log::{debug, error, info, warn};
 pub use model_manager::ModelManager;
@@ -17,7 +18,8 @@ use transcribe_rs::whisper_cpp::WhisperInferenceParams;
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 use rubato::{
-    Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction,
+    Async, FixedAsync, Resampler, SincInterpolationParameters, SincInterpolationType,
+    WindowFunction,
 };
 
 /// Check if audio is already in whisper-compatible format (16kHz, mono, 16-bit PCM)
@@ -180,12 +182,13 @@ fn convert_audio_rust(audio_data: Vec<u8>) -> Result<Vec<u8>, TranscriptionError
         };
 
         // Create resampler (1 channel, fixed input rate)
-        let mut resampler = SincFixedIn::<f32>::new(
+        let mut resampler = Async::<f32>::new_sinc(
             resample_ratio,
             8.0, // Increased from 2.0 to support down to 2kHz input
-            params,
+            &params,
             chunk_size,
             1, // mono
+            FixedAsync::Input,
         )
         .map_err(|e| {
             error!("[Rust Audio Conversion] failed to create resampler: {}", e);
@@ -194,52 +197,39 @@ fn convert_audio_rust(audio_data: Vec<u8>) -> Result<Vec<u8>, TranscriptionError
             }
         })?;
 
-        // Process audio in chunks since SincFixedIn expects fixed-size chunks
-        // Pre-allocate output buffer for efficiency
-        let mut output_samples = Vec::with_capacity(expected_output_len);
-        let mut input_pos = 0;
+        let input_len = mono_samples.len();
+        let input_channels = vec![mono_samples];
+        let input_adapter =
+            SequentialSliceOfVecs::new(&input_channels, 1, input_len).map_err(|e| {
+                TranscriptionError::AudioReadError {
+                    message: format!("Failed to prepare resampler input: {}", e),
+                }
+            })?;
 
-        debug!(
-            "[Rust Audio Conversion] processing in chunks of {} samples",
-            chunk_size
-        );
+        let output_len = resampler.process_all_needed_output_len(input_len);
+        let mut output_channels = vec![vec![0.0f32; output_len]];
+        let mut output_adapter =
+            SequentialSliceOfVecs::new_mut(&mut output_channels, 1, output_len).map_err(|e| {
+                TranscriptionError::AudioReadError {
+                    message: format!("Failed to prepare resampler output: {}", e),
+                }
+            })?;
 
-        while input_pos < mono_samples.len() {
-            // Get the next chunk (pad with zeros if needed for the last chunk)
-            let end_pos = (input_pos + chunk_size).min(mono_samples.len());
-            let mut chunk: Vec<f32> = mono_samples[input_pos..end_pos].to_vec();
-
-            // Pad the last chunk with zeros if it's smaller than chunk_size
-            if chunk.len() < chunk_size {
-                chunk.resize(chunk_size, 0.0);
-            }
-
-            // Prepare input as a vector of channels (only 1 channel for mono)
-            let waves_in = vec![chunk];
-
-            // Resample this chunk
-            let waves_out = resampler.process(&waves_in, None).map_err(|e| {
-                error!(
-                    "[Rust Audio Conversion] resampling failed at position {}: {}",
-                    input_pos, e
-                );
+        let (_input_frames, produced_frames) = resampler
+            .process_all_into_buffer(&input_adapter, &mut output_adapter, input_len, None)
+            .map_err(|e| {
+                error!("[Rust Audio Conversion] resampling failed: {}", e);
                 TranscriptionError::AudioReadError {
                     message: format!("Resampling failed: {}", e),
                 }
             })?;
 
-            // Append the resampled chunk to output
-            output_samples.extend_from_slice(&waves_out[0]);
-
-            input_pos += chunk_size;
-        }
-
-        // Truncate to expected length to remove artifacts from zero-padding
-        output_samples.truncate(expected_output_len);
+        let mut output_samples = output_channels.remove(0);
+        output_samples.truncate(produced_frames.min(expected_output_len));
 
         debug!(
             "[Rust Audio Conversion] resampling complete: {} samples -> {} samples (expected: {})",
-            mono_samples.len(),
+            input_len,
             output_samples.len(),
             expected_output_len
         );
@@ -326,7 +316,7 @@ fn convert_audio_rust(audio_data: Vec<u8>) -> Result<Vec<u8>, TranscriptionError
 /// **Tier 2: Pure Rust Conversion (Fallback)**
 /// - Attempts to convert audio using pure Rust libraries (no external dependencies)
 /// - Handles uncompressed WAV files with various sample rates, channels, and bit depths
-/// - Uses high-quality resampling (SincFixedIn) for sample rate conversion
+/// - Uses high-quality rubato sinc resampling for sample rate conversion
 /// - Works without FFmpeg installed, making it portable and reliable
 ///
 /// **Tier 3: FFmpeg Conversion (Last Resort)**
@@ -648,6 +638,10 @@ pub async fn transcribe_audio_parakeet(
             })?;
 
         // Extract the ParakeetEngine from the enum
+        #[cfg(target_os = "windows")]
+        let model_manager::Engine::Parakeet(parakeet_engine) = engine;
+
+        #[cfg(not(target_os = "windows"))]
         let parakeet_engine = match engine {
             model_manager::Engine::Parakeet(e) => e,
             _ => {

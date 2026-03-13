@@ -1,8 +1,9 @@
 use super::error::TranscriptionError;
 use hound::{SampleFormat, WavSpec, WavWriter};
-use rubato::{FftFixedInOut, Resampler};
-use std::io::{Cursor, Write};
+use audioadapter_buffers::direct::SequentialSliceOfVecs;
 use log::{debug, info, warn};
+use rubato::{Fft, FixedSync, Resampler};
+use std::io::{Cursor, Write};
 
 /// Extension trait for WavSpec to add audio format helpers
 trait WavSpecExt {
@@ -209,72 +210,51 @@ fn resample_audio(
         return Ok(samples.to_vec());
     }
 
-    // Calculate resampling parameters
     let resample_ratio = to_rate as f64 / from_rate as f64;
-    let chunk_size = 1024; // Process in chunks for efficiency
-
-    // Create resampler
-    let mut resampler = FftFixedInOut::<f32>::new(
+    let chunk_size = 1024;
+    let mut resampler = Fft::<f32>::new(
         from_rate as usize,
         to_rate as usize,
         chunk_size,
-        1, // Single channel (already mono)
+        1,
+        1,
+        FixedSync::Both,
     )
     .map_err(|e| TranscriptionError::AudioReadError {
         message: format!("Failed to create resampler: {}", e),
     })?;
 
-    // Prepare input/output buffers
-    let mut output = Vec::new();
-    let mut input_buffer = vec![Vec::new(); 1]; // Single channel
-    input_buffer[0] = samples.to_vec();
-
-    // Add padding if needed for the resampler
-    let frames_needed = resampler.input_frames_max();
-    if input_buffer[0].len() < frames_needed {
-        input_buffer[0].resize(frames_needed, 0.0);
-    }
-
-    // Process in chunks
-    let mut pos = 0;
-    while pos < samples.len() {
-        let chunk_end = (pos + chunk_size).min(samples.len());
-        let chunk_len = chunk_end - pos;
-
-        // Prepare chunk for processing
-        let mut chunk_input = vec![vec![0.0f32; chunk_size]; 1];
-        chunk_input[0][..chunk_len].copy_from_slice(&samples[pos..chunk_end]);
-
-        // Resample chunk
-        let chunk_output = resampler.process(&chunk_input, None).map_err(|e| {
+    let input_len = samples.len();
+    let expected_output_len = (input_len as f64 * resample_ratio).ceil() as usize;
+    let input_channels = vec![samples.to_vec()];
+    let input_adapter =
+        SequentialSliceOfVecs::new(&input_channels, 1, input_len).map_err(|e| {
             TranscriptionError::AudioReadError {
-                message: format!("Resampling failed: {}", e),
+                message: format!("Failed to prepare resampler input: {}", e),
             }
         })?;
 
-        // Collect output
-        if !chunk_output[0].is_empty() {
-            output.extend_from_slice(&chunk_output[0]);
-        }
+    let output_len = resampler.process_all_needed_output_len(input_len);
+    let mut output_channels = vec![vec![0.0f32; output_len]];
+    let mut output_adapter =
+        SequentialSliceOfVecs::new_mut(&mut output_channels, 1, output_len).map_err(|e| {
+            TranscriptionError::AudioReadError {
+                message: format!("Failed to prepare resampler output: {}", e),
+            }
+        })?;
 
-        pos = chunk_end;
-    }
+    let (_input_frames, produced_frames) = resampler
+        .process_all_into_buffer(&input_adapter, &mut output_adapter, input_len, None)
+        .map_err(|e| TranscriptionError::AudioReadError {
+            message: format!("Resampling failed: {}", e),
+        })?;
 
-    // Process any remaining samples in the resampler
-    let empty_input: Option<&[Vec<f32>]> = None;
-    let final_output = resampler.process_partial(empty_input, None).map_err(|e| {
-        TranscriptionError::AudioReadError {
-            message: format!("Final resampling failed: {}", e),
-        }
-    })?;
-
-    if !final_output[0].is_empty() {
-        output.extend_from_slice(&final_output[0]);
-    }
+    let mut output = output_channels.remove(0);
+    output.truncate(produced_frames.min(expected_output_len));
 
     debug!(
         "Resampled {} samples to {} samples (ratio: {:.3})",
-        samples.len(),
+        input_len,
         output.len(),
         resample_ratio
     );
