@@ -1,5 +1,4 @@
 import { invoke as tauriInvoke } from '@tauri-apps/api/core';
-import { remove } from '@tauri-apps/plugin-fs';
 import { Err, Ok, type Result, tryAsync } from 'wellcrafted/result';
 import type {
 	CancelRecordingResult,
@@ -52,30 +51,9 @@ const discardRecordingSession = async ({
 		description: 'Cleaning up the partial recording...',
 	});
 
-	try {
-		const { data: audioRecording, error: stopRecordingError } =
-			await invoke<AudioRecording>('stop_recording');
-		if (stopRecordingError) {
-			console.error(
-				'Failed to stop partially started recording:',
-				stopRecordingError,
-			);
-			return;
-		}
-
-		if (audioRecording.filePath) {
-			const { error: removeError } = await tryAsync({
-				try: () => remove(audioRecording.filePath!),
-				catch: (error) => RecorderError.FileDeleteFailed({ cause: error }),
-			});
-			if (removeError) {
-				console.error(
-					'Failed to delete partially started recording file:',
-					removeError,
-				);
-			}
-		}
-	} finally {
+	const { error: cancelError } = await invoke<void>('cancel_recording');
+	if (cancelError) {
+		console.error('Failed to cancel recording session:', cancelError);
 		await closeRecordingSession({ sendStatus });
 	}
 };
@@ -161,15 +139,14 @@ export const CpalRecorderServiceLive: RecorderService = {
 				});
 			}
 
-				if (!selectedDeviceId) {
-					sendStatus({
-						title: '🔍 No Device Selected',
-						description:
-							"We'll use an available microphone automatically...",
-					});
-					return Ok({
-						outcome: 'fallback',
-						reason: 'no-device-selected',
+			if (!selectedDeviceId) {
+				sendStatus({
+					title: '🔍 No Device Selected',
+					description: "We'll use an available microphone automatically...",
+				});
+				return Ok({
+					outcome: 'fallback',
+					reason: 'no-device-selected',
 					deviceId: fallbackDeviceId,
 				});
 			}
@@ -220,25 +197,26 @@ export const CpalRecorderServiceLive: RecorderService = {
 				sampleRate: sampleRateNum,
 			},
 		);
-		if (initRecordingSessionError)
+		if (initRecordingSessionError) {
+			await discardRecordingSession({ sendStatus });
 			return RecorderError.InitFailed({
 				cause: initRecordingSessionError,
 			});
+		}
 
-			sendStatus({
-				title: '🎙️ Starting Recording',
-				description:
-					'Recording session initialized, now starting to capture audio...',
-			});
-			const { error: startRecordingError } =
-				await invoke<void>('start_recording');
-			if (startRecordingError) {
-				await discardRecordingSession({ sendStatus });
-				return RecorderError.StartFailed({ cause: startRecordingError });
-			}
+		sendStatus({
+			title: '🎙️ Starting Recording',
+			description:
+				'Recording session initialized, now starting to capture audio...',
+		});
+		const { error: startRecordingError } = await invoke<void>('start_recording');
+		if (startRecordingError) {
+			await discardRecordingSession({ sendStatus });
+			return RecorderError.StartFailed({ cause: startRecordingError });
+		}
 
-			return Ok(deviceOutcome);
-		},
+		return Ok(deviceOutcome);
+	},
 
 	/**
 	 * Stops the current recording session and returns the recorded audio as a Blob.
@@ -256,31 +234,29 @@ export const CpalRecorderServiceLive: RecorderService = {
 				return RecorderError.StopFailed({ cause: stopRecordingError });
 			}
 
-				const { filePath } = audioRecording;
-				// Desktop recorder should always write to a file
-				if (!filePath) {
-					return RecorderError.NoFilePath();
-				}
-				// audioRecording is now AudioRecordingWithFile
+			const { filePath } = audioRecording;
+			// Desktop recorder should always write to a file
+			if (!filePath) {
+				return RecorderError.NoFilePath();
+			}
 
-				// Read the WAV file from disk
-				sendStatus({
-					title: '📁 Reading Recording',
-					description: 'Loading your recording from disk...',
+			sendStatus({
+				title: '📁 Reading Recording',
+				description: 'Loading your recording from disk...',
+			});
+
+			const { data: blob, error: readRecordingFileError } =
+				await FsServiceLive.pathToBlob(filePath);
+			if (readRecordingFileError)
+				return RecorderError.ReadFileFailed({
+					cause: readRecordingFileError,
 				});
-
-				const { data: blob, error: readRecordingFileError } =
-					await FsServiceLive.pathToBlob(filePath);
-				if (readRecordingFileError)
-					return RecorderError.ReadFileFailed({
-						cause: readRecordingFileError,
-					});
 
 			return Ok(blob);
 		} finally {
 			await closeRecordingSession({ sendStatus });
 		}
-		},
+	},
 
 	/**
 	 * Cancels the current recording session and cleans up resources.
@@ -311,35 +287,7 @@ export const CpalRecorderServiceLive: RecorderService = {
 				'Safely stopping your recording and cleaning up resources...',
 		});
 
-		// First get the recording data to know if there's a file to delete
-		const { data: audioRecording } =
-			await invoke<AudioRecording>('stop_recording');
-
-		// If there's a file path, delete the file using Tauri FS plugin
-		if (audioRecording?.filePath) {
-			const { filePath } = audioRecording;
-			const { error: removeError } = await tryAsync({
-				try: () => remove(filePath),
-				catch: (error) => RecorderError.FileDeleteFailed({ cause: error }),
-			});
-			if (removeError)
-				sendStatus({
-					title: '❌ Error Deleting Recording File',
-					description:
-						"We couldn't delete the recording file. Continuing with the cancellation process...",
-				});
-		}
-
-		// Close the recording session after cancelling
-		sendStatus({
-			title: '🔄 Closing Session',
-			description: 'Cleaning up recording resources...',
-		});
-		const { error: closeError } = await invoke<void>('close_recording_session');
-		if (closeError) {
-			// Log but don't fail the cancel operation
-			console.error('Failed to close recording session:', closeError);
-		}
+		await discardRecordingSession({ sendStatus });
 
 		return Ok({ status: 'cancelled' });
 	},
