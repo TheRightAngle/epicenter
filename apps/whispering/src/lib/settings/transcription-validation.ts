@@ -2,6 +2,10 @@ import {
 	TRANSCRIPTION_SERVICES,
 	type TranscriptionService,
 } from '$lib/services/transcription/registry';
+import {
+	getCachedLocalModelValidity,
+	validateConfiguredLocalModelPath,
+} from '$lib/components/settings/local-models';
 import { settings } from '$lib/state/settings.svelte';
 
 /**
@@ -39,10 +43,23 @@ export function isTranscriptionServiceConfigured(
 		}
 		case 'local': {
 			const modelPath = settings.value[service.modelPathField];
-			return modelPath !== '';
+			return modelPath !== '' && getCachedLocalModelValidity(modelPath);
 		}
 		default: {
 			return true;
 		}
 	}
+}
+
+export async function refreshTranscriptionServiceConfiguration(
+	service: TranscriptionService,
+): Promise<boolean> {
+	if (service.location !== 'local') {
+		return isTranscriptionServiceConfigured(service);
+	}
+
+	return await validateConfiguredLocalModelPath(
+		service.id,
+		settings.value[service.modelPathField],
+	);
 }

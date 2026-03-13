@@ -18,6 +18,7 @@
 	import {
 		getSelectedTranscriptionService,
 		isTranscriptionServiceConfigured,
+		refreshTranscriptionServiceConfiguration,
 	} from '$lib/settings/transcription-validation';
 	import { settings } from '$lib/state/settings.svelte';
 
@@ -50,6 +51,10 @@
 		TRANSCRIPTION_SERVICES.filter((service) => service.location === 'local'),
 	);
 
+	let localServiceConfiguration = $state<
+		Partial<Record<TranscriptionService['id'], boolean>>
+	>({});
+
 	const combobox = useCombobox();
 
 	// Track which services are expanded
@@ -67,6 +72,31 @@
 			expandedServices.add(serviceId);
 		}
 	}
+
+	function isServiceConfigured(service: TranscriptionService) {
+		if (service.location !== 'local') {
+			return isTranscriptionServiceConfigured(service);
+		}
+
+		return localServiceConfiguration[service.id] ?? false;
+	}
+
+	$effect(() => {
+		localServices.map((service) => settings.value[service.modelPathField]).join('|');
+
+		void (async () => {
+			const nextConfiguration = await Promise.all(
+				localServices.map(async (service) => ({
+					id: service.id,
+					isConfigured: await refreshTranscriptionServiceConfiguration(service),
+				})),
+			);
+
+			localServiceConfiguration = Object.fromEntries(
+				nextConfiguration.map(({ id, isConfigured }) => [id, isConfigured]),
+			);
+		})();
+	});
 </script>
 
 {#snippet renderServiceIcon(service: TranscriptionService)}
@@ -105,7 +135,7 @@
 							'size-4 flex items-center justify-center [&>svg]:size-full',
 							selectedService.invertInDarkMode &&
 								'dark:[&>svg]:invert dark:[&>svg]:brightness-90',
-							!isTranscriptionServiceConfigured(selectedService) &&
+							!isServiceConfigured(selectedService) &&
 								'opacity-60',
 						)}
 					>
@@ -114,7 +144,7 @@
 				{:else}
 					<MicIcon class="size-4 text-muted-foreground" />
 				{/if}
-				{#if selectedService && !isTranscriptionServiceConfigured(selectedService)}
+				{#if selectedService && !isServiceConfigured(selectedService)}
 					<span
 						class="absolute -right-0.5 -top-0.5 size-2 rounded-full bg-warning before:absolute before:left-0 before:top-0 before:h-full before:w-full before:rounded-full before:bg-warning/50 before:animate-ping"
 					></span>
@@ -134,7 +164,7 @@
 						{@const isSelected =
 							settings.value['transcription.selectedTranscriptionService'] ===
 							service.id}
-						{@const isConfigured = isTranscriptionServiceConfigured(service)}
+						{@const isConfigured = isServiceConfigured(service)}
 						{@const modelPath = settings.value[service.modelPathField]}
 
 						<Command.Item
@@ -176,7 +206,7 @@
 						{@const isSelected =
 							settings.value['transcription.selectedTranscriptionService'] ===
 							service.id}
-						{@const isConfigured = isTranscriptionServiceConfigured(service)}
+						{@const isConfigured = isServiceConfigured(service)}
 						{@const currentSelectedModelName =
 							getSelectedModelNameOrUrl(service)}
 						{@const isExpanded = expandedServices.has(service.id)}
@@ -254,7 +284,7 @@
 						{@const isSelected =
 							settings.value['transcription.selectedTranscriptionService'] ===
 							service.id}
-						{@const isConfigured = isTranscriptionServiceConfigured(service)}
+						{@const isConfigured = isServiceConfigured(service)}
 						{@const serverUrl = settings.value[service.serverUrlField]}
 
 						<Command.Item
