@@ -34,11 +34,7 @@ import {
 	type SyncMessageType,
 } from '@epicenter/sync';
 import * as decoding from 'lib0/decoding';
-import {
-	defineErrors,
-	extractErrorMessage,
-	type InferErrors,
-} from 'wellcrafted/error';
+import { defineErrors, extractErrorMessage } from 'wellcrafted/error';
 import { Ok, trySync } from 'wellcrafted/result';
 import {
 	type Awareness,

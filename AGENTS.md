@@ -1,8 +1,8 @@
 # Epicenter
 
-Local-first workspace platform. Monorepo with Yjs CRDTs, Tauri desktop app, and Svelte UI.
+Local-first workspace platform. Monorepo with Yjs CRDTs and Svelte UI.
 
-Structure: `apps/epicenter/` (Tauri app), `packages/workspace/` (core TypeScript/Yjs library), `packages/ui/` (shadcn-svelte components), `specs/` (planning docs), `docs/` (reference materials).
+Structure: `apps/whispering/` (Tauri transcription app), `apps/tab-manager/` (Chrome extension), `apps/api/` (Cloudflare hub), `packages/workspace/` (core TypeScript/Yjs library), `packages/ui/` (shadcn-svelte components), `specs/` (planning docs), `docs/` (reference materials).
 
 Always use bun: Prefer `bun` over npm, yarn, pnpm, and node. Use `bun run`, `bun test`, `bun install`, and `bun x` (instead of npx).
 

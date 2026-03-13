@@ -32,11 +32,7 @@ function createFsState() {
 	const ws = createWorkspace({
 		id: 'fs-explorer',
 		tables: { files: filesTable },
-	})
-		.withExtension('persistence', indexeddbPersistence)
-		.withDocumentExtension('persistence', indexeddbPersistence, {
-			tags: ['persistent'],
-		});
+	}).withExtension('persistence', indexeddbPersistence);
 	const fs = createYjsFileSystem(ws.tables.files, ws.documents.files.content);
 
 	// ── Reactive state ────────────────────────────────────────────────

@@ -332,8 +332,8 @@ describe('applyMessage — QUERY_AWARENESS', () => {
 		const result = applyMessage({ data: message, room, connection });
 
 		expect(result.error).toBeNull();
-		expect(result.data!.response).toBeDefined();
-		expect(decodeMessageType(result.data!.response!)).toBe(
+		expect(result.data?.response).toBeDefined();
+		expect(decodeMessageType(result.data?.response!)).toBe(
 			MESSAGE_TYPE.AWARENESS,
 		);
 	});

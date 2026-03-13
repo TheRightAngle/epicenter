@@ -846,35 +846,76 @@ export type WorkspaceClientBuilder<
 	TExtensions
 > & {
 	/**
-	 * Add a single extension. Returns a new builder with the extension's
-	 * exports accumulated into the extensions type.
+	 * Register an extension for BOTH the workspace Y.Doc AND all content document Y.Docs.
 	 *
-	 * Extensions are chained because they can build on each other progressively —
-	 * each factory receives the client-so-far (including all previously added extensions)
-	 * as typed context. This enables extension N+1 to access extension N's exports.
+	 * The factory fires once for the workspace doc (at build time, synchronously) and
+	 * once per content doc (at `documents.open()` time). This is the 90% default—use it
+	 * for persistence, sync, broadcast, or any extension that should apply everywhere.
 	 *
-	 * The factory returns a flat object with custom exports + optional `whenReady`
-	 * and `destroy`. The framework normalizes defaults via `defineExtension()`.
+	 * For workspace-only extensions, use {@link withWorkspaceExtension}.
+	 * For document-only extensions (with optional tag filtering), use {@link withDocumentExtension}.
 	 *
 	 * @param key - Unique name for this extension (used as the key in `.extensions`)
 	 * @param factory - Factory receiving the client-so-far context, returns flat exports
-	 * @returns A new builder with the extension's exports added to the type
+	 * @returns A new builder with the extension's exports added to both workspace and document types
 	 *
 	 * @example
 	 * ```typescript
+	 * // One call covers both workspace and document persistence:
 	 * const client = createWorkspace(definition)
-	 *   .withExtension('persistence', ({ ydoc }) => {
-	 *     const idb = new IndexeddbPersistence(ydoc.guid, ydoc);
-	 *     return { clearData: () => idb.clearData(), whenReady: idb.whenSynced, destroy: () => idb.destroy() };
-	 *   })
-	 *   .withExtension('sync', ({ extensions, whenReady }) => {
-	 *     // extensions.persistence is fully typed here!
-	 *     // whenReady waits for all prior extensions
-	 *     return { provider, whenReady: syncReady, destroy: () => provider.destroy() };
-	 *   });
+	 *   .withExtension('persistence', indexeddbPersistence)
+	 *   .withExtension('sync', createSyncExtension({ ... }));
 	 * ```
 	 */
 	withExtension<TKey extends string, TExports extends Record<string, unknown>>(
+		key: TKey,
+		factory: (
+			context: ExtensionContext<
+				TId,
+				TTableDefinitions,
+				TKvDefinitions,
+				TAwarenessDefinitions,
+				TExtensions
+			>,
+		) => TExports & {
+			whenReady?: Promise<unknown>;
+			destroy?: () => MaybePromise<void>;
+		},
+	): WorkspaceClientBuilder<
+		TId,
+		TTableDefinitions,
+		TKvDefinitions,
+		TAwarenessDefinitions,
+		TExtensions &
+			Record<TKey, Extension<Omit<TExports, 'whenReady' | 'destroy'>>>,
+		TDocExtensions & Record<TKey, Omit<TExports, 'whenReady' | 'destroy'>>
+	>;
+
+	/**
+	 * Register an extension for the workspace Y.Doc ONLY.
+	 *
+	 * The factory fires once at build time for the workspace doc. It does NOT
+	 * fire for content documents opened via `documents.open()`. Use this when
+	 * an extension is genuinely workspace-scoped (analytics, telemetry) and
+	 * should not run per-document.
+	 *
+	 * Most consumers want {@link withExtension} (both scopes) instead.
+	 *
+	 * @param key - Unique name for this extension
+	 * @param factory - Factory receiving the client-so-far context, returns flat exports
+	 * @returns A new builder with the extension's exports added to the workspace type only
+	 *
+	 * @example
+	 * ```typescript
+	 * createWorkspace(definition)
+	 *   .withExtension('persistence', indexeddbPersistence)        // both scopes
+	 *   .withWorkspaceExtension('analytics', analyticsExtension);  // workspace only
+	 * ```
+	 */
+	withWorkspaceExtension<
+		TKey extends string,
+		TExports extends Record<string, unknown>,
+	>(
 		key: TKey,
 		factory: (
 			context: ExtensionContext<

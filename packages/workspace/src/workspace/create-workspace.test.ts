@@ -605,6 +605,82 @@ describe('createWorkspace', () => {
 			expect(hookCalls).toEqual(['ephemeral-only', 'universal']);
 		});
 
+		test('withExtension registers for both workspace and document Y.Docs', async () => {
+			let factoryCallCount = 0;
+
+			const filesTable = defineTable(
+				type({
+					id: 'string',
+					name: 'string',
+					updatedAt: 'number',
+					_v: '1',
+				}),
+			).withDocument('content', {
+				guid: 'id',
+				onUpdate: () => ({ updatedAt: Date.now() }),
+			});
+
+			// withExtension fires factory for workspace Y.Doc AND registers
+			// it as a document extension (tags: [] = universal)
+			const client = createWorkspace({
+				id: 'three-tier-both-test',
+				tables: { files: filesTable },
+			}).withExtension('myExt', () => {
+				factoryCallCount++;
+				return {
+					tag: 'ext',
+					destroy: () => {},
+				};
+			});
+
+			// Factory fires once synchronously for the workspace Y.Doc
+			expect(factoryCallCount).toBe(1);
+			expect(client.extensions.myExt.tag).toBe('ext');
+
+			// Open a document — the same factory should fire again as a document extension
+			await client.documents.files.content.open('f1');
+
+			// Factory called twice: once for workspace, once for document
+			expect(factoryCallCount).toBe(2);
+		});
+
+		test('withWorkspaceExtension fires only for workspace Y.Doc, not documents', async () => {
+			let factoryCallCount = 0;
+
+			const filesTable = defineTable(
+				type({
+					id: 'string',
+					name: 'string',
+					updatedAt: 'number',
+					_v: '1',
+				}),
+			).withDocument('content', {
+				guid: 'id',
+				onUpdate: () => ({ updatedAt: Date.now() }),
+			});
+
+			const client = createWorkspace({
+				id: 'three-tier-ws-only-test',
+				tables: { files: filesTable },
+			}).withWorkspaceExtension('wsOnly', () => {
+				factoryCallCount++;
+				return {
+					tag: 'ws-only',
+					destroy: () => {},
+				};
+			});
+
+			// Factory should fire once for workspace Y.Doc
+			expect(factoryCallCount).toBe(1);
+			expect(client.extensions.wsOnly.tag).toBe('ws-only');
+
+			// Opening a document should NOT trigger this extension
+			await client.documents.files.content.open('f1');
+
+			// Still exactly 1 call — withWorkspaceExtension does not register for documents
+			expect(factoryCallCount).toBe(1);
+		});
+
 		test('workspace destroy cascades to closeAll on bindings', async () => {
 			const filesTable = defineTable(
 				type({
