@@ -163,6 +163,45 @@ describe('CpalRecorderServiceLive', () => {
 		]);
 	});
 
+	test('surfaces combined cancel and close cleanup failures when init_recording_session fails', async () => {
+		invokeMock.mockImplementation(async (command: string) => {
+			switch (command) {
+				case 'enumerate_recording_devices':
+					return ['Mic 1'];
+				case 'init_recording_session':
+					throw new Error('init boom');
+				case 'cancel_recording':
+					throw new Error('cancel boom');
+				case 'close_recording_session':
+					throw new Error('close boom');
+				default:
+					throw new Error(`Unexpected command ${command}`);
+			}
+		});
+
+		const { CpalRecorderServiceLive } = await loadCpalModule();
+		const result = await CpalRecorderServiceLive.startRecording(
+			{
+				method: 'cpal',
+				selectedDeviceId: 'Mic 1' as never,
+				recordingId: 'rec-1',
+				outputFolder: '/tmp',
+				sampleRate: '16000',
+			},
+			{ sendStatus: () => undefined },
+		);
+
+		expect(result.error?.message).toContain('init boom');
+		expect(result.error?.message).toContain('cancel boom');
+		expect(result.error?.message).toContain('close boom');
+		expect(commandLog()).toEqual([
+			'enumerate_recording_devices',
+			'init_recording_session',
+			'cancel_recording',
+			'close_recording_session',
+		]);
+	});
+
 	test('closes the recording session when start_recording fails after init', async () => {
 		invokeMock.mockImplementation(async (command: string) => {
 			switch (command) {

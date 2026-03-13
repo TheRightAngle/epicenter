@@ -56,7 +56,16 @@ const discardRecordingSession = async ({
 	const { error: cancelError } = await invoke<void>('cancel_recording');
 	if (cancelError) {
 		console.error('Failed to cancel recording session:', cancelError);
-		await closeRecordingSession({ sendStatus });
+		const { error: closeError } = await closeRecordingSession({ sendStatus });
+		if (closeError) {
+			return RecorderError.StopFailed({
+				cause: formatCleanupAwareError({
+					primaryError: cancelError,
+					cleanupError: closeError,
+					cleanupAction: 'closing the recording session after cancel_recording failed',
+				}),
+			});
+		}
 		return Err(cancelError);
 	}
 	return Ok(undefined);
@@ -399,6 +408,16 @@ function extractErrorMessage(cause: { message?: string } | unknown) {
 	if (cause instanceof Error) return cause.message;
 	if (typeof cause === 'object' && cause && 'message' in cause) {
 		return String(cause.message);
+	}
+	if (
+		typeof cause === 'object' &&
+		cause &&
+		'error' in cause &&
+		typeof cause.error === 'object' &&
+		cause.error &&
+		'message' in cause.error
+	) {
+		return String(cause.error.message);
 	}
 	return String(cause);
 }

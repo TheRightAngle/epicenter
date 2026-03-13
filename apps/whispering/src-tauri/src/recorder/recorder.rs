@@ -3,6 +3,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, SampleFormat, Stream};
 use log::{debug, error, info};
 use serde::Serialize;
+use std::any::Any;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
@@ -260,20 +261,36 @@ impl RecorderState {
 
     /// Close the recording session
     pub fn close_session(&mut self) -> Result<()> {
+        let mut cleanup_errors = Vec::new();
+
         // Send shutdown command to worker thread
         if let Some(tx) = self.cmd_tx.take() {
-            let _ = tx.send(RecorderCmd::Shutdown);
+            if let Err(e) = tx.send(RecorderCmd::Shutdown) {
+                cleanup_errors.push(format!("Failed to send shutdown command: {}", e));
+            }
         }
 
         // Wait for worker thread to finish
         if let Some(handle) = self.worker_handle.take() {
-            let _ = handle.join();
+            if let Err(panic) = handle.join() {
+                cleanup_errors.push(format!(
+                    "Failed to join worker thread: {}",
+                    panic_payload_message(&panic)
+                ));
+            }
         }
 
         // Finalize and drop the writer
         if let Some(writer) = self.writer.take() {
-            if let Ok(mut w) = writer.lock() {
-                let _ = w.finalize(); // Ignore errors during cleanup
+            match writer.lock() {
+                Ok(mut w) => {
+                    if let Err(e) = w.finalize() {
+                        cleanup_errors.push(format!("Failed to finalize WAV: {}", e));
+                    }
+                }
+                Err(e) => {
+                    cleanup_errors.push(format!("Failed to lock writer: {}", e));
+                }
             }
         }
 
@@ -283,7 +300,11 @@ impl RecorderState {
         self.channels = 0;
 
         debug!("Recording session closed");
-        Ok(())
+        if cleanup_errors.is_empty() {
+            Ok(())
+        } else {
+            Err(cleanup_errors.join("; "))
+        }
     }
 
     /// Get current recording ID if actively recording
@@ -323,10 +344,21 @@ fn find_device(host: &cpal::Host, device_name: &str) -> Result<Device> {
     Err(format!("Device '{}' not found", device_name))
 }
 
+fn panic_payload_message(panic: &Box<dyn Any + Send + 'static>) -> String {
+    if let Some(message) = panic.downcast_ref::<&str>() {
+        (*message).to_string()
+    } else if let Some(message) = panic.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "unknown panic".to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::RecorderState;
     use std::fs;
+    use std::thread;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -353,6 +385,21 @@ mod tests {
         assert_eq!(recorder.channels, 0);
 
         fs::remove_dir_all(temp_dir).unwrap();
+    }
+
+    #[test]
+    fn close_session_propagates_worker_join_failures() {
+        let mut recorder = RecorderState::new();
+        recorder.worker_handle = Some(thread::spawn(|| panic!("worker boom")));
+
+        let error = recorder.close_session().unwrap_err();
+
+        assert!(error.contains("Failed to join worker thread"));
+        assert!(error.contains("worker boom"));
+        assert!(recorder.worker_handle.is_none());
+        assert!(recorder.file_path.is_none());
+        assert_eq!(recorder.sample_rate, 0);
+        assert_eq!(recorder.channels, 0);
     }
 }
 
