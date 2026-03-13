@@ -9,6 +9,7 @@ import {
 	enumerateDevices,
 	getRecordingStream,
 } from '$lib/services/device-stream';
+import { createVadStreamLifecycle } from '$lib/state/vad-stream-lifecycle';
 import { settings } from '$lib/state/settings.svelte';
 
 /**
@@ -103,13 +104,40 @@ function createVadRecorder() {
 			}
 
 			const { stream, deviceOutcome } = streamResult;
-			_currentStream = stream;
+			const streamLifecycle = createVadStreamLifecycle({
+				initialStream: stream,
+				cleanupStream: cleanupRecordingStream,
+				setCurrentStream: (nextStream) => {
+					_currentStream = nextStream;
+				},
+				reacquireStream: async () => {
+					const { data: resumedStreamResult, error: resumedStreamError } =
+						await getRecordingStream({
+							selectedDeviceId: settings.value['recording.navigator.deviceId'],
+							sendStatus: (status) => {
+								console.log(
+									'VAD resume getRecordingStream status update:',
+									status,
+								);
+							},
+						});
+
+					if (resumedStreamError) {
+						throw new Error(extractErrorMessage(resumedStreamError));
+					}
+
+					return resumedStreamResult.stream;
+				},
+			});
 
 			// Create VAD with the validated stream
 			const { data: newVad, error: initializeVadError } = await tryAsync({
 				try: () =>
 					MicVAD.new({
-						stream,
+						startOnLoad: false,
+						getStream: streamLifecycle.getStream,
+						pauseStream: streamLifecycle.pauseStream,
+						resumeStream: streamLifecycle.resumeStream,
 						submitUserSpeechOnPause: true,
 						onSpeechStart: () => {
 							_state = 'SPEECH_DETECTED';

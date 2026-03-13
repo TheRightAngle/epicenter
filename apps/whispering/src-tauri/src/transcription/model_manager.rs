@@ -3,30 +3,25 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 #[cfg(not(target_os = "windows"))]
-use transcribe_rs::engines::moonshine::{MoonshineEngine, MoonshineModelParams};
-use transcribe_rs::engines::parakeet::{ParakeetEngine, ParakeetModelParams};
+use transcribe_rs::onnx::moonshine::MoonshineModel;
+use transcribe_rs::onnx::moonshine::MoonshineVariant;
+use transcribe_rs::onnx::parakeet::ParakeetModel;
+use transcribe_rs::onnx::Quantization;
 #[cfg(not(target_os = "windows"))]
-use transcribe_rs::engines::whisper::WhisperEngine;
-use transcribe_rs::TranscriptionEngine;
+use transcribe_rs::whisper_cpp::WhisperEngine;
 
 /// Engine type for managing different transcription engines
 pub enum Engine {
     #[cfg(not(target_os = "windows"))]
     Whisper(WhisperEngine),
-    Parakeet(ParakeetEngine),
+    Parakeet(ParakeetModel),
     #[cfg(not(target_os = "windows"))]
-    Moonshine(MoonshineEngine),
+    Moonshine(MoonshineModel),
 }
 
 impl Engine {
     fn unload(&mut self) {
-        match self {
-            Engine::Parakeet(e) => e.unload_model(),
-            #[cfg(not(target_os = "windows"))]
-            Engine::Whisper(e) => e.unload_model(),
-            #[cfg(not(target_os = "windows"))]
-            Engine::Moonshine(e) => e.unload_model(),
-        }
+        // transcribe-rs 0.3.0 drops loaded models directly; there is no explicit unload API.
     }
 }
 
@@ -86,9 +81,7 @@ impl ModelManager {
         };
 
         if needs_load {
-            let mut engine = ParakeetEngine::new();
-            engine
-                .load_model_with_params(&model_path, ParakeetModelParams::int8())
+            let engine = ParakeetModel::load(&model_path, &Quantization::Int8)
                 .map_err(|e| format!("Failed to load Parakeet model: {}", e))?;
 
             *engine_guard = Some(Engine::Parakeet(engine));
@@ -144,9 +137,7 @@ impl ModelManager {
         };
 
         if needs_load {
-            let mut engine = WhisperEngine::new();
-            engine
-                .load_model(&model_path)
+            let engine = WhisperEngine::load(&model_path)
                 .map_err(|e| format!("Failed to load Whisper model: {}", e))?;
 
             *engine_guard = Some(Engine::Whisper(engine));
@@ -175,7 +166,7 @@ impl ModelManager {
     pub fn get_or_load_moonshine(
         &self,
         model_path: PathBuf,
-        variant: MoonshineModelParams,
+        variant: MoonshineVariant,
     ) -> Result<Arc<Mutex<Option<Engine>>>, String> {
         let mut engine_guard = self.engine.lock().map_err(|e| {
             format!(
@@ -218,9 +209,7 @@ impl ModelManager {
         };
 
         if needs_load {
-            let mut engine = MoonshineEngine::new();
-            engine
-                .load_model_with_params(&model_path, variant)
+            let engine = MoonshineModel::load(&model_path, variant, &Quantization::FP32)
                 .map_err(|e| format!("Failed to load Moonshine model: {}", e))?;
 
             *engine_guard = Some(Engine::Moonshine(engine));
@@ -241,7 +230,7 @@ impl ModelManager {
     pub fn get_or_load_moonshine(
         &self,
         _model_path: PathBuf,
-        _variant: &str,
+        _variant: MoonshineVariant,
     ) -> Result<Arc<Mutex<Option<Engine>>>, String> {
         Err("Moonshine is not available on Windows due to build compatibility issues. Please use Parakeet for local transcription.".to_string())
     }

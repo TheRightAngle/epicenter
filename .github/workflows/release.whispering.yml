@@ -174,8 +174,60 @@ jobs:
             echo "${DELIMITER}"
           } >> $GITHUB_OUTPUT
 
-      # Main Tauri build and release action
-      - uses: tauri-apps/tauri-action@v0
+      - name: Determine signing mode
+        id: signing
+        shell: bash
+        env:
+          MATRIX_PLATFORM: ${{ matrix.platform }}
+          MATRIX_ARGS: ${{ matrix.args }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          enable_signing=true
+          missing=()
+
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ] || [ -z "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" ]; then
+            enable_signing=false
+            missing+=("tauri-updater-signing")
+          fi
+
+          if [ "$MATRIX_PLATFORM" = "macos-latest" ]; then
+            for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+              if [ -z "${!name}" ]; then
+                enable_signing=false
+                missing+=("$name")
+              fi
+            done
+          fi
+
+          if [ "$enable_signing" = "true" ]; then
+            build_args="$MATRIX_ARGS"
+            echo "Using signed release path for $MATRIX_PLATFORM"
+          elif [ -n "$MATRIX_ARGS" ]; then
+            build_args="$MATRIX_ARGS --no-sign"
+            echo "Falling back to unsigned release path for $MATRIX_PLATFORM"
+          else
+            build_args="--no-sign"
+            echo "Falling back to unsigned release path for $MATRIX_PLATFORM"
+          fi
+
+          echo "enabled=$enable_signing" >> "$GITHUB_OUTPUT"
+          echo "args=$build_args" >> "$GITHUB_OUTPUT"
+          {
+            echo "missing<<EOF"
+            printf '%s\n' "${missing[@]}" | sort -u
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and publish signed Tauri release
+        if: steps.signing.outputs.enabled == 'true'
+        uses: tauri-apps/tauri-action@v0
         env:
           # Set CI environment variable to help with DMG bundling
           CI: true
@@ -221,7 +273,24 @@ jobs:
           prerelease: false
 
           # Platform-specific build arguments (e.g., --target for macOS)
-          args: ${{ matrix.args }}
+          args: ${{ steps.signing.outputs.args }}
+
+      - name: Build and publish unsigned Tauri release
+        if: steps.signing.outputs.enabled != 'true'
+        uses: tauri-apps/tauri-action@v0
+        env:
+          CI: true
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APTABASE_KEY: ${{ secrets.APTABASE_KEY }}
+
+        with:
+          projectPath: 'apps/whispering'
+          tagName: ${{ github.event.inputs.tag || github.ref_name }}
+          releaseName: 'Whispering ${{ github.event.inputs.tag || github.ref_name }}'
+          releaseBody: ${{ steps.release_notes.outputs.RELEASE_NOTES }}
+          releaseDraft: true
+          prerelease: false
+          args: ${{ steps.signing.outputs.args }}
 
       # Install FUSE for AppImage processing
       - name: Install FUSE for AppImage processing

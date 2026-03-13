@@ -126,7 +126,7 @@
 					Delete
 				</Button>
 			{/if}
-			<div class="flex-1" />
+			<div class="flex-1"></div>
 			<Button variant="outline" onclick={() => (isDialogOpen = false)}>
 				Close
 			</Button>

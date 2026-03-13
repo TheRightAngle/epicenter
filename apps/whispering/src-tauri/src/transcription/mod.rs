@@ -2,20 +2,17 @@ mod error;
 mod model_manager;
 
 use error::TranscriptionError;
-pub use model_manager::ModelManager;
 use log::{debug, error, info, warn};
+pub use model_manager::ModelManager;
 use std::io::Write;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 #[cfg(not(target_os = "windows"))]
-use transcribe_rs::engines::moonshine::MoonshineModelParams;
-use transcribe_rs::{
-    engines::parakeet::{ParakeetInferenceParams, TimestampGranularity},
-    TranscriptionEngine,
-};
+use transcribe_rs::onnx::moonshine::{MoonshineParams, MoonshineVariant};
+use transcribe_rs::onnx::parakeet::{ParakeetParams, TimestampGranularity};
 #[cfg(not(target_os = "windows"))]
-use transcribe_rs::engines::whisper::WhisperInferenceParams;
+use transcribe_rs::whisper_cpp::WhisperInferenceParams;
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -115,10 +112,7 @@ fn convert_audio_rust(audio_data: Vec<u8>) -> Result<Vec<u8>, TranscriptionError
         }
     };
 
-    debug!(
-        "[Rust Audio Conversion] read {} samples",
-        samples_f32.len()
-    );
+    debug!("[Rust Audio Conversion] read {} samples", samples_f32.len());
 
     // Step 2: Convert channels to mono (if needed)
     let mono_samples: Vec<f32> = if channels == 1 {
@@ -127,9 +121,7 @@ fn convert_audio_rust(audio_data: Vec<u8>) -> Result<Vec<u8>, TranscriptionError
         samples_f32
     } else if channels == 2 {
         // Stereo: average left and right channels
-        debug!(
-            "[Rust Audio Conversion] converting stereo to mono by averaging channels"
-        );
+        debug!("[Rust Audio Conversion] converting stereo to mono by averaging channels");
         samples_f32
             .chunks_exact(2)
             .map(|chunk| (chunk[0] + chunk[1]) / 2.0)
@@ -567,7 +559,7 @@ pub async fn transcribe_audio_whisper(
         };
 
         whisper_engine
-            .transcribe_samples(samples, Some(params))
+            .transcribe_with(&samples, &params)
             .map_err(|e| TranscriptionError::TranscriptionError {
                 message: e.to_string(),
             })?
@@ -633,8 +625,8 @@ pub async fn transcribe_audio_parakeet(
         .map_err(|e| TranscriptionError::ModelLoadError { message: e })?;
     debug!("[Transcription] Parakeet model ready: {}", model_path);
 
-    let params = ParakeetInferenceParams {
-        timestamp_granularity: TimestampGranularity::Segment,
+    let params = ParakeetParams {
+        timestamp_granularity: Some(TimestampGranularity::Segment),
         ..Default::default()
     };
 
@@ -666,7 +658,7 @@ pub async fn transcribe_audio_parakeet(
         };
 
         parakeet_engine
-            .transcribe_samples(samples, Some(params))
+            .transcribe_with(&samples, &params)
             .map_err(|e| TranscriptionError::TranscriptionError {
                 message: e.to_string(),
             })?
@@ -731,14 +723,14 @@ pub async fn transcribe_audio_moonshine(
         );
 
         match variant {
-            "base" => MoonshineModelParams::base(),
-            "tiny" => MoonshineModelParams::tiny(),
+            "base" => MoonshineVariant::Base,
+            "tiny" => MoonshineVariant::Tiny,
             _ => {
                 warn!(
                     "[Transcription] unknown Moonshine variant '{}' in path '{}', defaulting to tiny",
                     variant, dir_name
                 );
-                MoonshineModelParams::tiny()
+                MoonshineVariant::Tiny
             }
         }
     };
@@ -776,9 +768,10 @@ pub async fn transcribe_audio_moonshine(
             }
         };
 
-        // Moonshine doesn't have inference params like Whisper, pass None
+        let params = MoonshineParams::default();
+
         moonshine_engine
-            .transcribe_samples(samples, None)
+            .transcribe_with(&samples, &params)
             .map_err(|e| TranscriptionError::TranscriptionError {
                 message: e.to_string(),
             })?

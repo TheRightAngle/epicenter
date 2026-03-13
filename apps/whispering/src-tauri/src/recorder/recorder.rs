@@ -1,12 +1,12 @@
 use crate::recorder::wav_writer::WavWriter;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, SampleFormat, Stream};
+use log::{debug, error, info};
 use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use log::{debug, error, info};
 
 /// Simple result type using String for errors
 pub type Result<T> = std::result::Result<T, String>;

@@ -28,7 +28,7 @@
 	);
 
 	const keyRecorder = createKeyRecorder({
-		pressedKeys,
+		getPressedKeys: () => pressedKeys,
 		onRegister: async (keyCombination: KeyboardEventSupportedKey[]) => {
 			if (shortcutValue) {
 				const { error: unregisterError } =

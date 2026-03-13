@@ -37,6 +37,7 @@ import {
 } from '$lib/constants/audio';
 import { CommandOrAlt, CommandOrControl } from '$lib/constants/keyboard';
 import { SUPPORTED_LANGUAGES } from '$lib/constants/languages';
+import { PLATFORM_TYPE } from '$lib/constants/platform';
 import {
 	TRANSCRIPTION,
 	TRANSCRIPTION_SERVICE_IDS,
@@ -49,6 +50,7 @@ import {
 	FFMPEG_DEFAULT_OUTPUT_OPTIONS,
 } from '$lib/services/desktop/recorder/ffmpeg';
 import { asDeviceIdentifier, type DeviceIdentifier } from '$lib/services/types';
+import { getDefaultTranscriptionServiceId } from './default-transcription-service';
 
 // Helper to transform device identifiers
 const deviceIdTransform = (val: string | null): DeviceIdentifier | null =>
@@ -166,7 +168,7 @@ export const Settings = type({
 
 	'transcription.selectedTranscriptionService': type
 		.enumerated(...TRANSCRIPTION_SERVICE_IDS)
-		.default('moonshine'),
+		.default(getDefaultTranscriptionServiceId(PLATFORM_TYPE)),
 	// Shared settings in transcription
 	'transcription.outputLanguage': type
 		.enumerated(...SUPPORTED_LANGUAGES)

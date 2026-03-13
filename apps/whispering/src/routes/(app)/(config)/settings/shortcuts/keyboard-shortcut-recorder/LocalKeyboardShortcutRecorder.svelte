@@ -28,7 +28,7 @@
 	);
 
 	const keyRecorder = createKeyRecorder({
-		pressedKeys,
+		getPressedKeys: () => pressedKeys,
 		onRegister: async (keyCombination: KeyboardEventSupportedKey[]) => {
 			const { error: unregisterError } =
 				await rpc.localShortcuts.unregisterCommand({

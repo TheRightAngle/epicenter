@@ -1,4 +1,4 @@
-import { PORTS } from '@epicenter/constants/ports';
+import { PORTS } from '../../packages/constants/src/ports';
 import { sveltekit } from '@sveltejs/kit/vite';
 import tailwindcss from '@tailwindcss/vite';
 import { defineConfig } from 'vite';

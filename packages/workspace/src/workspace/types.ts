@@ -251,9 +251,7 @@ export type StringKeysOf<TRow> = {
  */
 export type ClaimedDocumentColumns<
 	TDocuments extends Record<string, DocumentConfig>,
-> =
-	| TDocuments[keyof TDocuments]['guid']
-	| TDocuments[keyof TDocuments]['updatedAt'];
+> = TDocuments[keyof TDocuments]['guid'];
 
 /**
  * A handle to an open content Y.Doc, returned by `documents.open()`.
