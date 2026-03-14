@@ -47,6 +47,7 @@ enum RecorderWriteMode {
 
 const EXPERIMENTAL_CAPTURE_TARGET_BUFFER_FRAMES: u32 = 2048;
 const EXPERIMENTAL_CAPTURE_INITIAL_SECONDS: usize = 30;
+const EXPERIMENTAL_CAPTURE_OUTPUT_CHANNELS: u16 = 1;
 
 #[derive(Debug)]
 enum InMemoryAudioBuffer {
@@ -68,21 +69,21 @@ impl InMemoryAudioBuffer {
         }
     }
 
-    fn append_f32(&mut self, samples: &[f32]) {
+    fn append_f32_interleaved_mono(&mut self, samples: &[f32], capture_channels: u16) {
         if let Self::F32(buffer) = self {
-            buffer.extend_from_slice(samples);
+            append_f32_interleaved_mono(buffer, samples, capture_channels);
         }
     }
 
-    fn append_i16(&mut self, samples: &[i16]) {
+    fn append_i16_interleaved_mono(&mut self, samples: &[i16], capture_channels: u16) {
         if let Self::I16(buffer) = self {
-            buffer.extend_from_slice(samples);
+            append_i16_interleaved_mono(buffer, samples, capture_channels);
         }
     }
 
-    fn append_u16(&mut self, samples: &[u16]) {
+    fn append_u16_interleaved_mono(&mut self, samples: &[u16], capture_channels: u16) {
         if let Self::U16(buffer) = self {
-            buffer.extend_from_slice(samples);
+            append_u16_interleaved_mono(buffer, samples, capture_channels);
         }
     }
 
@@ -98,6 +99,53 @@ impl InMemoryAudioBuffer {
                 .map(|sample| (sample as f32 / u16::MAX as f32) * 2.0 - 1.0)
                 .collect(),
         }
+    }
+}
+
+fn append_f32_interleaved_mono(buffer: &mut Vec<f32>, samples: &[f32], capture_channels: u16) {
+    if capture_channels <= 1 {
+        buffer.extend_from_slice(samples);
+        return;
+    }
+
+    let channel_count = capture_channels as usize;
+    buffer.reserve(samples.len() / channel_count);
+
+    for frame in samples.chunks_exact(channel_count) {
+        let sum: f32 = frame.iter().copied().sum();
+        buffer.push(sum / capture_channels as f32);
+    }
+}
+
+fn append_i16_interleaved_mono(buffer: &mut Vec<i16>, samples: &[i16], capture_channels: u16) {
+    if capture_channels <= 1 {
+        buffer.extend_from_slice(samples);
+        return;
+    }
+
+    let channel_count = capture_channels as usize;
+    let divisor = capture_channels as i32;
+    buffer.reserve(samples.len() / channel_count);
+
+    for frame in samples.chunks_exact(channel_count) {
+        let sum: i32 = frame.iter().map(|sample| *sample as i32).sum();
+        buffer.push((sum / divisor) as i16);
+    }
+}
+
+fn append_u16_interleaved_mono(buffer: &mut Vec<u16>, samples: &[u16], capture_channels: u16) {
+    if capture_channels <= 1 {
+        buffer.extend_from_slice(samples);
+        return;
+    }
+
+    let channel_count = capture_channels as usize;
+    let divisor = capture_channels as u32;
+    buffer.reserve(samples.len() / channel_count);
+
+    for frame in samples.chunks_exact(channel_count) {
+        let sum: u32 = frame.iter().map(|sample| *sample as u32).sum();
+        buffer.push((sum / divisor) as u16);
     }
 }
 
@@ -169,29 +217,38 @@ impl RecorderState {
         // Find the device
         let host = cpal::default_host();
         let device = find_device(&host, &device_identifier)?;
-
-        // Get optimal config for voice with optional preferred sample rate
-        let config = get_optimal_config(&device, preferred_sample_rate)?;
-        let sample_format = config.sample_format();
-        let sample_rate = config.sample_rate();
-        let channels = config.channels();
-
         let write_mode = if experimental_buffered_capture {
             RecorderWriteMode::BufferedMemory
         } else {
             RecorderWriteMode::Inline
         };
+
+        // Get optimal config for voice with optional preferred sample rate
+        let config = get_optimal_config(
+            &device,
+            preferred_sample_rate,
+            write_mode == RecorderWriteMode::BufferedMemory,
+        )?;
+        let sample_format = config.sample_format();
+        let sample_rate = config.sample_rate();
+        let capture_channels = config.channels();
+        let output_channels = if write_mode == RecorderWriteMode::BufferedMemory {
+            EXPERIMENTAL_CAPTURE_OUTPUT_CHANNELS
+        } else {
+            capture_channels
+        };
         let writer = if write_mode == RecorderWriteMode::Inline {
             Some(Arc::new(Mutex::new(
-                WavWriter::new(file_path.clone(), sample_rate, channels)
+                WavWriter::new(file_path.clone(), sample_rate, capture_channels)
                     .map_err(|e| format!("Failed to create WAV file: {}", e))?,
             )))
         } else {
             None
         };
         let in_memory_audio = if write_mode == RecorderWriteMode::BufferedMemory {
-            let initial_capacity_samples =
-                sample_rate as usize * channels as usize * EXPERIMENTAL_CAPTURE_INITIAL_SECONDS;
+            let initial_capacity_samples = sample_rate as usize
+                * output_channels as usize
+                * EXPERIMENTAL_CAPTURE_INITIAL_SECONDS;
             Some(Arc::new(Mutex::new(InMemoryAudioBuffer::new(
                 sample_format,
                 initial_capacity_samples,
@@ -202,7 +259,7 @@ impl RecorderState {
 
         // Create stream config
         let stream_config = cpal::StreamConfig {
-            channels,
+            channels: capture_channels,
             sample_rate,
             buffer_size: resolve_stream_buffer_size(&config, write_mode),
         };
@@ -278,7 +335,7 @@ impl RecorderState {
         self.write_mode = write_mode;
         self.in_memory_audio = in_memory_audio;
         self.sample_rate = sample_rate;
-        self.channels = channels;
+        self.channels = output_channels;
         self.file_path = if write_mode == RecorderWriteMode::Inline {
             Some(file_path)
         } else {
@@ -287,8 +344,8 @@ impl RecorderState {
         self.current_recording_id = Some(recording_id);
 
         info!(
-            "Recording session initialized: {} Hz, {} channels, buffer={}, file: {:?}",
-            sample_rate, channels, stream_buffer_size, self.file_path
+            "Recording session initialized: {} Hz, capture_channels={}, output_channels={}, buffer={}, file: {:?}",
+            sample_rate, capture_channels, output_channels, stream_buffer_size, self.file_path
         );
 
         Ok(())
@@ -582,7 +639,28 @@ mod tests {
 fn get_optimal_config(
     device: &Device,
     preferred_sample_rate: Option<u32>,
+    prefer_native_rate: bool,
 ) -> Result<cpal::SupportedStreamConfig> {
+    if prefer_native_rate {
+        let default_config = device
+            .default_input_config()
+            .map_err(|e| format!("Failed to get default input config: {}", e))?;
+
+        let sample_format = default_config.sample_format();
+        if matches!(
+            sample_format,
+            SampleFormat::F32 | SampleFormat::I16 | SampleFormat::U16
+        ) {
+            debug!(
+                "Using device default input config for experimental capture: {} Hz, {} channels, {:?}",
+                default_config.sample_rate(),
+                default_config.channels(),
+                sample_format
+            );
+            return Ok(default_config);
+        }
+    }
+
     // Use preferred sample rate or default to 16kHz for voice
     let target_sample_rate = preferred_sample_rate.unwrap_or(16000);
 
@@ -704,6 +782,7 @@ fn build_input_stream(
     in_memory_audio: Option<Arc<Mutex<InMemoryAudioBuffer>>>,
 ) -> Result<Stream> {
     let err_fn = |err| error!("Audio stream error: {}", err);
+    let capture_channels = config.channels;
 
     let stream = match sample_format {
         SampleFormat::F32 => {
@@ -725,7 +804,10 @@ fn build_input_stream(
                                 RecorderWriteMode::BufferedMemory => {
                                     if let Some(in_memory_audio) = &in_memory_audio {
                                         if let Ok(mut buffer) = in_memory_audio.lock() {
-                                            buffer.append_f32(data);
+                                            buffer.append_f32_interleaved_mono(
+                                                data,
+                                                capture_channels,
+                                            );
                                         }
                                     }
                                 }
@@ -756,7 +838,10 @@ fn build_input_stream(
                                 RecorderWriteMode::BufferedMemory => {
                                     if let Some(in_memory_audio) = &in_memory_audio {
                                         if let Ok(mut buffer) = in_memory_audio.lock() {
-                                            buffer.append_i16(data);
+                                            buffer.append_i16_interleaved_mono(
+                                                data,
+                                                capture_channels,
+                                            );
                                         }
                                     }
                                 }
@@ -787,7 +872,10 @@ fn build_input_stream(
                                 RecorderWriteMode::BufferedMemory => {
                                     if let Some(in_memory_audio) = &in_memory_audio {
                                         if let Ok(mut buffer) = in_memory_audio.lock() {
-                                            buffer.append_u16(data);
+                                            buffer.append_u16_interleaved_mono(
+                                                data,
+                                                capture_channels,
+                                            );
                                         }
                                     }
                                 }

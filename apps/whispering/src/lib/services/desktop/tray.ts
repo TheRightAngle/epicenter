@@ -15,6 +15,10 @@ import { goto } from '$app/navigation';
 import type { WhisperingRecordingState } from '$lib/constants/audio';
 
 const TRAY_ID = 'whispering-tray';
+type TrayWindow = Pick<
+	ReturnType<typeof getCurrentWindow>,
+	'show' | 'unminimize' | 'setFocus'
+>;
 
 const TrayError = defineErrors({
 	SetIcon: ({ cause }: { cause: unknown }) => ({
@@ -43,6 +47,14 @@ export const TrayIconServiceLive = {
 
 export type TrayIconService = typeof TrayIconServiceLive;
 
+export async function restoreWindowFromTray(
+	currentWindow: TrayWindow = getCurrentWindow(),
+) {
+	await currentWindow.show();
+	await currentWindow.unminimize();
+	await currentWindow.setFocus();
+}
+
 async function initTray() {
 	const existingTray = await TrayIcon.getById(TRAY_ID);
 	if (existingTray) return existingTray;
@@ -53,11 +65,7 @@ async function initTray() {
 			await MenuItem.new({
 				id: 'show',
 				text: 'Show Window',
-				action: async () => {
-					const currentWindow = getCurrentWindow();
-					await currentWindow.unminimize();
-					await currentWindow.show();
-				},
+				action: () => restoreWindowFromTray(),
 			}),
 
 			await MenuItem.new({
@@ -72,7 +80,7 @@ async function initTray() {
 				text: 'Settings',
 				action: () => {
 					goto('/settings');
-					return getCurrentWindow().show();
+					return restoreWindowFromTray();
 				},
 			}),
 
@@ -96,7 +104,7 @@ async function initTray() {
 				e.button === 'Left' &&
 				e.buttonState === 'Down'
 			) {
-				// commandCallbacks.toggleManualRecording();
+				void restoreWindowFromTray();
 				return true;
 			}
 			return false;
