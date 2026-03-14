@@ -5,9 +5,10 @@ use log::{debug, error, info};
 use serde::Serialize;
 use std::any::Any;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 /// Simple result type using String for errors
 pub type Result<T> = std::result::Result<T, String>;
@@ -54,6 +55,74 @@ enum InMemoryAudioBuffer {
     F32(Vec<f32>),
     I16(Vec<i16>),
     U16(Vec<u16>),
+}
+
+#[derive(Debug, Default)]
+struct CaptureDiagnostics {
+    callback_count: AtomicU64,
+    input_sample_count: AtomicU64,
+    output_sample_count: AtomicU64,
+    callback_nanos: AtomicU64,
+    max_callback_nanos: AtomicU64,
+    callback_thread_id: AtomicU32,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CaptureDiagnosticsSnapshot {
+    callback_count: u64,
+    input_sample_count: u64,
+    output_sample_count: u64,
+    callback_nanos: u64,
+    max_callback_nanos: u64,
+    callback_thread_id: u32,
+}
+
+impl CaptureDiagnostics {
+    fn record_callback(&self, input_samples: usize, output_samples: usize, elapsed: Duration) {
+        self.callback_count.fetch_add(1, Ordering::Relaxed);
+        self.input_sample_count
+            .fetch_add(input_samples as u64, Ordering::Relaxed);
+        self.output_sample_count
+            .fetch_add(output_samples as u64, Ordering::Relaxed);
+
+        let elapsed_nanos = elapsed.as_nanos().min(u64::MAX as u128) as u64;
+        self.callback_nanos
+            .fetch_add(elapsed_nanos, Ordering::Relaxed);
+
+        let mut current_max = self.max_callback_nanos.load(Ordering::Relaxed);
+        while elapsed_nanos > current_max {
+            match self.max_callback_nanos.compare_exchange_weak(
+                current_max,
+                elapsed_nanos,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(observed) => current_max = observed,
+            }
+        }
+
+        let thread_id = current_os_thread_id();
+        if thread_id != 0 {
+            let _ = self.callback_thread_id.compare_exchange(
+                0,
+                thread_id,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            );
+        }
+    }
+
+    fn snapshot(&self) -> CaptureDiagnosticsSnapshot {
+        CaptureDiagnosticsSnapshot {
+            callback_count: self.callback_count.load(Ordering::Relaxed),
+            input_sample_count: self.input_sample_count.load(Ordering::Relaxed),
+            output_sample_count: self.output_sample_count.load(Ordering::Relaxed),
+            callback_nanos: self.callback_nanos.load(Ordering::Relaxed),
+            max_callback_nanos: self.max_callback_nanos.load(Ordering::Relaxed),
+            callback_thread_id: self.callback_thread_id.load(Ordering::Relaxed),
+        }
+    }
 }
 
 impl InMemoryAudioBuffer {
@@ -156,6 +225,7 @@ pub struct RecorderState {
     writer: Option<Arc<Mutex<WavWriter>>>,
     write_mode: RecorderWriteMode,
     in_memory_audio: Option<Arc<Mutex<InMemoryAudioBuffer>>>,
+    capture_diagnostics: Option<Arc<CaptureDiagnostics>>,
     is_recording: Arc<AtomicBool>,
     sample_rate: u32,
     channels: u16,
@@ -171,6 +241,7 @@ impl RecorderState {
             writer: None,
             write_mode: RecorderWriteMode::Inline,
             in_memory_audio: None,
+            capture_diagnostics: None,
             is_recording: Arc::new(AtomicBool::new(false)),
             sample_rate: 0,
             channels: 0,
@@ -256,6 +327,11 @@ impl RecorderState {
         } else {
             None
         };
+        let capture_diagnostics = if write_mode == RecorderWriteMode::BufferedMemory {
+            Some(Arc::new(CaptureDiagnostics::default()))
+        } else {
+            None
+        };
 
         // Create stream config
         let stream_config = cpal::StreamConfig {
@@ -276,10 +352,15 @@ impl RecorderState {
         let writer_clone = writer.clone();
         let is_recording_clone = is_recording.clone();
         let in_memory_audio_for_stream = in_memory_audio.clone();
+        let capture_diagnostics_for_stream = capture_diagnostics.clone();
         let write_mode_for_stream = write_mode;
 
         // Create the worker thread that owns the stream
         let worker = thread::spawn(move || {
+            info!(
+                "Recorder worker thread started: os_thread_id={}",
+                current_os_thread_id()
+            );
             // Build the stream IN this thread (required for macOS)
             let stream = match build_input_stream(
                 &device,
@@ -289,6 +370,7 @@ impl RecorderState {
                 write_mode_for_stream,
                 writer_clone,
                 in_memory_audio_for_stream,
+                capture_diagnostics_for_stream,
             ) {
                 Ok(s) => s,
                 Err(e) => {
@@ -334,6 +416,7 @@ impl RecorderState {
         self.writer = writer;
         self.write_mode = write_mode;
         self.in_memory_audio = in_memory_audio;
+        self.capture_diagnostics = capture_diagnostics;
         self.sample_rate = sample_rate;
         self.channels = output_channels;
         self.file_path = if write_mode == RecorderWriteMode::Inline {
@@ -382,6 +465,31 @@ impl RecorderState {
 
         if self.write_mode == RecorderWriteMode::BufferedMemory {
             let recording = self.finalize_in_memory_audio()?;
+            if let Some(capture_diagnostics) = &self.capture_diagnostics {
+                let snapshot = capture_diagnostics.snapshot();
+                let avg_output_samples_per_callback = if snapshot.callback_count == 0 {
+                    0.0
+                } else {
+                    snapshot.output_sample_count as f64 / snapshot.callback_count as f64
+                };
+                let avg_callback_ms = if snapshot.callback_count == 0 {
+                    0.0
+                } else {
+                    snapshot.callback_nanos as f64 / snapshot.callback_count as f64 / 1_000_000.0
+                };
+                let max_callback_ms = snapshot.max_callback_nanos as f64 / 1_000_000.0;
+
+                info!(
+                    "Experimental capture diagnostics: callback_thread_id={}, callbacks={}, input_samples={}, output_samples={}, avg_output_samples_per_callback={:.2}, avg_callback_ms={:.4}, max_callback_ms={:.4}",
+                    snapshot.callback_thread_id,
+                    snapshot.callback_count,
+                    snapshot.input_sample_count,
+                    snapshot.output_sample_count,
+                    avg_output_samples_per_callback,
+                    avg_callback_ms,
+                    max_callback_ms
+                );
+            }
             info!(
                 "Recording stopped in memory: {:.2}s, samples: {}",
                 recording.duration_seconds,
@@ -480,6 +588,7 @@ impl RecorderState {
         // Clear state
         self.write_mode = RecorderWriteMode::Inline;
         self.in_memory_audio = None;
+        self.capture_diagnostics = None;
         self.file_path = None;
         self.current_recording_id = None;
         self.sample_rate = 0;
@@ -771,6 +880,16 @@ fn resolve_stream_buffer_size(
     }
 }
 
+#[cfg(target_os = "windows")]
+fn current_os_thread_id() -> u32 {
+    windows_sys::Win32::System::Threading::GetCurrentThreadId()
+}
+
+#[cfg(not(target_os = "windows"))]
+fn current_os_thread_id() -> u32 {
+    0
+}
+
 /// Build input stream for any supported sample format
 fn build_input_stream(
     device: &Device,
@@ -780,6 +899,7 @@ fn build_input_stream(
     write_mode: RecorderWriteMode,
     writer: Option<Arc<Mutex<WavWriter>>>,
     in_memory_audio: Option<Arc<Mutex<InMemoryAudioBuffer>>>,
+    capture_diagnostics: Option<Arc<CaptureDiagnostics>>,
 ) -> Result<Stream> {
     let err_fn = |err| error!("Audio stream error: {}", err);
     let capture_channels = config.channels;
@@ -788,11 +908,13 @@ fn build_input_stream(
         SampleFormat::F32 => {
             let writer = writer.clone();
             let in_memory_audio = in_memory_audio.clone();
+            let capture_diagnostics = capture_diagnostics.clone();
             device
                 .build_input_stream(
                     config,
                     move |data: &[f32], _: &_| {
                         if is_recording.load(Ordering::Relaxed) {
+                            let started = Instant::now();
                             match write_mode {
                                 RecorderWriteMode::Inline => {
                                     if let Some(writer) = &writer {
@@ -812,6 +934,22 @@ fn build_input_stream(
                                     }
                                 }
                             }
+
+                            if let Some(capture_diagnostics) = &capture_diagnostics {
+                                let output_samples = if write_mode
+                                    == RecorderWriteMode::BufferedMemory
+                                    && capture_channels > 1
+                                {
+                                    data.len() / capture_channels as usize
+                                } else {
+                                    data.len()
+                                };
+                                capture_diagnostics.record_callback(
+                                    data.len(),
+                                    output_samples,
+                                    started.elapsed(),
+                                );
+                            }
                         }
                     },
                     err_fn,
@@ -822,11 +960,13 @@ fn build_input_stream(
         SampleFormat::I16 => {
             let writer = writer.clone();
             let in_memory_audio = in_memory_audio.clone();
+            let capture_diagnostics = capture_diagnostics.clone();
             device
                 .build_input_stream(
                     config,
                     move |data: &[i16], _: &_| {
                         if is_recording.load(Ordering::Relaxed) {
+                            let started = Instant::now();
                             match write_mode {
                                 RecorderWriteMode::Inline => {
                                     if let Some(writer) = &writer {
@@ -846,6 +986,22 @@ fn build_input_stream(
                                     }
                                 }
                             }
+
+                            if let Some(capture_diagnostics) = &capture_diagnostics {
+                                let output_samples = if write_mode
+                                    == RecorderWriteMode::BufferedMemory
+                                    && capture_channels > 1
+                                {
+                                    data.len() / capture_channels as usize
+                                } else {
+                                    data.len()
+                                };
+                                capture_diagnostics.record_callback(
+                                    data.len(),
+                                    output_samples,
+                                    started.elapsed(),
+                                );
+                            }
                         }
                     },
                     err_fn,
@@ -856,11 +1012,13 @@ fn build_input_stream(
         SampleFormat::U16 => {
             let writer = writer.clone();
             let in_memory_audio = in_memory_audio.clone();
+            let capture_diagnostics = capture_diagnostics.clone();
             device
                 .build_input_stream(
                     config,
                     move |data: &[u16], _: &_| {
                         if is_recording.load(Ordering::Relaxed) {
+                            let started = Instant::now();
                             match write_mode {
                                 RecorderWriteMode::Inline => {
                                     if let Some(writer) = &writer {
@@ -879,6 +1037,22 @@ fn build_input_stream(
                                         }
                                     }
                                 }
+                            }
+
+                            if let Some(capture_diagnostics) = &capture_diagnostics {
+                                let output_samples = if write_mode
+                                    == RecorderWriteMode::BufferedMemory
+                                    && capture_channels > 1
+                                {
+                                    data.len() / capture_channels as usize
+                                } else {
+                                    data.len()
+                                };
+                                capture_diagnostics.record_callback(
+                                    data.len(),
+                                    output_samples,
+                                    started.elapsed(),
+                                );
                             }
                         }
                     },

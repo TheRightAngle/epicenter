@@ -1,7 +1,7 @@
 import { Menu, MenuItem } from '@tauri-apps/api/menu';
 import { resolveResource } from '@tauri-apps/api/path';
 import { TrayIcon } from '@tauri-apps/api/tray';
-import { getCurrentWindow } from '@tauri-apps/api/window';
+import { getCurrentWindow, UserAttentionType } from '@tauri-apps/api/window';
 import { exit } from '@tauri-apps/plugin-process';
 import {
 	defineErrors,
@@ -17,7 +17,12 @@ import type { WhisperingRecordingState } from '$lib/constants/audio';
 const TRAY_ID = 'whispering-tray';
 type TrayWindow = Pick<
 	ReturnType<typeof getCurrentWindow>,
-	'show' | 'unminimize' | 'setFocus'
+	| 'isAlwaysOnTop'
+	| 'requestUserAttention'
+	| 'setAlwaysOnTop'
+	| 'setFocus'
+	| 'show'
+	| 'unminimize'
 >;
 
 const TrayError = defineErrors({
@@ -50,9 +55,20 @@ export type TrayIconService = typeof TrayIconServiceLive;
 export async function restoreWindowFromTray(
 	currentWindow: TrayWindow = getCurrentWindow(),
 ) {
+	const wasAlwaysOnTop = await currentWindow.isAlwaysOnTop();
+	if (!wasAlwaysOnTop) {
+		await currentWindow.setAlwaysOnTop(true);
+	}
 	await currentWindow.show();
 	await currentWindow.unminimize();
 	await currentWindow.setFocus();
+	await currentWindow.requestUserAttention(UserAttentionType.Critical);
+
+	if (!wasAlwaysOnTop) {
+		window.setTimeout(() => {
+			void currentWindow.setAlwaysOnTop(false);
+		}, 250);
+	}
 }
 
 async function initTray() {
