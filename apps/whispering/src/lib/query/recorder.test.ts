@@ -12,7 +12,11 @@ const stopRecordingMock = mock<any>(async () => ({
 	data: new Blob(['audio']),
 	error: undefined,
 }));
-const desktopEnumerateDevicesMock = mock<any>(async () => ({
+const cpalEnumerateDevicesMock = mock<any>(async () => ({
+	data: [],
+	error: undefined,
+}));
+const ffmpegEnumerateDevicesMock = mock<any>(async () => ({
 	data: [],
 	error: undefined,
 }));
@@ -33,7 +37,8 @@ beforeEach(() => {
 	invokeMock.mockReset();
 	startRecordingMock.mockReset();
 	stopRecordingMock.mockReset();
-	desktopEnumerateDevicesMock.mockReset();
+	cpalEnumerateDevicesMock.mockReset();
+	ffmpegEnumerateDevicesMock.mockReset();
 	navigatorEnumerateDevicesMock.mockReset();
 	getRecorderStateMock.mockReset();
 	notifyLoadingMock.mockReset();
@@ -47,7 +52,8 @@ beforeEach(() => {
 		data: new Blob(['audio']),
 		error: undefined,
 	});
-	desktopEnumerateDevicesMock.mockResolvedValue({ data: [], error: undefined });
+	cpalEnumerateDevicesMock.mockResolvedValue({ data: [], error: undefined });
+	ffmpegEnumerateDevicesMock.mockResolvedValue({ data: [], error: undefined });
 	navigatorEnumerateDevicesMock.mockResolvedValue({ data: [], error: undefined });
 	getRecorderStateMock.mockResolvedValue({ data: 'IDLE', error: undefined });
 	recordingsPathMock.mockResolvedValue('/tmp/recordings');
@@ -63,7 +69,7 @@ beforeEach(() => {
 	mock.module('$lib/services', () => ({
 		desktopServices: {
 			cpalRecorder: {
-				enumerateDevices: desktopEnumerateDevicesMock,
+				enumerateDevices: cpalEnumerateDevicesMock,
 				getRecorderState: getRecorderStateMock,
 				startRecording: startRecordingMock,
 				stopRecording: stopRecordingMock,
@@ -73,7 +79,7 @@ beforeEach(() => {
 				})),
 			},
 			ffmpegRecorder: {
-				enumerateDevices: desktopEnumerateDevicesMock,
+				enumerateDevices: ffmpegEnumerateDevicesMock,
 				getRecorderState: getRecorderStateMock,
 				startRecording: startRecordingMock,
 				stopRecording: stopRecordingMock,
@@ -207,8 +213,27 @@ describe('recorder.startRecording', () => {
 });
 
 describe('recorder.enumerateDevices', () => {
+	test('uses method-scoped query keys and query functions', async () => {
+		const settingsModule = await import('$lib/state/settings.svelte');
+		const { recorder } = await loadRecorderModule();
+
+		settingsModule.settings.value['recording.method'] = 'ffmpeg';
+		const ffmpegOptions = recorder.enumerateDevices.options;
+
+		settingsModule.settings.value['recording.method'] = 'cpal';
+		const cpalOptions = recorder.enumerateDevices.options;
+
+		expect(ffmpegOptions.queryKey).toEqual(['recorder', 'devices', 'ffmpeg']);
+		expect(cpalOptions.queryKey).toEqual(['recorder', 'devices', 'cpal']);
+
+		await (ffmpegOptions.queryFn as () => Promise<unknown>)();
+		await (cpalOptions.queryFn as () => Promise<unknown>)();
+		expect(ffmpegEnumerateDevicesMock).toHaveBeenCalledTimes(1);
+		expect(cpalEnumerateDevicesMock).toHaveBeenCalledTimes(1);
+	});
+
 	test('skips navigator label enrichment when desktop labels are already unique', async () => {
-		desktopEnumerateDevicesMock.mockResolvedValue({
+		cpalEnumerateDevicesMock.mockResolvedValue({
 			data: [
 				{
 					id: asDeviceIdentifier('wasapi:realtek'),
@@ -248,7 +273,7 @@ describe('recorder.enumerateDevices', () => {
 			} as Window & { __TAURI_INTERNALS__?: unknown },
 		});
 
-		desktopEnumerateDevicesMock.mockResolvedValue({
+		cpalEnumerateDevicesMock.mockResolvedValue({
 			data: [
 				{ id: asDeviceIdentifier('cpal-a'), label: 'Microphone' },
 				{ id: asDeviceIdentifier('cpal-b'), label: 'Microphone' },

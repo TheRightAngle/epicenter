@@ -36,9 +36,14 @@
 		outputOptions: string;
 	} = $props();
 
-	const getDevicesQuery = createQuery(
-		() => rpc.recorder.enumerateDevices.options,
-	);
+	const getDevicesQuery = createQuery(() => ({
+		...rpc.recorder.enumerateDevices.options,
+		queryKey: [
+			'recorder',
+			'devices',
+			settings.value['recording.method'],
+		] as const,
+	}));
 
 	// Get the selected device identifier with proper fallback chain
 	const selectedDeviceId = $derived(

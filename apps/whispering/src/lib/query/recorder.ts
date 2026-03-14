@@ -12,9 +12,12 @@ import { settings } from '$lib/state/settings.svelte';
 import { disambiguateDeviceLabels } from '../services/device-labels';
 import { notify } from './notify';
 
+type RecordingMethod = 'cpal' | 'ffmpeg' | 'navigator';
+
 const recorderKeys = {
 	recorderState: ['recorder', 'recorderState'] as const,
-	devices: ['recorder', 'devices'] as const,
+	devices: (method: RecordingMethod) =>
+		['recorder', 'devices', method] as const,
 	startRecording: ['recorder', 'startRecording'] as const,
 	stopRecording: ['recorder', 'stopRecording'] as const,
 	cancelRecording: ['recorder', 'cancelRecording'] as const,
@@ -74,36 +77,51 @@ async function resolveDesktopSourceFilePath(
 	}
 }
 
+function getEffectiveRecordingMethod(
+	method: RecordingMethod = settings.value['recording.method'],
+): RecordingMethod {
+	return window.__TAURI_INTERNALS__ ? method : 'navigator';
+}
+
+async function enumerateDevicesForMethod(
+	method: RecordingMethod = settings.value['recording.method'],
+) {
+	const effectiveMethod = getEffectiveRecordingMethod(method);
+	const { data, error } =
+		await recorderServiceForMethod(effectiveMethod).enumerateDevices();
+	if (error) {
+		return WhisperingErr({
+			title: '❌ Failed to enumerate devices',
+			serviceError: error,
+		});
+	}
+
+	let richerDevices: Device[] | undefined;
+
+	if (
+		window.__TAURI_INTERNALS__ &&
+		effectiveMethod !== 'navigator' &&
+		hasDuplicateDeviceLabels(data)
+	) {
+		const { data: navigatorDevices } =
+			await services.navigatorRecorder.enumerateDevices();
+		richerDevices = filterNavigatorAliasDevices(
+			navigatorDevices ?? undefined,
+		);
+	}
+
+	return Ok(disambiguateDeviceLabels(data, richerDevices));
+}
+
 export const recorder = {
 	// Query that enumerates available recording devices with labels
-	enumerateDevices: defineQuery({
-		queryKey: recorderKeys.devices,
-		queryFn: async () => {
-			const { data, error } = await recorderService().enumerateDevices();
-			if (error) {
-				return WhisperingErr({
-					title: '❌ Failed to enumerate devices',
-					serviceError: error,
-				});
-			}
-
-			let richerDevices: Device[] | undefined;
-
-			if (
-				window.__TAURI_INTERNALS__ &&
-				settings.value['recording.method'] !== 'navigator' &&
-				hasDuplicateDeviceLabels(data)
-			) {
-				const { data: navigatorDevices } =
-					await services.navigatorRecorder.enumerateDevices();
-				richerDevices = filterNavigatorAliasDevices(
-					navigatorDevices ?? undefined,
-				);
-			}
-
-			return Ok(disambiguateDeviceLabels(data, richerDevices));
-		},
-	}),
+	get enumerateDevices() {
+		const method = getEffectiveRecordingMethod();
+		return defineQuery({
+			queryKey: recorderKeys.devices(method),
+			queryFn: async () => await enumerateDevicesForMethod(method),
+		});
+	},
 
 	// Query that returns the recorder state (IDLE or RECORDING)
 	getRecorderState: defineQuery({
@@ -294,15 +312,20 @@ export const recorder = {
  * Get the appropriate recorder service based on settings and environment
  */
 export function recorderService() {
+	return recorderServiceForMethod(getEffectiveRecordingMethod());
+}
+
+function recorderServiceForMethod(method: RecordingMethod) {
 	// In browser, always use navigator recorder
-	if (!window.__TAURI_INTERNALS__) return services.navigatorRecorder;
+	if (!window.__TAURI_INTERNALS__ || method === 'navigator') {
+		return services.navigatorRecorder;
+	}
 
 	const recorderMap = {
-		navigator: services.navigatorRecorder,
 		ffmpeg: desktopServices.ffmpegRecorder,
 		cpal: desktopServices.cpalRecorder,
 	};
-	return recorderMap[settings.value['recording.method']];
+	return recorderMap[method];
 }
 
 async function recoverDesktopCpalRecordingId() {

@@ -48,6 +48,7 @@
 
 	const getDevicesQuery = createQuery(() => ({
 		...rpc.recorder.enumerateDevices.options,
+		queryKey: ['recorder', 'devices', selectedMethod] as const,
 		enabled: combobox.open,
 	}));
 
@@ -97,7 +98,6 @@
 										'recording.method',
 										methodKey as keyof typeof RECORDING_METHODS,
 									);
-									getDevicesQuery.refetch();
 								}}
 								class="flex items-center gap-3 px-3 py-2"
 							>

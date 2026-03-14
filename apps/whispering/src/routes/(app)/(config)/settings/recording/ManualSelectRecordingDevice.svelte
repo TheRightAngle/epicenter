@@ -3,6 +3,7 @@
 	import * as Select from '@epicenter/ui/select';
 	import { createQuery } from '@tanstack/svelte-query';
 	import { rpc } from '$lib/query';
+	import { settings } from '$lib/state/settings.svelte';
 	import type { DeviceIdentifier } from '$lib/services/types';
 	import { asDeviceIdentifier } from '$lib/services/types';
 
@@ -13,9 +14,14 @@
 	} = $props();
 
 	// Use recorder.enumerateDevices for manual recording (includes desktop devices)
-	const getDevicesQuery = createQuery(
-		() => rpc.recorder.enumerateDevices.options,
-	);
+	const getDevicesQuery = createQuery(() => ({
+		...rpc.recorder.enumerateDevices.options,
+		queryKey: [
+			'recorder',
+			'devices',
+			settings.value['recording.method'],
+		] as const,
+	}));
 
 	$effect(() => {
 		if (getDevicesQuery.isError) {
