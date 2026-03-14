@@ -190,9 +190,8 @@ impl RecorderState {
             None
         };
         let in_memory_audio = if write_mode == RecorderWriteMode::BufferedMemory {
-            let initial_capacity_samples = sample_rate as usize
-                * channels as usize
-                * EXPERIMENTAL_CAPTURE_INITIAL_SECONDS;
+            let initial_capacity_samples =
+                sample_rate as usize * channels as usize * EXPERIMENTAL_CAPTURE_INITIAL_SECONDS;
             Some(Arc::new(Mutex::new(InMemoryAudioBuffer::new(
                 sample_format,
                 initial_capacity_samples,
@@ -207,6 +206,7 @@ impl RecorderState {
             sample_rate,
             buffer_size: resolve_stream_buffer_size(&config, write_mode),
         };
+        let stream_buffer_size = format!("{:?}", stream_config.buffer_size);
 
         // Create fresh recording flag
         self.is_recording = Arc::new(AtomicBool::new(false));
@@ -287,8 +287,8 @@ impl RecorderState {
         self.current_recording_id = Some(recording_id);
 
         info!(
-            "Recording session initialized: {} Hz, {} channels, buffer={:?}, file: {:?}",
-            sample_rate, channels, stream_config.buffer_size, self.file_path
+            "Recording session initialized: {} Hz, {} channels, buffer={}, file: {:?}",
+            sample_rate, channels, stream_buffer_size, self.file_path
         );
 
         Ok(())
