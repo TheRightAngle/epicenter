@@ -882,7 +882,7 @@ fn resolve_stream_buffer_size(
 
 #[cfg(target_os = "windows")]
 fn current_os_thread_id() -> u32 {
-    windows_sys::Win32::System::Threading::GetCurrentThreadId()
+    unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() }
 }
 
 #[cfg(not(target_os = "windows"))]
