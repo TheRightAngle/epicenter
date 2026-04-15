@@ -198,8 +198,8 @@ export const recorder = {
 						),
 						outputFolder,
 						sampleRate: deviceConfig.get('recording.cpal.sampleRate'),
-						experimentalBufferedCapture: deviceConfig.get(
-							'recording.cpal.experimentalBufferedCapture',
+						bufferedCapture: deviceConfig.get(
+							'recording.cpal.bufferedCapture',
 						),
 					},
 				} as const;
@@ -211,7 +211,7 @@ export const recorder = {
 							: deviceConfig.get('recording.method')
 					];
 				currentRecordingSourceFilePath =
-					params.method === 'cpal' && params.experimentalBufferedCapture
+					params.method === 'cpal' && params.bufferedCapture
 						? null
 						: await resolveDesktopSourceFilePath(recordingId);
 

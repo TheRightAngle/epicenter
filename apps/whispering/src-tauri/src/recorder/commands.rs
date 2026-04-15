@@ -35,29 +35,22 @@ pub async fn init_recording_session(
     recording_id: String,
     output_folder: String,
     sample_rate: Option<u32>,
-    experimental_buffered_capture: Option<bool>,
+    buffered_capture: Option<bool>,
     state: State<'_, AppData>,
     _app_handle: tauri::AppHandle,
 ) -> Result<()> {
     info!(
-        "Initializing recording session: device={}, id={}, folder={}, sample_rate={:?}, experimental_buffered_capture={:?}",
-        device_identifier,
-        recording_id,
-        output_folder,
-        sample_rate,
-        experimental_buffered_capture
+        "Initializing recording session: device={}, id={}, folder={}, sample_rate={:?}, buffered_capture={:?}",
+        device_identifier, recording_id, output_folder, sample_rate, buffered_capture
     );
 
-    // Use the provided output folder
     let recordings_dir = PathBuf::from(output_folder);
 
-    // Create the directory if it doesn't exist
     if !recordings_dir.exists() {
         std::fs::create_dir_all(&recordings_dir)
             .map_err(|e| format!("Failed to create output folder: {}", e))?;
     }
 
-    // Validate it's a directory (not a file)
     if !recordings_dir.is_dir() {
         return Err(format!(
             "Output path is not a directory: {:?}",
@@ -65,18 +58,17 @@ pub async fn init_recording_session(
         ));
     }
 
-    // Initialize the session with optional sample rate
     let mut recorder = state
         .recorder
         .lock()
         .map_err(|e| format!("Failed to lock recorder: {}", e))?;
-    let experimental_buffered_capture = experimental_buffered_capture.unwrap_or(false);
+    let buffered_capture = buffered_capture.unwrap_or(false);
     recorder.init_session(
         device_identifier,
         recordings_dir,
         recording_id,
         sample_rate,
-        experimental_buffered_capture,
+        buffered_capture,
     )
 }
 

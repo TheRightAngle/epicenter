@@ -90,10 +90,11 @@ const DEVICE_DEFINITIONS = {
 	'transcription.parakeet.directmlAdapter': defineEntry(type('string'), 'auto'),
 
 	// ── CPAL recorder tuning (fork: Windows stability) ────────────────
-	'recording.cpal.experimentalBufferedCapture': defineEntry(
-		type('boolean'),
-		false,
-	),
+	//
+	// When true, capture audio into an in-memory buffer instead of writing a
+	// WAV file on disk. Independent of the hot-path optimizations — the audio
+	// callback is always channel-based and lock-free regardless of this flag.
+	'recording.cpal.bufferedCapture': defineEntry(type('boolean'), false),
 
 	// ── Self-hosted server URLs ───────────────────────────────────────
 	'completion.custom.baseUrl': defineEntry(

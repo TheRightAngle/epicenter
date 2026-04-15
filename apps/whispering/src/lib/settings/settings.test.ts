@@ -38,10 +38,10 @@ describe('settings schema', () => {
 		);
 	});
 
-	test('defaults experimental CPAL buffering to disabled', () => {
+	test('defaults CPAL in-memory buffering to disabled', () => {
 		const settingsSource = readFileSync(new URL('./settings.ts', import.meta.url), 'utf8');
 
-		expect(settingsSource).toContain("'recording.cpal.experimentalBufferedCapture'");
-		expect(settingsSource).toContain("'recording.cpal.experimentalBufferedCapture': 'boolean = false'");
+		expect(settingsSource).toContain("'recording.cpal.bufferedCapture'");
+		expect(settingsSource).toContain("'recording.cpal.bufferedCapture': 'boolean = false'");
 	});
 });

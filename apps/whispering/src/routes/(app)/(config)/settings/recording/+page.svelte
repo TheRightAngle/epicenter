@@ -420,23 +420,21 @@
 
 				<Field.Field orientation="horizontal">
 					<Switch
-						id="recording.cpal.experimentalBufferedCapture"
+						id="recording.cpal.bufferedCapture"
 						bind:checked={() =>
-							settings.value['recording.cpal.experimentalBufferedCapture'],
+							settings.value['recording.cpal.bufferedCapture'],
 							(v) =>
-								settings.updateKey(
-									'recording.cpal.experimentalBufferedCapture',
-									v,
-								)}
+								settings.updateKey('recording.cpal.bufferedCapture', v)}
 					/>
 					<div class="space-y-1">
-						<Field.Label for="recording.cpal.experimentalBufferedCapture">
-							Experimental buffered capture
+						<Field.Label for="recording.cpal.bufferedCapture">
+							In-memory capture
 						</Field.Label>
 						<Field.Description>
-							Keeps the audio callback lighter by queueing CPAL chunks for a
-							background writer thread. Try this if push-to-talk ramps a CPU
-							core or your fans during capture.
+							Capture directly to memory instead of writing a WAV file to
+							disk. Use for short ephemeral recordings where the disk write
+							is wasted work. Audio callback performance is unaffected either
+							way — the hot path is channel-based and never blocks.
 						</Field.Description>
 					</div>
 				</Field.Field>

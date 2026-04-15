@@ -110,7 +110,7 @@ beforeEach(() => {
 				'recording.cpal.outputFolder': '/tmp/out',
 				'recording.cpal.deviceId': null,
 				'recording.cpal.sampleRate': '16000',
-				'recording.cpal.experimentalBufferedCapture': false,
+				'recording.cpal.bufferedCapture': false,
 				'recording.ffmpeg.deviceId': null,
 				'recording.ffmpeg.globalOptions': '',
 				'recording.ffmpeg.inputOptions': '',

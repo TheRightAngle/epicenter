@@ -51,6 +51,10 @@ const LEGACY_KEY_MAP: Record<string, string> = {
 	'shortcuts.local.openTransformationPicker': 'shortcut.openTransformationPicker',
 	'shortcuts.local.runTransformationOnClipboard':
 		'shortcut.runTransformationOnClipboard',
+	// CPAL buffered capture dropped the "experimental" prefix once the
+	// channel-based writer pipeline shipped — the flag is now orthogonal
+	// to hot-path performance, so it no longer needs the scary name.
+	'recording.cpal.experimentalBufferedCapture': 'recording.cpal.bufferedCapture',
 };
 
 function canonicalKey(key: string): string {

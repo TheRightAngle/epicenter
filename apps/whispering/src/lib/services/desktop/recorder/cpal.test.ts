@@ -112,7 +112,7 @@ describe('CpalRecorderServiceLive', () => {
 				recordingId: 'rec-1',
 				outputFolder: '/tmp',
 				sampleRate: '16000',
-				experimentalBufferedCapture: false,
+				bufferedCapture: false,
 			},
 			{ sendStatus: () => undefined },
 		);
@@ -151,7 +151,7 @@ describe('CpalRecorderServiceLive', () => {
 				recordingId: 'rec-1',
 				outputFolder: '/tmp',
 				sampleRate: '16000',
-				experimentalBufferedCapture: false,
+				bufferedCapture: false,
 			},
 			{ sendStatus: () => undefined },
 		);
@@ -190,7 +190,7 @@ describe('CpalRecorderServiceLive', () => {
 				recordingId: 'rec-1',
 				outputFolder: '/tmp',
 				sampleRate: '16000',
-				experimentalBufferedCapture: false,
+				bufferedCapture: false,
 			},
 			{ sendStatus: () => undefined },
 		);
@@ -230,7 +230,7 @@ describe('CpalRecorderServiceLive', () => {
 				recordingId: 'rec-1',
 				outputFolder: '/tmp',
 				sampleRate: '16000',
-				experimentalBufferedCapture: false,
+				bufferedCapture: false,
 			},
 			{ sendStatus: () => undefined },
 		);

@@ -87,7 +87,13 @@ export type CpalRecordingParams = BaseRecordingParams & {
 	method: 'cpal';
 	outputFolder: string;
 	sampleRate: string;
-	experimentalBufferedCapture: boolean;
+	/**
+	 * When true, capture audio into an in-memory buffer instead of writing a
+	 * WAV file on disk. Useful for short ephemeral recordings where the disk
+	 * write is wasted work. Regardless of value, the audio callback is
+	 * channel-based and never blocks on a mutex or I/O.
+	 */
+	bufferedCapture: boolean;
 };
 
 /**

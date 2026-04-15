@@ -1,19 +1,19 @@
 use crate::recorder::wav_writer::WavWriter;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{BufferSize, Device, DeviceId, SampleFormat, Stream, SupportedBufferSize};
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use serde::Serialize;
 use std::any::Any;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::mpsc::{self, Receiver, Sender, SyncSender, TrySendError};
+use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-/// Simple result type using String for errors
 pub type Result<T> = std::result::Result<T, String>;
 
-/// Audio recording metadata - returned to frontend
+/// Audio recording metadata — returned to frontend
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AudioRecording {
@@ -21,7 +21,7 @@ pub struct AudioRecording {
     pub sample_rate: u32,
     pub channels: u16,
     pub duration_seconds: f32,
-    pub file_path: Option<String>, // Path to the WAV file
+    pub file_path: Option<String>,
 }
 
 /// Recording device metadata returned to the frontend.
@@ -32,12 +32,42 @@ pub struct RecordingDeviceInfo {
     pub label: String,
 }
 
-/// Simple recorder commands for worker thread communication
+/// Commands for the stream-owner worker thread (start/stop/shutdown).
 #[derive(Debug)]
 enum RecorderCmd {
-    Start(mpsc::Sender<()>), // Response channel to confirm command processed
-    Stop(mpsc::Sender<()>),  // Response channel to confirm command processed
+    Start(mpsc::Sender<()>),
+    Stop(mpsc::Sender<()>),
     Shutdown,
+}
+
+/// Sample batches handed from the audio callback to the writer thread.
+/// Each batch owns its own heap allocation so the callback can drop the
+/// CPAL borrow immediately after cloning.
+#[derive(Debug)]
+enum CaptureBatch {
+    F32(Box<[f32]>),
+    I16(Box<[i16]>),
+    U16(Box<[u16]>),
+}
+
+/// Control messages sent to the writer thread by the main state — used to
+/// drain the pipeline and hand back the final buffer on stop.
+#[derive(Debug)]
+enum WriterControl {
+    /// Finalize whatever we've written so far. Writer replies on `reply_tx`
+    /// with the final buffered samples (if any) and metadata.
+    Finalize(SyncSender<WriterFinalizeResult>),
+}
+
+#[derive(Debug)]
+struct WriterFinalizeResult {
+    /// For buffered mode: all captured samples, collapsed to the output
+    /// channel layout and converted to f32. None for inline mode.
+    buffered_samples: Option<Vec<f32>>,
+    sample_rate: u32,
+    output_channels: u16,
+    duration_seconds: f32,
+    err: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,9 +76,24 @@ enum RecorderWriteMode {
     BufferedMemory,
 }
 
-const EXPERIMENTAL_CAPTURE_TARGET_BUFFER_FRAMES: u32 = 2048;
-const EXPERIMENTAL_CAPTURE_INITIAL_SECONDS: usize = 30;
-const EXPERIMENTAL_CAPTURE_OUTPUT_CHANNELS: u16 = 1;
+/// Target CPAL callback buffer in frames. 2048 frames at 16 kHz = 128 ms
+/// per callback, cutting Windows WASAPI's default ~10 ms callback rate by
+/// ~12×. Applied to both modes now — the old design only applied it to
+/// the buffered path.
+const CAPTURE_TARGET_BUFFER_FRAMES: u32 = 2048;
+/// Initial capacity hint for the in-memory buffer. 30 seconds covers most
+/// push-to-talk sessions without a resize; longer recordings just grow.
+const CAPTURE_INITIAL_SECONDS: usize = 30;
+/// Buffered mode always collapses to mono on the output side (matches
+/// transcriber input). Inline mode preserves capture channels.
+const CAPTURE_BUFFERED_OUTPUT_CHANNELS: u16 = 1;
+/// How many sample batches the audio callback → writer thread channel
+/// can hold. 128 slots × 128 ms per batch ≈ 16 s of jitter tolerance
+/// against slow disk I/O. On overflow, oldest-policy isn't possible with
+/// std's sync_channel, so we drop the new batch and count it in
+/// diagnostics — an audible glitch, but better than stalling the audio
+/// thread.
+const CAPTURE_CHANNEL_SLOTS: usize = 128;
 
 #[derive(Debug)]
 enum InMemoryAudioBuffer {
@@ -57,11 +102,15 @@ enum InMemoryAudioBuffer {
     U16(Vec<u16>),
 }
 
+/// Diagnostics written to by the audio callback and read at finalize.
+/// Atomic updates only — no locks. Extended with `dropped_batches` so we
+/// can surface audio loss when the writer thread can't keep up.
 #[derive(Debug, Default)]
 struct CaptureDiagnostics {
     callback_count: AtomicU64,
     input_sample_count: AtomicU64,
     output_sample_count: AtomicU64,
+    dropped_batches: AtomicU64,
     callback_nanos: AtomicU64,
     max_callback_nanos: AtomicU64,
     callback_thread_id: AtomicU32,
@@ -72,6 +121,7 @@ struct CaptureDiagnosticsSnapshot {
     callback_count: u64,
     input_sample_count: u64,
     output_sample_count: u64,
+    dropped_batches: u64,
     callback_nanos: u64,
     max_callback_nanos: u64,
     callback_thread_id: u32,
@@ -88,19 +138,8 @@ impl CaptureDiagnostics {
         let elapsed_nanos = elapsed.as_nanos().min(u64::MAX as u128) as u64;
         self.callback_nanos
             .fetch_add(elapsed_nanos, Ordering::Relaxed);
-
-        let mut current_max = self.max_callback_nanos.load(Ordering::Relaxed);
-        while elapsed_nanos > current_max {
-            match self.max_callback_nanos.compare_exchange_weak(
-                current_max,
-                elapsed_nanos,
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => break,
-                Err(observed) => current_max = observed,
-            }
-        }
+        self.max_callback_nanos
+            .fetch_max(elapsed_nanos, Ordering::Relaxed);
 
         let thread_id = current_os_thread_id();
         if thread_id != 0 {
@@ -113,11 +152,16 @@ impl CaptureDiagnostics {
         }
     }
 
+    fn record_dropped(&self) {
+        self.dropped_batches.fetch_add(1, Ordering::Relaxed);
+    }
+
     fn snapshot(&self) -> CaptureDiagnosticsSnapshot {
         CaptureDiagnosticsSnapshot {
             callback_count: self.callback_count.load(Ordering::Relaxed),
             input_sample_count: self.input_sample_count.load(Ordering::Relaxed),
             output_sample_count: self.output_sample_count.load(Ordering::Relaxed),
+            dropped_batches: self.dropped_batches.load(Ordering::Relaxed),
             callback_nanos: self.callback_nanos.load(Ordering::Relaxed),
             max_callback_nanos: self.max_callback_nanos.load(Ordering::Relaxed),
             callback_thread_id: self.callback_thread_id.load(Ordering::Relaxed),
@@ -218,17 +262,105 @@ fn append_u16_interleaved_mono(buffer: &mut Vec<u16>, samples: &[u16], capture_c
     }
 }
 
-/// Simplified recorder state
+/// Modal state owned exclusively by the writer thread. Because only the
+/// writer thread touches this, no lock is needed on the hot path.
+enum WriterModeState {
+    Inline {
+        writer: WavWriter,
+    },
+    Buffered {
+        buffer: InMemoryAudioBuffer,
+        sample_rate: u32,
+        output_channels: u16,
+    },
+}
+
+impl WriterModeState {
+    fn ingest(&mut self, batch: CaptureBatch, capture_channels: u16) -> Result<()> {
+        match (self, batch) {
+            (Self::Inline { writer }, CaptureBatch::F32(samples)) => writer
+                .write_samples_f32(&samples)
+                .map_err(|e| format!("Failed to write f32 samples: {}", e)),
+            (Self::Inline { writer }, CaptureBatch::I16(samples)) => writer
+                .write_samples_i16(&samples)
+                .map_err(|e| format!("Failed to write i16 samples: {}", e)),
+            (Self::Inline { writer }, CaptureBatch::U16(samples)) => writer
+                .write_samples_u16(&samples)
+                .map_err(|e| format!("Failed to write u16 samples: {}", e)),
+            (Self::Buffered { buffer, .. }, CaptureBatch::F32(samples)) => {
+                buffer.append_f32_interleaved_mono(&samples, capture_channels);
+                Ok(())
+            }
+            (Self::Buffered { buffer, .. }, CaptureBatch::I16(samples)) => {
+                buffer.append_i16_interleaved_mono(&samples, capture_channels);
+                Ok(())
+            }
+            (Self::Buffered { buffer, .. }, CaptureBatch::U16(samples)) => {
+                buffer.append_u16_interleaved_mono(&samples, capture_channels);
+                Ok(())
+            }
+        }
+    }
+
+    fn finalize_and_take(mut self) -> WriterFinalizeResult {
+        match &mut self {
+            Self::Inline { writer } => {
+                let (sample_rate, output_channels, duration_seconds) = writer.get_metadata();
+                let err = writer
+                    .finalize()
+                    .err()
+                    .map(|e| format!("Failed to finalize WAV: {}", e));
+                WriterFinalizeResult {
+                    buffered_samples: None,
+                    sample_rate,
+                    output_channels,
+                    duration_seconds,
+                    err,
+                }
+            }
+            Self::Buffered {
+                buffer,
+                sample_rate,
+                output_channels,
+            } => {
+                let samples = buffer.take_f32_samples();
+                let duration_seconds =
+                    samples.len() as f32 / (*sample_rate as f32 * *output_channels as f32);
+                WriterFinalizeResult {
+                    buffered_samples: Some(samples),
+                    sample_rate: *sample_rate,
+                    output_channels: *output_channels,
+                    duration_seconds,
+                    err: None,
+                }
+            }
+        }
+    }
+}
+
+/// Simplified recorder state.
+///
+/// Ownership model:
+/// - The audio callback (on CPAL's own thread) holds a `SyncSender` and
+///   sends `CaptureBatch` values when recording is active. It never takes
+///   a lock, never touches the WAV writer, never does I/O. One heap
+///   allocation per batch (to copy the CPAL borrow).
+/// - The stream-owner thread holds the `Stream` (required on macOS), and
+///   blocks on `cmd_rx.recv()` for start/stop/shutdown commands. It
+///   toggles `is_recording` and replies to confirm command reception.
+/// - The writer thread owns the `WriterModeState` exclusively. It blocks
+///   on `capture_rx.recv()` and drains batches as they arrive. On
+///   finalize it takes out the final buffer / WAV file.
 pub struct RecorderState {
     cmd_tx: Option<mpsc::Sender<RecorderCmd>>,
     worker_handle: Option<JoinHandle<()>>,
-    writer: Option<Arc<Mutex<WavWriter>>>,
-    write_mode: RecorderWriteMode,
-    in_memory_audio: Option<Arc<Mutex<InMemoryAudioBuffer>>>,
+    writer_handle: Option<JoinHandle<()>>,
+    writer_control_tx: Option<Sender<WriterControl>>,
     capture_diagnostics: Option<Arc<CaptureDiagnostics>>,
     is_recording: Arc<AtomicBool>,
     sample_rate: u32,
     channels: u16,
+    write_mode: RecorderWriteMode,
     file_path: Option<PathBuf>,
     current_recording_id: Option<String>,
 }
@@ -238,13 +370,13 @@ impl RecorderState {
         Self {
             cmd_tx: None,
             worker_handle: None,
-            writer: None,
-            write_mode: RecorderWriteMode::Inline,
-            in_memory_audio: None,
+            writer_handle: None,
+            writer_control_tx: None,
             capture_diagnostics: None,
             is_recording: Arc::new(AtomicBool::new(false)),
             sample_rate: 0,
             channels: 0,
+            write_mode: RecorderWriteMode::Inline,
             file_path: None,
             current_recording_id: None,
         }
@@ -270,106 +402,103 @@ impl RecorderState {
         Ok(devices)
     }
 
-    /// Initialize recording session - creates stream and WAV writer
+    /// Initialize a recording session: build the stream, spawn the writer
+    /// thread, and arm both for start/stop commands.
     pub fn init_session(
         &mut self,
         device_identifier: String,
         output_folder: PathBuf,
         recording_id: String,
         preferred_sample_rate: Option<u32>,
-        experimental_buffered_capture: bool,
+        use_buffered_memory: bool,
     ) -> Result<()> {
-        // Clean up any existing session
+        // Tear down any pre-existing session first.
         self.close_session()?;
 
-        // Create file path
         let file_path = output_folder.join(format!("{}.wav", recording_id));
-
-        // Find the device
         let host = cpal::default_host();
         let device = find_device(&host, &device_identifier)?;
-        let write_mode = if experimental_buffered_capture {
+        let write_mode = if use_buffered_memory {
             RecorderWriteMode::BufferedMemory
         } else {
             RecorderWriteMode::Inline
         };
 
-        // Get optimal config for voice with optional preferred sample rate
-        let config = get_optimal_config(
-            &device,
-            preferred_sample_rate,
-            write_mode == RecorderWriteMode::BufferedMemory,
-        )?;
+        let config = get_optimal_config(&device, preferred_sample_rate)?;
         let sample_format = config.sample_format();
         let sample_rate = config.sample_rate();
         let capture_channels = config.channels();
-        let output_channels = if write_mode == RecorderWriteMode::BufferedMemory {
-            EXPERIMENTAL_CAPTURE_OUTPUT_CHANNELS
-        } else {
-            capture_channels
-        };
-        let writer = if write_mode == RecorderWriteMode::Inline {
-            Some(Arc::new(Mutex::new(
-                WavWriter::new(file_path.clone(), sample_rate, capture_channels)
-                    .map_err(|e| format!("Failed to create WAV file: {}", e))?,
-            )))
-        } else {
-            None
-        };
-        let in_memory_audio = if write_mode == RecorderWriteMode::BufferedMemory {
-            let initial_capacity_samples = sample_rate as usize
-                * output_channels as usize
-                * EXPERIMENTAL_CAPTURE_INITIAL_SECONDS;
-            Some(Arc::new(Mutex::new(InMemoryAudioBuffer::new(
-                sample_format,
-                initial_capacity_samples,
-            )?)))
-        } else {
-            None
-        };
-        let capture_diagnostics = if write_mode == RecorderWriteMode::BufferedMemory {
-            Some(Arc::new(CaptureDiagnostics::default()))
-        } else {
-            None
+        let output_channels = match write_mode {
+            RecorderWriteMode::Inline => capture_channels,
+            RecorderWriteMode::BufferedMemory => CAPTURE_BUFFERED_OUTPUT_CHANNELS,
         };
 
-        // Create stream config
+        // Build the mode-specific writer state. This is owned by the
+        // writer thread after we hand it off below.
+        let mode_state = match write_mode {
+            RecorderWriteMode::Inline => WriterModeState::Inline {
+                writer: WavWriter::new(file_path.clone(), sample_rate, capture_channels)
+                    .map_err(|e| format!("Failed to create WAV file: {}", e))?,
+            },
+            RecorderWriteMode::BufferedMemory => {
+                let initial_capacity = sample_rate as usize
+                    * output_channels as usize
+                    * CAPTURE_INITIAL_SECONDS;
+                WriterModeState::Buffered {
+                    buffer: InMemoryAudioBuffer::new(sample_format, initial_capacity)?,
+                    sample_rate,
+                    output_channels,
+                }
+            }
+        };
+
         let stream_config = cpal::StreamConfig {
             channels: capture_channels,
             sample_rate,
-            buffer_size: resolve_stream_buffer_size(&config, write_mode),
+            buffer_size: resolve_stream_buffer_size(&config),
         };
         let stream_buffer_size = format!("{:?}", stream_config.buffer_size);
 
-        // Create fresh recording flag
+        // Fresh recording flag, ensures no stale reads after a cancel.
         self.is_recording = Arc::new(AtomicBool::new(false));
         let is_recording = self.is_recording.clone();
 
-        // Create command channel for worker thread
-        let (cmd_tx, cmd_rx) = mpsc::channel();
+        let capture_diagnostics = Arc::new(CaptureDiagnostics::default());
 
-        // Clone for the worker thread
-        let writer_clone = writer.clone();
-        let is_recording_clone = is_recording.clone();
-        let in_memory_audio_for_stream = in_memory_audio.clone();
+        // Channels:
+        //   cmd_tx/cmd_rx        — main → stream worker (start/stop/shutdown)
+        //   capture_tx/capture_rx — callback → writer thread (audio samples)
+        //   writer_control_tx/rx — main → writer thread (finalize)
+        let (cmd_tx, cmd_rx) = mpsc::channel::<RecorderCmd>();
+        let (capture_tx, capture_rx) = mpsc::sync_channel::<CaptureBatch>(CAPTURE_CHANNEL_SLOTS);
+        let (writer_control_tx, writer_control_rx) = mpsc::channel::<WriterControl>();
+
+        // Spawn the writer thread. Drains capture_rx until it closes, then
+        // blocks on writer_control_rx for the finalize message.
+        let writer_handle = spawn_writer_thread(
+            mode_state,
+            capture_rx,
+            writer_control_rx,
+            capture_channels,
+        );
+
+        // Clones for the stream-owner thread closure.
+        let is_recording_for_stream = is_recording.clone();
         let capture_diagnostics_for_stream = capture_diagnostics.clone();
-        let write_mode_for_stream = write_mode;
+        let capture_tx_for_stream = capture_tx.clone();
 
-        // Create the worker thread that owns the stream
-        let worker = thread::spawn(move || {
+        let worker_handle = thread::spawn(move || {
             info!(
-                "Recorder worker thread started: os_thread_id={}",
+                "Recorder stream-owner thread started: os_thread_id={}",
                 current_os_thread_id()
             );
-            // Build the stream IN this thread (required for macOS)
+
             let stream = match build_input_stream(
                 &device,
                 &stream_config,
                 sample_format,
-                is_recording_clone,
-                write_mode_for_stream,
-                writer_clone,
-                in_memory_audio_for_stream,
+                is_recording_for_stream,
+                capture_tx_for_stream,
                 capture_diagnostics_for_stream,
             ) {
                 Ok(s) => s,
@@ -379,168 +508,153 @@ impl RecorderState {
                 }
             };
 
-            // Start the stream
             if let Err(e) = stream.play() {
                 error!("Failed to start stream: {}", e);
                 return;
             }
-
             info!("Audio stream started successfully");
 
-            // Keep thread alive by waiting for commands
-            // This blocks but is responsive - no sleeping!
+            // Block on commands. `recv()` parks the thread — no spinning.
             loop {
                 match cmd_rx.recv() {
                     Ok(RecorderCmd::Start(reply_tx)) => {
                         is_recording.store(true, Ordering::Relaxed);
                         info!("Recording started");
-                        let _ = reply_tx.send(()); // Confirm command processed
+                        let _ = reply_tx.send(());
                     }
                     Ok(RecorderCmd::Stop(reply_tx)) => {
                         is_recording.store(false, Ordering::Relaxed);
                         info!("Recording stopped");
-                        let _ = reply_tx.send(()); // Confirm command processed
+                        let _ = reply_tx.send(());
                     }
                     Ok(RecorderCmd::Shutdown) | Err(_) => {
-                        info!("Shutting down audio worker");
+                        info!("Shutting down audio stream-owner thread");
                         break;
                     }
                 }
             }
-            // Stream automatically drops here
+            // Dropping `stream` here closes the CPAL stream, which stops
+            // the callback. `capture_tx` is also dropped (the callback
+            // closure held the only other clone), which closes the
+            // capture channel and signals the writer thread to drain and
+            // exit.
+            drop(stream);
+            drop(capture_tx);
         });
 
-        // Store everything
         self.cmd_tx = Some(cmd_tx);
-        self.worker_handle = Some(worker);
-        self.writer = writer;
-        self.write_mode = write_mode;
-        self.in_memory_audio = in_memory_audio;
-        self.capture_diagnostics = capture_diagnostics;
+        self.worker_handle = Some(worker_handle);
+        self.writer_handle = Some(writer_handle);
+        self.writer_control_tx = Some(writer_control_tx);
+        self.capture_diagnostics = Some(capture_diagnostics);
         self.sample_rate = sample_rate;
         self.channels = output_channels;
-        self.file_path = if write_mode == RecorderWriteMode::Inline {
-            Some(file_path)
-        } else {
-            None
+        self.write_mode = write_mode;
+        self.file_path = match write_mode {
+            RecorderWriteMode::Inline => Some(file_path),
+            RecorderWriteMode::BufferedMemory => None,
         };
         self.current_recording_id = Some(recording_id);
 
         info!(
-            "Recording session initialized: {} Hz, capture_channels={}, output_channels={}, buffer={}, file: {:?}",
-            sample_rate, capture_channels, output_channels, stream_buffer_size, self.file_path
+            "Recording session initialized: {} Hz, capture_channels={}, output_channels={}, buffer={}, mode={:?}, file: {:?}",
+            sample_rate, capture_channels, output_channels, stream_buffer_size, write_mode, self.file_path
         );
 
         Ok(())
     }
 
-    /// Start recording - send command to worker thread and wait for confirmation
     pub fn start_recording(&mut self) -> Result<()> {
-        if let Some(tx) = &self.cmd_tx {
-            let (reply_tx, reply_rx) = mpsc::channel();
-            tx.send(RecorderCmd::Start(reply_tx))
-                .map_err(|e| format!("Failed to send start command: {}", e))?;
-            // Wait for worker thread to confirm the command was processed
-            reply_rx
-                .recv()
-                .map_err(|e| format!("Failed to receive start confirmation: {}", e))?;
-        } else {
-            return Err("No recording session initialized".to_string());
-        }
+        let tx = self
+            .cmd_tx
+            .as_ref()
+            .ok_or_else(|| "No recording session initialized".to_string())?;
+
+        let (reply_tx, reply_rx) = mpsc::channel();
+        tx.send(RecorderCmd::Start(reply_tx))
+            .map_err(|e| format!("Failed to send start command: {}", e))?;
+        reply_rx
+            .recv()
+            .map_err(|e| format!("Failed to receive start confirmation: {}", e))?;
         Ok(())
     }
 
-    /// Stop recording - return file info
     pub fn stop_recording(&mut self) -> Result<AudioRecording> {
-        // Send stop command to worker thread and wait for confirmation
+        // 1. Ask the stream-owner thread to stop sampling.
         if let Some(tx) = &self.cmd_tx {
             let (reply_tx, reply_rx) = mpsc::channel();
             tx.send(RecorderCmd::Stop(reply_tx))
                 .map_err(|e| format!("Failed to send stop command: {}", e))?;
-            // Wait for worker thread to confirm the command was processed
             reply_rx
                 .recv()
                 .map_err(|e| format!("Failed to receive stop confirmation: {}", e))?;
         }
 
-        if self.write_mode == RecorderWriteMode::BufferedMemory {
-            let recording = self.finalize_in_memory_audio()?;
-            if let Some(capture_diagnostics) = &self.capture_diagnostics {
-                let snapshot = capture_diagnostics.snapshot();
-                let avg_output_samples_per_callback = if snapshot.callback_count == 0 {
-                    0.0
-                } else {
-                    snapshot.output_sample_count as f64 / snapshot.callback_count as f64
-                };
-                let avg_callback_ms = if snapshot.callback_count == 0 {
-                    0.0
-                } else {
-                    snapshot.callback_nanos as f64 / snapshot.callback_count as f64 / 1_000_000.0
-                };
-                let max_callback_ms = snapshot.max_callback_nanos as f64 / 1_000_000.0;
+        // 2. Ask the writer thread to drain and finalize. It responds on
+        //    a oneshot channel with the final buffer + metadata.
+        let finalize_result = self.request_finalize()?;
 
-                info!(
-                    "Experimental capture diagnostics: callback_thread_id={}, callbacks={}, input_samples={}, output_samples={}, avg_output_samples_per_callback={:.2}, avg_callback_ms={:.4}, max_callback_ms={:.4}",
-                    snapshot.callback_thread_id,
-                    snapshot.callback_count,
-                    snapshot.input_sample_count,
-                    snapshot.output_sample_count,
-                    avg_output_samples_per_callback,
-                    avg_callback_ms,
-                    max_callback_ms
-                );
-            }
-            info!(
-                "Recording stopped in memory: {:.2}s, samples: {}",
-                recording.duration_seconds,
-                recording.audio_data.len()
-            );
-            return Ok(recording);
+        // 3. Emit diagnostics for the buffered mode (unchanged semantics
+        //    from before, just with the new dropped-batches counter).
+        if self.write_mode == RecorderWriteMode::BufferedMemory {
+            self.emit_buffered_diagnostics();
         }
 
-        // Finalize the WAV file and get metadata
-        let (sample_rate, channels, duration) = if let Some(writer) = &self.writer {
-            let mut w = writer
-                .lock()
-                .map_err(|e| format!("Failed to lock writer: {}", e))?;
-            w.finalize()
-                .map_err(|e| format!("Failed to finalize WAV: {}", e))?;
-            w.get_metadata()
-        } else {
-            (self.sample_rate, self.channels, 0.0)
+        // 4. Build the AudioRecording struct for the frontend.
+        let recording = match finalize_result.buffered_samples {
+            Some(samples) => {
+                info!(
+                    "Recording stopped (buffered): {:.2}s, {} samples",
+                    finalize_result.duration_seconds,
+                    samples.len()
+                );
+                AudioRecording {
+                    audio_data: samples,
+                    sample_rate: finalize_result.sample_rate,
+                    channels: finalize_result.output_channels,
+                    duration_seconds: finalize_result.duration_seconds,
+                    file_path: None,
+                }
+            }
+            None => {
+                let file_path = self
+                    .file_path
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().to_string());
+                info!(
+                    "Recording stopped (inline): {:.2}s, file: {:?}",
+                    finalize_result.duration_seconds, file_path
+                );
+                AudioRecording {
+                    audio_data: Vec::new(),
+                    sample_rate: finalize_result.sample_rate,
+                    channels: finalize_result.output_channels,
+                    duration_seconds: finalize_result.duration_seconds,
+                    file_path,
+                }
+            }
         };
 
-        let file_path = self
-            .file_path
-            .as_ref()
-            .map(|p| p.to_string_lossy().to_string());
+        if let Some(err) = finalize_result.err {
+            return Err(err);
+        }
 
-        info!("Recording stopped: {:.2}s, file: {:?}", duration, file_path);
-
-        Ok(AudioRecording {
-            audio_data: Vec::new(), // Empty for file-based recording
-            sample_rate,
-            channels,
-            duration_seconds: duration,
-            file_path,
-        })
+        Ok(recording)
     }
 
-    /// Cancel recording - stop and delete the file
     pub fn cancel_recording(&mut self) -> Result<()> {
         let file_path = self.file_path.clone();
 
-        // Send stop command
+        // Signal stop. Ignore any reply errors — we're tearing down.
         if let Some(tx) = &self.cmd_tx {
             let (reply_tx, reply_rx) = mpsc::channel();
             let _ = tx.send(RecorderCmd::Stop(reply_tx));
-            let _ = reply_rx.recv(); // Wait for confirmation but ignore errors during cancel
+            let _ = reply_rx.recv();
         }
 
-        // Clear the session
+        // Fully close the session (stream drops, writer thread drains).
         self.close_session()?;
 
-        // Delete the file if it exists
         if let Some(file_path) = &file_path {
             std::fs::remove_file(file_path)
                 .map_err(|e| format!("Failed to delete recording file {:?}: {}", file_path, e))?;
@@ -550,49 +664,50 @@ impl RecorderState {
         Ok(())
     }
 
-    /// Close the recording session
+    /// Fully tear down the session: stream, stream-owner thread, writer
+    /// thread, and any writer state. Accumulates errors and returns them
+    /// all so a partial failure is visible to the caller.
     pub fn close_session(&mut self) -> Result<()> {
         let mut cleanup_errors = Vec::new();
 
-        // Send shutdown command to worker thread
+        // Tell the stream-owner thread to shut down. Its drop impl will
+        // close the CPAL stream AND drop the last capture_tx clone it
+        // holds, which signals the writer thread to drain and exit.
         if let Some(tx) = self.cmd_tx.take() {
             if let Err(e) = tx.send(RecorderCmd::Shutdown) {
                 cleanup_errors.push(format!("Failed to send shutdown command: {}", e));
             }
         }
-
-        // Wait for worker thread to finish
         if let Some(handle) = self.worker_handle.take() {
             if let Err(panic) = handle.join() {
                 cleanup_errors.push(format!(
-                    "Failed to join worker thread: {}",
+                    "Failed to join stream-owner thread: {}",
                     panic_payload_message(&panic)
                 ));
             }
         }
 
-        // Finalize and drop the writer
-        if let Some(writer) = self.writer.take() {
-            match writer.lock() {
-                Ok(mut w) => {
-                    if let Err(e) = w.finalize() {
-                        cleanup_errors.push(format!("Failed to finalize WAV: {}", e));
-                    }
-                }
-                Err(e) => {
-                    cleanup_errors.push(format!("Failed to lock writer: {}", e));
-                }
+        // Drop the writer control sender. The writer thread ignores any
+        // further control messages after the capture channel closes, but
+        // we clean up cleanly regardless.
+        drop(self.writer_control_tx.take());
+
+        if let Some(handle) = self.writer_handle.take() {
+            if let Err(panic) = handle.join() {
+                cleanup_errors.push(format!(
+                    "Failed to join writer thread: {}",
+                    panic_payload_message(&panic)
+                ));
             }
         }
 
-        // Clear state
-        self.write_mode = RecorderWriteMode::Inline;
-        self.in_memory_audio = None;
+        // Reset state
         self.capture_diagnostics = None;
-        self.file_path = None;
-        self.current_recording_id = None;
         self.sample_rate = 0;
         self.channels = 0;
+        self.write_mode = RecorderWriteMode::Inline;
+        self.file_path = None;
+        self.current_recording_id = None;
 
         debug!("Recording session closed");
         if cleanup_errors.is_empty() {
@@ -602,7 +717,6 @@ impl RecorderState {
         }
     }
 
-    /// Get current recording ID if actively recording
     pub fn get_current_recording_id(&self) -> Option<String> {
         if self.is_recording.load(Ordering::Acquire) {
             self.current_recording_id.clone()
@@ -611,31 +725,173 @@ impl RecorderState {
         }
     }
 
-    fn finalize_in_memory_audio(&mut self) -> Result<AudioRecording> {
-        let in_memory_audio = self
-            .in_memory_audio
+    /// Send a Finalize request to the writer thread and await its reply.
+    /// After this returns, the writer thread is still alive (waiting to
+    /// be joined during `close_session`) but has flushed all pending
+    /// samples.
+    fn request_finalize(&mut self) -> Result<WriterFinalizeResult> {
+        let control_tx = self
+            .writer_control_tx
             .as_ref()
-            .ok_or_else(|| "No in-memory audio buffer initialized".to_string())?;
-        let mut in_memory_audio = in_memory_audio
-            .lock()
-            .map_err(|e| format!("Failed to lock in-memory audio buffer: {}", e))?;
-        let audio_data = in_memory_audio.take_f32_samples();
-        let duration_seconds =
-            audio_data.len() as f32 / (self.sample_rate as f32 * self.channels as f32);
+            .ok_or_else(|| "No writer thread initialized".to_string())?;
 
-        Ok(AudioRecording {
-            audio_data,
-            sample_rate: self.sample_rate,
-            channels: self.channels,
-            duration_seconds,
-            file_path: None,
-        })
+        let (reply_tx, reply_rx) = mpsc::sync_channel::<WriterFinalizeResult>(1);
+        control_tx
+            .send(WriterControl::Finalize(reply_tx))
+            .map_err(|e| format!("Failed to send finalize to writer: {}", e))?;
+        reply_rx
+            .recv()
+            .map_err(|e| format!("Writer thread hung up before finalizing: {}", e))
+    }
+
+    fn emit_buffered_diagnostics(&self) {
+        let Some(diagnostics) = &self.capture_diagnostics else {
+            return;
+        };
+        let snapshot = diagnostics.snapshot();
+
+        let avg_output_samples_per_callback = if snapshot.callback_count == 0 {
+            0.0
+        } else {
+            snapshot.output_sample_count as f64 / snapshot.callback_count as f64
+        };
+        let avg_callback_ms = if snapshot.callback_count == 0 {
+            0.0
+        } else {
+            snapshot.callback_nanos as f64 / snapshot.callback_count as f64 / 1_000_000.0
+        };
+        let max_callback_ms = snapshot.max_callback_nanos as f64 / 1_000_000.0;
+
+        info!(
+            "Capture diagnostics: thread={}, callbacks={}, dropped={}, input_samples={}, output_samples={}, avg_samples_per_cb={:.2}, avg_cb_ms={:.4}, max_cb_ms={:.4}",
+            snapshot.callback_thread_id,
+            snapshot.callback_count,
+            snapshot.dropped_batches,
+            snapshot.input_sample_count,
+            snapshot.output_sample_count,
+            avg_output_samples_per_callback,
+            avg_callback_ms,
+            max_callback_ms
+        );
+
+        if snapshot.dropped_batches > 0 {
+            warn!(
+                "Audio capture dropped {} batches; writer thread could not keep up. \
+                 This usually means disk I/O is saturated or the system is under heavy load.",
+                snapshot.dropped_batches
+            );
+        }
     }
 }
 
-/// Find a recording device by stable id, falling back to the legacy name path.
+fn spawn_writer_thread(
+    mut mode_state: WriterModeState,
+    capture_rx: Receiver<CaptureBatch>,
+    control_rx: Receiver<WriterControl>,
+    capture_channels: u16,
+) -> JoinHandle<()> {
+    thread::spawn(move || {
+        info!(
+            "Recorder writer thread started: os_thread_id={}",
+            current_os_thread_id()
+        );
+
+        // Drain the capture channel until it closes. This blocks
+        // efficiently (`recv()` parks the thread) and does all the disk
+        // I/O / buffer appends off the audio callback thread.
+        for batch in capture_rx.iter() {
+            if let Err(e) = mode_state.ingest(batch, capture_channels) {
+                error!("Writer thread error: {}", e);
+            }
+        }
+
+        // Capture channel closed. Wait for the finalize control message
+        // from the main state, if one arrives. If the control channel
+        // was dropped first (cancel path), just finalize immediately.
+        let reply_tx = match control_rx.recv() {
+            Ok(WriterControl::Finalize(tx)) => Some(tx),
+            Err(_) => None,
+        };
+
+        let result = mode_state.finalize_and_take();
+        if let Some(tx) = reply_tx {
+            let _ = tx.send(result);
+        } else if let Some(err) = result.err {
+            error!("Writer thread finalize error (no listener): {}", err);
+        }
+
+        info!("Recorder writer thread finished");
+    })
+}
+
+/// Build the CPAL input stream. Callback is a **single non-blocking
+/// producer**: check is_recording, clone the CPAL slice into a Box, and
+/// try_send onto the capture channel. No lock, no I/O, no syscalls.
+fn build_input_stream(
+    device: &Device,
+    config: &cpal::StreamConfig,
+    sample_format: SampleFormat,
+    is_recording: Arc<AtomicBool>,
+    capture_tx: SyncSender<CaptureBatch>,
+    capture_diagnostics: Arc<CaptureDiagnostics>,
+) -> Result<Stream> {
+    let err_fn = |err| error!("Audio stream error: {}", err);
+
+    macro_rules! build_stream {
+        ($sample_ty:ty, $variant:path) => {{
+            let is_recording = is_recording.clone();
+            let capture_tx = capture_tx.clone();
+            let capture_diagnostics = capture_diagnostics.clone();
+            device
+                .build_input_stream(
+                    config,
+                    move |data: &[$sample_ty], _: &_| {
+                        if !is_recording.load(Ordering::Relaxed) {
+                            return;
+                        }
+                        let started = Instant::now();
+                        let batch = $variant(Box::<[$sample_ty]>::from(data));
+                        match capture_tx.try_send(batch) {
+                            Ok(()) => {
+                                capture_diagnostics.record_callback(
+                                    data.len(),
+                                    data.len(),
+                                    started.elapsed(),
+                                );
+                            }
+                            Err(TrySendError::Full(_)) => {
+                                capture_diagnostics.record_dropped();
+                                capture_diagnostics.record_callback(
+                                    data.len(),
+                                    0,
+                                    started.elapsed(),
+                                );
+                            }
+                            Err(TrySendError::Disconnected(_)) => {
+                                // Writer thread is gone; nothing we can
+                                // do from the callback. Next stop/cancel
+                                // will surface the error.
+                            }
+                        }
+                    },
+                    err_fn,
+                    None,
+                )
+                .map_err(|e| format!("Failed to build stream: {}", e))?
+        }};
+    }
+
+    let stream = match sample_format {
+        SampleFormat::F32 => build_stream!(f32, CaptureBatch::F32),
+        SampleFormat::I16 => build_stream!(i16, CaptureBatch::I16),
+        SampleFormat::U16 => build_stream!(u16, CaptureBatch::U16),
+        other => return Err(format!("Unsupported sample format: {:?}", other)),
+    };
+
+    Ok(stream)
+}
+
 fn find_device(host: &cpal::Host, device_identifier: &str) -> Result<Device> {
-    // Handle "default" device
     if device_identifier.to_lowercase() == "default" {
         return host
             .default_input_device()
@@ -648,9 +904,7 @@ fn find_device(host: &cpal::Host, device_identifier: &str) -> Result<Device> {
         }
     }
 
-    // Fall back to legacy name-based lookup for older persisted settings.
     let devices: Vec<_> = host.input_devices().map_err(|e| e.to_string())?.collect();
-
     for device in devices {
         if let Ok(name) = device.name() {
             if name == device_identifier {
@@ -695,11 +949,97 @@ fn panic_payload_message(panic: &Box<dyn Any + Send + 'static>) -> String {
     }
 }
 
+/// Get an optimal config for voice, honoring an optional preferred sample
+/// rate. Preference order: exact match → closest rate within range →
+/// config with the widest range → first config available.
+fn get_optimal_config(
+    device: &Device,
+    preferred_sample_rate: Option<u32>,
+) -> Result<cpal::SupportedStreamConfig> {
+    let default_config = device
+        .default_input_config()
+        .map_err(|e| format!("Failed to get default config: {}", e))?;
+
+    if preferred_sample_rate.is_none() {
+        debug!(
+            "Using device default config: {} Hz, {} channels, {:?}",
+            default_config.sample_rate().0,
+            default_config.channels(),
+            default_config.sample_format(),
+        );
+        return Ok(default_config);
+    }
+
+    let preferred = preferred_sample_rate.unwrap();
+    let supported_configs: Vec<_> = device
+        .supported_input_configs()
+        .map_err(|e| format!("Failed to query supported configs: {}", e))?
+        .collect();
+
+    let mut best_config: Option<cpal::SupportedStreamConfig> = None;
+
+    for config in supported_configs {
+        let min_rate = config.min_sample_rate().0;
+        let max_rate = config.max_sample_rate().0;
+
+        let rate = if preferred >= min_rate && preferred <= max_rate {
+            preferred
+        } else if preferred < min_rate {
+            continue;
+        } else {
+            min_rate
+        };
+        best_config = Some(config.with_sample_rate(cpal::SampleRate(rate)));
+    }
+
+    best_config.ok_or_else(|| "Failed to find suitable audio configuration".to_string())
+}
+
+/// Choose a buffer size for both modes. We always target larger CPAL
+/// buffers now (~128 ms at 16 kHz) because the callback is lightweight
+/// enough that there's no reason to push for smaller buffers — they just
+/// increase callback overhead without reducing latency (we don't emit to
+/// frontend on each callback).
+fn resolve_stream_buffer_size(config: &cpal::SupportedStreamConfig) -> BufferSize {
+    match config.buffer_size() {
+        SupportedBufferSize::Range { min, max } => {
+            let preferred = CAPTURE_TARGET_BUFFER_FRAMES.max(*min).min(*max);
+            if preferred == 0 {
+                BufferSize::Default
+            } else {
+                BufferSize::Fixed(preferred)
+            }
+        }
+        SupportedBufferSize::Unknown => BufferSize::Default,
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn current_os_thread_id() -> u32 {
+    // SAFETY: `GetCurrentThreadId` is infallible and has no safety
+    // preconditions — it's a simple read from the Windows TEB. The
+    // `unsafe` wrapper is required only because `windows-sys` exposes
+    // every raw Win32 function as `unsafe`, not because this call is
+    // actually unsafe. See:
+    // https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getcurrentthreadid
+    unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn current_os_thread_id() -> u32 {
+    0
+}
+
+impl Drop for RecorderState {
+    fn drop(&mut self) {
+        let _ = self.close_session();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::RecorderState;
     use std::fs;
-    use std::thread;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -714,6 +1054,8 @@ mod tests {
         fs::create_dir(&temp_dir).unwrap();
 
         let mut recorder = RecorderState::new();
+        // A directory path stands in for a real recording file; remove_file
+        // fails on directories, which the cancel path must surface.
         recorder.file_path = Some(temp_dir.clone());
         recorder.sample_rate = 16_000;
         recorder.channels = 1;
@@ -726,349 +1068,5 @@ mod tests {
         assert_eq!(recorder.channels, 0);
 
         fs::remove_dir_all(temp_dir).unwrap();
-    }
-
-    #[test]
-    fn close_session_propagates_worker_join_failures() {
-        let mut recorder = RecorderState::new();
-        recorder.worker_handle = Some(thread::spawn(|| panic!("worker boom")));
-
-        let error = recorder.close_session().unwrap_err();
-
-        assert!(error.contains("Failed to join worker thread"));
-        assert!(error.contains("worker boom"));
-        assert!(recorder.worker_handle.is_none());
-        assert!(recorder.file_path.is_none());
-        assert_eq!(recorder.sample_rate, 0);
-        assert_eq!(recorder.channels, 0);
-    }
-}
-
-/// Get optimal configuration for voice recording
-fn get_optimal_config(
-    device: &Device,
-    preferred_sample_rate: Option<u32>,
-    prefer_native_rate: bool,
-) -> Result<cpal::SupportedStreamConfig> {
-    if prefer_native_rate {
-        let default_config = device
-            .default_input_config()
-            .map_err(|e| format!("Failed to get default input config: {}", e))?;
-
-        let sample_format = default_config.sample_format();
-        if matches!(
-            sample_format,
-            SampleFormat::F32 | SampleFormat::I16 | SampleFormat::U16
-        ) {
-            debug!(
-                "Using device default input config for experimental capture: {} Hz, {} channels, {:?}",
-                default_config.sample_rate(),
-                default_config.channels(),
-                sample_format
-            );
-            return Ok(default_config);
-        }
-    }
-
-    // Use preferred sample rate or default to 16kHz for voice
-    let target_sample_rate = preferred_sample_rate.unwrap_or(16000);
-
-    let configs: Vec<_> = device
-        .supported_input_configs()
-        .map_err(|e| e.to_string())?
-        .collect();
-
-    if configs.is_empty() {
-        return Err("No supported input configurations".to_string());
-    }
-
-    // Filter for supported sample formats only
-    let supported_formats = [SampleFormat::F32, SampleFormat::I16, SampleFormat::U16];
-    let compatible_configs: Vec<_> = configs
-        .iter()
-        .filter(|config| supported_formats.contains(&config.sample_format()))
-        .collect();
-
-    if compatible_configs.is_empty() {
-        return Err("No configurations with supported sample formats (F32, I16, U16)".to_string());
-    }
-
-    // Try to find mono config with target sample rate and supported format
-    for config in &compatible_configs {
-        if config.channels() == 1 {
-            let min_rate = config.min_sample_rate();
-            let max_rate = config.max_sample_rate();
-            if min_rate <= target_sample_rate && max_rate >= target_sample_rate {
-                return Ok(config.with_sample_rate(target_sample_rate));
-            }
-        }
-    }
-
-    // Try stereo with target sample rate if mono not available
-    for config in &compatible_configs {
-        let min_rate = config.min_sample_rate();
-        let max_rate = config.max_sample_rate();
-        if min_rate <= target_sample_rate && max_rate >= target_sample_rate {
-            return Ok(config.with_sample_rate(target_sample_rate));
-        }
-    }
-
-    // If target rate not supported, try to find closest rate
-    let mut best_config = None;
-    let mut best_diff = u32::MAX;
-
-    for config in &compatible_configs {
-        // Prefer mono
-        if config.channels() == 1 {
-            let min_rate = config.min_sample_rate();
-            let max_rate = config.max_sample_rate();
-
-            // Find closest supported rate
-            let closest_rate = if target_sample_rate < min_rate {
-                min_rate
-            } else if target_sample_rate > max_rate {
-                max_rate
-            } else {
-                target_sample_rate
-            };
-
-            let diff = (closest_rate as i32 - target_sample_rate as i32).abs() as u32;
-            if diff < best_diff {
-                best_diff = diff;
-                best_config = Some(config.with_sample_rate(closest_rate));
-            }
-        }
-    }
-
-    // If still no best config, take any compatible config
-    if best_config.is_none() && !compatible_configs.is_empty() {
-        let config = compatible_configs[0];
-        let min_rate = config.min_sample_rate();
-        let max_rate = config.max_sample_rate();
-        let rate = if min_rate <= target_sample_rate && max_rate >= target_sample_rate {
-            target_sample_rate
-        } else {
-            min_rate // Use minimum rate as fallback
-        };
-        best_config = Some(config.with_sample_rate(rate));
-    }
-
-    best_config.ok_or_else(|| "Failed to find suitable audio configuration".to_string())
-}
-
-fn resolve_stream_buffer_size(
-    config: &cpal::SupportedStreamConfig,
-    write_mode: RecorderWriteMode,
-) -> BufferSize {
-    if write_mode != RecorderWriteMode::BufferedMemory {
-        return BufferSize::Default;
-    }
-
-    match config.buffer_size() {
-        SupportedBufferSize::Range { min, max } => {
-            let preferred = EXPERIMENTAL_CAPTURE_TARGET_BUFFER_FRAMES
-                .max(*min)
-                .min(*max);
-
-            if preferred == 0 {
-                BufferSize::Default
-            } else {
-                BufferSize::Fixed(preferred)
-            }
-        }
-        SupportedBufferSize::Unknown => BufferSize::Default,
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn current_os_thread_id() -> u32 {
-    unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() }
-}
-
-#[cfg(not(target_os = "windows"))]
-fn current_os_thread_id() -> u32 {
-    0
-}
-
-/// Build input stream for any supported sample format
-fn build_input_stream(
-    device: &Device,
-    config: &cpal::StreamConfig,
-    sample_format: SampleFormat,
-    is_recording: Arc<AtomicBool>,
-    write_mode: RecorderWriteMode,
-    writer: Option<Arc<Mutex<WavWriter>>>,
-    in_memory_audio: Option<Arc<Mutex<InMemoryAudioBuffer>>>,
-    capture_diagnostics: Option<Arc<CaptureDiagnostics>>,
-) -> Result<Stream> {
-    let err_fn = |err| error!("Audio stream error: {}", err);
-    let capture_channels = config.channels;
-
-    let stream = match sample_format {
-        SampleFormat::F32 => {
-            let writer = writer.clone();
-            let in_memory_audio = in_memory_audio.clone();
-            let capture_diagnostics = capture_diagnostics.clone();
-            device
-                .build_input_stream(
-                    config,
-                    move |data: &[f32], _: &_| {
-                        if is_recording.load(Ordering::Relaxed) {
-                            let started = Instant::now();
-                            match write_mode {
-                                RecorderWriteMode::Inline => {
-                                    if let Some(writer) = &writer {
-                                        if let Ok(mut w) = writer.lock() {
-                                            let _ = w.write_samples_f32(data);
-                                        }
-                                    }
-                                }
-                                RecorderWriteMode::BufferedMemory => {
-                                    if let Some(in_memory_audio) = &in_memory_audio {
-                                        if let Ok(mut buffer) = in_memory_audio.lock() {
-                                            buffer.append_f32_interleaved_mono(
-                                                data,
-                                                capture_channels,
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-
-                            if let Some(capture_diagnostics) = &capture_diagnostics {
-                                let output_samples = if write_mode
-                                    == RecorderWriteMode::BufferedMemory
-                                    && capture_channels > 1
-                                {
-                                    data.len() / capture_channels as usize
-                                } else {
-                                    data.len()
-                                };
-                                capture_diagnostics.record_callback(
-                                    data.len(),
-                                    output_samples,
-                                    started.elapsed(),
-                                );
-                            }
-                        }
-                    },
-                    err_fn,
-                    None,
-                )
-                .map_err(|e| format!("Failed to build F32 stream: {}", e))?
-        }
-        SampleFormat::I16 => {
-            let writer = writer.clone();
-            let in_memory_audio = in_memory_audio.clone();
-            let capture_diagnostics = capture_diagnostics.clone();
-            device
-                .build_input_stream(
-                    config,
-                    move |data: &[i16], _: &_| {
-                        if is_recording.load(Ordering::Relaxed) {
-                            let started = Instant::now();
-                            match write_mode {
-                                RecorderWriteMode::Inline => {
-                                    if let Some(writer) = &writer {
-                                        if let Ok(mut w) = writer.lock() {
-                                            let _ = w.write_samples_i16(data);
-                                        }
-                                    }
-                                }
-                                RecorderWriteMode::BufferedMemory => {
-                                    if let Some(in_memory_audio) = &in_memory_audio {
-                                        if let Ok(mut buffer) = in_memory_audio.lock() {
-                                            buffer.append_i16_interleaved_mono(
-                                                data,
-                                                capture_channels,
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-
-                            if let Some(capture_diagnostics) = &capture_diagnostics {
-                                let output_samples = if write_mode
-                                    == RecorderWriteMode::BufferedMemory
-                                    && capture_channels > 1
-                                {
-                                    data.len() / capture_channels as usize
-                                } else {
-                                    data.len()
-                                };
-                                capture_diagnostics.record_callback(
-                                    data.len(),
-                                    output_samples,
-                                    started.elapsed(),
-                                );
-                            }
-                        }
-                    },
-                    err_fn,
-                    None,
-                )
-                .map_err(|e| format!("Failed to build I16 stream: {}", e))?
-        }
-        SampleFormat::U16 => {
-            let writer = writer.clone();
-            let in_memory_audio = in_memory_audio.clone();
-            let capture_diagnostics = capture_diagnostics.clone();
-            device
-                .build_input_stream(
-                    config,
-                    move |data: &[u16], _: &_| {
-                        if is_recording.load(Ordering::Relaxed) {
-                            let started = Instant::now();
-                            match write_mode {
-                                RecorderWriteMode::Inline => {
-                                    if let Some(writer) = &writer {
-                                        if let Ok(mut w) = writer.lock() {
-                                            let _ = w.write_samples_u16(data);
-                                        }
-                                    }
-                                }
-                                RecorderWriteMode::BufferedMemory => {
-                                    if let Some(in_memory_audio) = &in_memory_audio {
-                                        if let Ok(mut buffer) = in_memory_audio.lock() {
-                                            buffer.append_u16_interleaved_mono(
-                                                data,
-                                                capture_channels,
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-
-                            if let Some(capture_diagnostics) = &capture_diagnostics {
-                                let output_samples = if write_mode
-                                    == RecorderWriteMode::BufferedMemory
-                                    && capture_channels > 1
-                                {
-                                    data.len() / capture_channels as usize
-                                } else {
-                                    data.len()
-                                };
-                                capture_diagnostics.record_callback(
-                                    data.len(),
-                                    output_samples,
-                                    started.elapsed(),
-                                );
-                            }
-                        }
-                    },
-                    err_fn,
-                    None,
-                )
-                .map_err(|e| format!("Failed to build U16 stream: {}", e))?
-        }
-        _ => return Err(format!("Unsupported sample format: {:?}", sample_format)),
-    };
-
-    Ok(stream)
-}
-
-impl Drop for RecorderState {
-    fn drop(&mut self) {
-        let _ = self.close_session();
     }
 }
