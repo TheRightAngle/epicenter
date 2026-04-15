@@ -5,7 +5,7 @@ import { defineMutation } from '$lib/query/client';
 import { WhisperingErr } from '$lib/result';
 import { services } from '$lib/services';
 import { DbError } from '$lib/services/db';
-import { desktopServices } from '$lib/services';
+import { desktopServices } from '$lib/services/desktop';
 import { deviceConfig } from '$lib/state/device-config.svelte';
 import { recordings } from '$lib/state/recordings.svelte';
 import { settings } from '$lib/state/settings.svelte';
