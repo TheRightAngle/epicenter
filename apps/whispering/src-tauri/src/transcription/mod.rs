@@ -10,7 +10,6 @@ use std::io::Write;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
-#[cfg(not(target_os = "windows"))]
 use transcribe_rs::onnx::moonshine::{MoonshineModel, MoonshineParams, MoonshineVariant};
 use transcribe_rs::onnx::parakeet::{ParakeetModel, ParakeetParams, TimestampGranularity};
 use transcribe_rs::onnx::Quantization;
@@ -588,7 +587,6 @@ pub async fn validate_local_transcription_model(
             .map_err(|e| TranscriptionError::ModelLoadError {
                 message: e.to_string(),
             }),
-        #[cfg(not(target_os = "windows"))]
         "moonshine" => {
             let variant = extract_moonshine_variant_from_model_path(
                 model_path.to_str().unwrap_or_default(),
@@ -600,10 +598,6 @@ pub async fn validate_local_transcription_model(
                     message: e.to_string(),
                 })
         }
-        #[cfg(target_os = "windows")]
-        "moonshine" => Err(TranscriptionError::ModelLoadError {
-            message: "Moonshine is not available on Windows due to build compatibility issues. Please use Parakeet for local transcription.".to_string(),
-        }),
         _ => Err(TranscriptionError::ModelLoadError {
             message: format!("Unsupported local transcription service: {}", service_id),
         }),
@@ -796,7 +790,6 @@ pub async fn transcribe_audio_parakeet(
     })?
 }
 
-#[cfg(not(target_os = "windows"))]
 #[tauri::command]
 pub async fn transcribe_audio_moonshine(
     audio_data: Vec<u8>,
@@ -838,6 +831,10 @@ pub async fn transcribe_audio_moonshine(
         let params = MoonshineParams::default();
 
         let result = model_manager.with_engine(|engine| {
+            // On Windows, `Engine` no longer has only Parakeet — Moonshine
+            // is now compiled in too — but Whisper is still cfg-gated out,
+            // so a wildcard arm is the right catch-all.
+            #[cfg_attr(target_os = "windows", allow(unreachable_patterns))]
             let moonshine_engine = match engine {
                 model_manager::Engine::Moonshine(e) => e,
                 _ => return Err("Expected Moonshine engine but got different type".to_string()),
@@ -859,16 +856,4 @@ pub async fn transcribe_audio_moonshine(
     .map_err(|e| TranscriptionError::TranscriptionError {
         message: format!("Transcription task panicked or was cancelled: {}", e),
     })?
-}
-
-#[cfg(target_os = "windows")]
-#[tauri::command]
-pub async fn transcribe_audio_moonshine(
-    _audio_data: Vec<u8>,
-    _model_path: String,
-    _model_manager: tauri::State<'_, std::sync::Arc<ModelManager>>,
-) -> Result<String, TranscriptionError> {
-    Err(TranscriptionError::TranscriptionError {
-        message: "Moonshine is not available on Windows due to build compatibility issues. Please use Parakeet for local transcription.".to_string(),
-    })
 }

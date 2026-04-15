@@ -84,22 +84,22 @@ export const TRANSCRIPTION_SERVICES = [
 		modelPathField: 'transcription.parakeet.modelPath',
 		location: 'local',
 	},
-	// Moonshine is not available on Windows due to MSVC runtime library conflicts.
-	// The tokenizers/esaxx-rs CRT conflict was resolved in transcribe-rs 0.2.2,
-	// but moonshine on Windows remains untested.
-	...(IS_WINDOWS
-		? []
-		: [
-				{
-					id: 'moonshine',
-					name: 'Moonshine',
-					icon: moonshineIcon,
-					invertInDarkMode: false,
-					description: 'Efficient ONNX model by UsefulSensors',
-					modelPathField: 'transcription.moonshine.modelPath',
-					location: 'local',
-				} as const,
-			]),
+	// Moonshine works everywhere. The pre-0.2.2 tokenizers/esaxx-rs CRT
+	// conflict that once blocked Windows is gone (transcribe-rs replaced
+	// the tokenizer with its own impl), and transcribe-rs PR #53
+	// explicitly enabled DirectML for Moonshine ONNX sessions on
+	// Windows. UsefulSensors officially supports Windows builds of the
+	// underlying model.
+	{
+		id: 'moonshine',
+		name: 'Moonshine',
+		icon: moonshineIcon,
+		invertInDarkMode: false,
+		description:
+			'Efficient ONNX model by UsefulSensors (English-only, fast, tiny). Great for short dictation.',
+		modelPathField: 'transcription.moonshine.modelPath',
+		location: 'local',
+	},
 	// Cloud services (API-based)
 	{
 		id: 'Groq',

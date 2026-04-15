@@ -2,10 +2,7 @@ use log::{debug, info};
 use parking_lot::Mutex;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
-#[cfg(not(target_os = "windows"))]
-use transcribe_rs::onnx::moonshine::MoonshineModel;
-#[cfg(not(target_os = "windows"))]
-use transcribe_rs::onnx::moonshine::MoonshineVariant;
+use transcribe_rs::onnx::moonshine::{MoonshineModel, MoonshineVariant};
 use transcribe_rs::onnx::parakeet::ParakeetModel;
 use transcribe_rs::onnx::Quantization;
 #[cfg(not(target_os = "windows"))]
@@ -18,15 +15,15 @@ use transcribe_rs::accel::{set_ort_accelerator, OrtAccelerator};
 
 /// Engine type for managing different transcription engines.
 ///
-/// Moonshine and Whisper.cpp are unavailable on Windows due to upstream
-/// build issues in their native dependencies (whisper.cpp MSVC runtime
-/// conflict with ort; tokenizers esaxx-rs CRT conflict). Parakeet is the
-/// only local option on Windows and supports CPU + DirectML + TensorRT.
+/// Whisper.cpp remains unavailable on Windows due to a persistent MSVC
+/// runtime library conflict between whisper-rs-sys and ort. Moonshine
+/// now works everywhere: transcribe-rs 0.3.11 dropped the tokenizers/
+/// esaxx-rs dependency that previously blocked it on Windows and its
+/// PR #53 explicitly enabled DirectML for Moonshine sessions.
 pub enum Engine {
     #[cfg(not(target_os = "windows"))]
     Whisper(WhisperEngine),
     Parakeet(ParakeetModel),
-    #[cfg(not(target_os = "windows"))]
     Moonshine(MoonshineModel),
 }
 
@@ -219,7 +216,6 @@ impl ModelManager {
             .to_string())
     }
 
-    #[cfg(not(target_os = "windows"))]
     pub fn get_or_load_moonshine(
         &self,
         model_path: PathBuf,
