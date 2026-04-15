@@ -1,7 +1,12 @@
 name: Code quality
 
+# Fork scoping: upstream runs this on every push, but the fork inherits
+# lint debt from packages we don't ship (api, workspace, playground).
+# Restrict push triggers to `main` so our merge branches and release
+# tags don't fire it. PRs still get checked normally.
 on:
   push:
+    branches: [main]
   pull_request:
 
 jobs:
