@@ -208,10 +208,38 @@ jobs:
 
           echo "enabled=$enable_signing" >> "$GITHUB_OUTPUT"
           echo "args=$build_args" >> "$GITHUB_OUTPUT"
+
+          missing_list=$(printf '%s\n' "${missing[@]}" | sort -u | sed '/^$/d')
           {
             echo "missing<<EOF"
-            printf '%s\n' "${missing[@]}" | sort -u
+            echo "$missing_list"
             echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          # Build a markdown banner for unsigned releases. This gets
+          # prepended to the release notes so users downloading the
+          # binary can immediately see they're not getting a signed
+          # build (and which secrets were missing).
+          if [ "$enable_signing" = "true" ]; then
+            banner=""
+          else
+            missing_bullets=$(echo "$missing_list" | sed 's/^/- `/; s/$/`/')
+            banner=$(cat <<BANNER
+> [!WARNING]
+> **This is an UNSIGNED build.** Windows SmartScreen or macOS Gatekeeper will warn before launch and the auto-updater will refuse to install updates. Required secrets that were missing on this CI run:
+>
+> ${missing_bullets//$'\n'/
+> }
+>
+> If you're using this fork's Windows-only release pipeline, that's expected — TheRightAngle does not currently sign releases. Install with the CLI prompt or via the SmartScreen "Run anyway" button.
+
+BANNER
+)
+          fi
+          {
+            echo "banner<<BANNER_EOF"
+            echo "$banner"
+            echo "BANNER_EOF"
           } >> "$GITHUB_OUTPUT"
 
       - name: Build and publish signed Tauri release
@@ -275,8 +303,13 @@ jobs:
         with:
           projectPath: 'apps/whispering'
           tagName: ${{ github.event.inputs.tag || github.ref_name }}
-          releaseName: 'Whispering ${{ github.event.inputs.tag || github.ref_name }}'
-          releaseBody: ${{ steps.release_notes.outputs.RELEASE_NOTES }}
+          releaseName: 'Whispering ${{ github.event.inputs.tag || github.ref_name }} (unsigned)'
+          # Prepend the unsigned-build banner so anyone landing on the
+          # release page sees the warning before clicking Download.
+          releaseBody: |
+            ${{ steps.signing.outputs.banner }}
+
+            ${{ steps.release_notes.outputs.RELEASE_NOTES }}
           releaseDraft: true
           prerelease: false
           args: ${{ steps.signing.outputs.args }}
