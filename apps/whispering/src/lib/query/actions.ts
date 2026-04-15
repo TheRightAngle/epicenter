@@ -639,12 +639,18 @@ async function processRecordingPipeline({
 		description: 'Your recording is being transcribed...',
 	});
 
-	// Save metadata to workspace (instant) and audio blob to DbService (async)
-	recordings.set(recording);
-	const saveAudioPromise = services.db.recordings.create({
-		recording,
-		audio: blob,
-	});
+	// Persistence is gated on `persistRecording`. When false (ephemeral
+	// "transcribe and discard" flows), we skip BOTH the workspace
+	// metadata write AND the DB blob save — the recording leaves no
+	// trace except the transcript that gets delivered to the user. This
+	// preserves the fork's original ephemeral semantics that upstream's
+	// always-save refactor had inadvertently dropped.
+	if (persistRecording) {
+		recordings.set(recording);
+	}
+	const saveAudioPromise = persistRecording
+		? services.db.recordings.create({ recording, audio: blob })
+		: Promise.resolve(Ok(undefined));
 	const sourceCleanupPromise =
 		!persistRecording && window.__TAURI_INTERNALS__ && sourceFilePath
 			? desktopServices.fs.deletePath(sourceFilePath)
@@ -656,8 +662,11 @@ async function processRecordingPipeline({
 		await transcribePromise;
 
 	if (transcribeError) {
-		// Transcription failed - update status
-		recordings.update(recording.id, { transcriptionStatus: 'FAILED' });
+		// Transcription failed — only mark the workspace row as failed if
+		// we actually have one (persistRecording guards the .set above).
+		if (persistRecording) {
+			recordings.update(recording.id, { transcriptionStatus: 'FAILED' });
+		}
 		const { error: sourceCleanupError } = await sourceCleanupPromise;
 		if (sourceCleanupError) {
 			notify.warning({
@@ -687,15 +696,17 @@ async function processRecordingPipeline({
 		toastId: transcribeToastId,
 	});
 
-	// Check audio save result (best-effort)
-	const { error: saveAudioError } = await saveAudioPromise;
-	if (saveAudioError) {
-		notify.warning({
-			id: toastId,
-			title: '\u26A0\uFE0F Audio not saved',
-			description: 'Transcription delivered but audio blob was not saved.',
-			action: { type: 'more-details', error: saveAudioError },
-		});
+	// Audio save status only relevant when we actually attempted a save.
+	if (persistRecording) {
+		const { error: saveAudioError } = await saveAudioPromise;
+		if (saveAudioError) {
+			notify.warning({
+				id: toastId,
+				title: '\u26A0\uFE0F Audio not saved',
+				description: 'Transcription delivered but audio blob was not saved.',
+				action: { type: 'more-details', error: saveAudioError },
+			});
+		}
 	}
 
 	const { error: sourceCleanupError } = await sourceCleanupPromise;
@@ -714,10 +725,12 @@ async function processRecordingPipeline({
 		description: completionDescription,
 	});
 
-	recordings.update(recording.id, {
-		transcribedText,
-		transcriptionStatus: 'DONE',
-	});
+	if (persistRecording) {
+		recordings.update(recording.id, {
+			transcribedText,
+			transcriptionStatus: 'DONE',
+		});
+	}
 
 
 	// Determine if we need to chain to transformation
