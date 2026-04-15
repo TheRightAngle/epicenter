@@ -51,26 +51,15 @@ jobs:
     permissions:
       contents: write
 
-    # Build strategy: create separate jobs for each platform
+    # Build strategy: Windows-only on this fork.
+    # Upstream builds all platforms; the TheRightAngle fork only ships Windows,
+    # so trimming the matrix saves ~75% of CI minutes per tagged release.
     strategy:
-      fail-fast: false  # Continue building other platforms even if one fails
+      fail-fast: false
       matrix:
         include:
-          # macOS Apple Silicon (M1, M2, M3, etc.)
-          - platform: 'macos-latest'
-            args: '--target aarch64-apple-darwin'
-
-          # macOS Intel-based
-          - platform: 'macos-latest'
-            args: '--target x86_64-apple-darwin'
-
-          # Linux (Ubuntu)
-          - platform: 'ubuntu-22.04'
-            args: ''  # No specific target needed for Linux
-
-          # Windows
           - platform: 'windows-latest'
-            args: ''  # No specific target needed for Windows
+            args: ''
 
     runs-on: ${{ matrix.platform }}
     steps:
