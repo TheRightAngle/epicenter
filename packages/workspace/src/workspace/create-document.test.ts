@@ -11,6 +11,7 @@
 
 import { describe, expect, test } from 'bun:test';
 import { type } from 'arktype';
+import { Awareness } from 'y-protocols/awareness';
 import * as Y from 'yjs';
 import {
 	type CreateDocumentsConfig,
@@ -18,7 +19,9 @@ import {
 	DOCUMENTS_ORIGIN,
 } from './create-document.js';
 import { createTables } from './create-tables.js';
+import { createWorkspace } from './create-workspace.js';
 import { defineTable } from './define-table.js';
+import type { AwarenessDefinitions } from './types.js';
 
 const fileSchema = type({
 	id: 'string',
@@ -26,6 +29,7 @@ const fileSchema = type({
 	updatedAt: 'number',
 	_v: '1',
 });
+const cursorSchema = type({ x: 'number', y: 'number' });
 
 function setupTables() {
 	const ydoc = new Y.Doc({ guid: 'test-workspace' });
@@ -36,11 +40,16 @@ function setupTables() {
 function setup(
 	overrides?: Pick<
 		CreateDocumentsConfig<typeof fileSchema.infer>,
-		'documentExtensions' | 'documentTags' | 'onRowDeleted'
-	>,
+		'documentExtensions'
+	> & {
+		awarenessDefinitions?: AwarenessDefinitions;
+	},
 ) {
 	const { ydoc, tables } = setupTables();
 	const documents = createDocuments({
+		id: 'test-workspace',
+		tableName: 'files',
+		documentName: 'content',
 		guidKey: 'id',
 		onUpdate: () => ({ updatedAt: Date.now() }),
 		tableHelper: tables.files,
@@ -64,6 +73,47 @@ describe('createDocuments', () => {
 			const handle = await documents.open('f1');
 			expect(handle.ydoc).toBeInstanceOf(Y.Doc);
 			expect(handle.ydoc.gc).toBe(false);
+		});
+
+		test('handle exposes tableName and documentName', async () => {
+			const { documents } = setup();
+			const handle = await documents.open('f1');
+			expect(handle.tableName).toBe('files');
+			expect(handle.documentName).toBe('content');
+		});
+
+		test('document extension factory receives tableName and documentName in context', async () => {
+			let receivedTableName: string | undefined;
+			let receivedDocumentName: string | undefined;
+			const { documents } = setup({
+				documentExtensions: [
+					{
+						key: 'test',
+						factory: (ctx) => {
+							receivedTableName = ctx.tableName;
+							receivedDocumentName = ctx.documentName;
+						},
+					},
+				],
+			});
+			await documents.open('f1');
+			expect(receivedTableName).toBe('files');
+			expect(receivedDocumentName).toBe('content');
+		});
+
+		test('document extension factory can return void to skip', async () => {
+			const { documents } = setup({
+				documentExtensions: [
+					{
+						key: 'skipped',
+						factory: () => {
+							return; // void — opt out
+						},
+					},
+				],
+			});
+			const handle = await documents.open('f1');
+			expect(handle.extensions.skipped).toBeUndefined();
 		});
 
 		test('is idempotent — same GUID returns same underlying Y.Doc', async () => {
@@ -96,7 +146,7 @@ describe('createDocuments', () => {
 		});
 	});
 
-	describe('handle read and write', () => {
+	describe('handle content read and write', () => {
 		test('read returns empty string for new doc', async () => {
 			const { documents } = setup();
 
@@ -136,7 +186,7 @@ describe('createDocuments', () => {
 			});
 
 			const handle = await documents.open('f1');
-			handle.ydoc.getText('content').insert(0, 'hello');
+			handle.write('hello');
 
 			// Give the update observer a tick
 			const result = tables.files.get('f1');
@@ -160,6 +210,9 @@ describe('createDocuments', () => {
 			});
 
 			const documents = createDocuments({
+				id: 'test-custom-onUpdate',
+				tableName: 'files',
+				documentName: 'content',
 				guidKey: 'id',
 				onUpdate: () => ({
 					updatedAt: 999,
@@ -178,7 +231,7 @@ describe('createDocuments', () => {
 			});
 
 			const handle = await documents.open('f1');
-			handle.ydoc.getText('content').insert(0, 'hello');
+			handle.write('hello');
 
 			const result = tables.files.get('f1');
 			expect(result.status).toBe('valid');
@@ -195,6 +248,9 @@ describe('createDocuments', () => {
 			});
 
 			const documents = createDocuments({
+				id: 'test-noop-onUpdate',
+				tableName: 'files',
+				documentName: 'content',
 				guidKey: 'id',
 				onUpdate: () => ({}),
 				tableHelper: tables.files,
@@ -209,7 +265,7 @@ describe('createDocuments', () => {
 			});
 
 			const handle = await documents.open('f1');
-			handle.ydoc.getText('content').insert(0, 'hello');
+			handle.write('hello');
 
 			const result = tables.files.get('f1');
 			expect(result.status).toBe('valid');
@@ -228,17 +284,17 @@ describe('createDocuments', () => {
 			});
 
 			let capturedOrigin: unknown = null;
-			tables.files.observe((_changedIds, transaction) => {
-				capturedOrigin = (transaction as Y.Transaction).origin;
+			tables.files.observe((_changedIds, origin) => {
+				capturedOrigin = origin;
 			});
 
 			const handle = await documents.open('f1');
-			handle.ydoc.getText('content').insert(0, 'hello');
+			handle.write('hello');
 
 			expect(capturedOrigin).toBe(DOCUMENTS_ORIGIN);
 		});
 
-		test('remote update does NOT invoke onUpdate', async () => {
+		test('non-transport remote update invokes onUpdate', async () => {
 			const { tables, documents } = setup();
 			tables.files.set({
 				id: 'f1',
@@ -249,8 +305,7 @@ describe('createDocuments', () => {
 
 			const handle = await documents.open('f1');
 
-			// Capture the state update from a local edit on a separate Y.Doc,
-			// then apply it as a "remote" update via Y.applyUpdate
+			// Apply a remote update with no origin (e.g., IndexedDB load)
 			const remoteDoc = new Y.Doc({ guid: 'f1', gc: false });
 			remoteDoc.getText('content').insert(0, 'remote edit');
 			const remoteUpdate = Y.encodeStateAsUpdate(remoteDoc);
@@ -260,14 +315,66 @@ describe('createDocuments', () => {
 			const result = tables.files.get('f1');
 			expect(result.status).toBe('valid');
 			if (result.status === 'valid') {
+				expect(result.row.updatedAt).not.toBe(0);
+			}
+
+			remoteDoc.destroy();
+		});
+
+		test('transport-originated update does NOT invoke onUpdate', async () => {
+			const { tables, documents } = setup();
+			tables.files.set({
+				id: 'f1',
+				name: 'test.txt',
+				updatedAt: 0,
+				_v: 1,
+			});
+
+			const handle = await documents.open('f1');
+
+			// Apply a remote update with a Symbol origin (simulating sync/broadcast)
+			const FAKE_TRANSPORT = Symbol('fake-transport');
+			const remoteDoc = new Y.Doc({ guid: 'f1', gc: false });
+			remoteDoc.getText('content').insert(0, 'synced edit');
+			const remoteUpdate = Y.encodeStateAsUpdate(remoteDoc);
+
+			Y.applyUpdate(handle.ydoc, remoteUpdate, FAKE_TRANSPORT);
+
+			const result = tables.files.get('f1');
+			expect(result.status).toBe('valid');
+			if (result.status === 'valid') {
+				// Transport-originated updates skip onUpdate — the originating
+				// tab already bumped metadata via workspace sync.
 				expect(result.row.updatedAt).toBe(0);
 			}
 
 			remoteDoc.destroy();
 		});
-	});
 
+	});
 	describe('close', () => {
+		test('document awareness is destroyed when document is closed', async () => {
+			const { documents } = setup({
+				awarenessDefinitions: {
+					cursor: cursorSchema,
+				},
+			});
+
+			const handle = await documents.open('f1');
+			let destroyed = false;
+			const originalDestroy = handle.awareness.raw.destroy.bind(
+				handle.awareness.raw,
+			);
+
+			handle.awareness.raw.destroy = () => {
+				destroyed = true;
+				originalDestroy();
+			};
+
+			await documents.close('f1');
+			expect(destroyed).toBe(true);
+		});
+
 		test('frees memory — doc can be re-opened as new instance', async () => {
 			const { documents } = setup();
 
@@ -286,46 +393,46 @@ describe('createDocuments', () => {
 		});
 	});
 
-	describe('handle.exports', () => {
+	describe('handle.extensions', () => {
 		test('returns accumulated exports keyed by extension name', async () => {
 			const { documents } = setup({
 				documentExtensions: [
 					{
 						key: 'persistence',
 						factory: () => ({
-							clearData: () => {},
-							destroy: () => {},
+							clearLocalData: () => {},
+							dispose: () => {},
 						}),
-						tags: [],
 					},
 				],
 			});
 
 			const handle = await documents.open('f1');
-			expect(handle.exports).toBeDefined();
-			expect(handle.exports.persistence).toBeDefined();
-			expect(typeof handle.exports.persistence?.clearData).toBe('function');
+			expect(handle.extensions).toBeDefined();
+			expect(handle.extensions.persistence).toBeDefined();
+			expect(typeof handle.extensions.persistence?.clearLocalData).toBe(
+				'function',
+			);
 		});
 
-		test('lifecycle-only extension is accessible with whenReady and destroy', async () => {
+		test('lifecycle-only extension is accessible with whenReady and dispose', async () => {
 			const { documents } = setup({
 				documentExtensions: [
 					{
 						key: 'lifecycle-only',
 						factory: () => ({
-							destroy: () => {},
+							dispose: () => {},
 						}),
-						tags: [],
 					},
 				],
 			});
 
 			const handle = await documents.open('f1');
-			expect(handle.exports).toBeDefined();
-			const ext = handle.exports['lifecycle-only'];
+			expect(handle.extensions).toBeDefined();
+			const ext = handle.extensions['lifecycle-only'];
 			expect(ext).toBeDefined();
 			expect(ext?.whenReady).toBeInstanceOf(Promise);
-			expect(typeof ext?.destroy).toBe('function');
+			expect(typeof ext?.dispose).toBe('function');
 		});
 
 		test('accepts a row object', async () => {
@@ -336,7 +443,6 @@ describe('createDocuments', () => {
 						factory: () => ({
 							helper: () => 42,
 						}),
-						tags: [],
 					},
 				],
 			});
@@ -350,8 +456,8 @@ describe('createDocuments', () => {
 			tables.files.set(row);
 
 			const handle = await documents.open(row);
-			expect(handle.exports).toBeDefined();
-			expect(typeof handle.exports.test?.helper).toBe('function');
+			expect(handle.extensions).toBeDefined();
+			expect(typeof handle.extensions.test?.helper).toBe('function');
 		});
 	});
 
@@ -373,7 +479,7 @@ describe('createDocuments', () => {
 	});
 
 	describe('row deletion', () => {
-		test('default onRowDeleted calls close', async () => {
+		test('deleting a row closes its open document', async () => {
 			const { tables, documents } = setup();
 			tables.files.set({
 				id: 'f1',
@@ -389,35 +495,7 @@ describe('createDocuments', () => {
 			const handle2 = await documents.open('f1');
 			expect(handle2.ydoc).not.toBe(handle1.ydoc);
 		});
-
-		test('custom onRowDeleted fires with the guid', async () => {
-			let deletedGuid = '';
-			const { tables } = setupTables();
-
-			const documents = createDocuments({
-				guidKey: 'id',
-				onUpdate: () => ({ updatedAt: Date.now() }),
-				tableHelper: tables.files,
-				ydoc: new Y.Doc({ guid: 'test' }),
-				onRowDeleted: (_documents, guid) => {
-					deletedGuid = guid;
-				},
-			});
-
-			tables.files.set({
-				id: 'f1',
-				name: 'test.txt',
-				updatedAt: 0,
-				_v: 1,
-			});
-
-			await documents.open('f1');
-			tables.files.delete('f1');
-
-			expect(deletedGuid).toBe('f1');
-		});
 	});
-
 	describe('document extension hooks', () => {
 		test('hooks are called in order', async () => {
 			const order: number[] = [];
@@ -428,25 +506,22 @@ describe('createDocuments', () => {
 						key: 'first',
 						factory: () => {
 							order.push(1);
-							return { destroy: () => {} };
+							return { dispose: () => {} };
 						},
-						tags: [],
 					},
 					{
 						key: 'second',
 						factory: () => {
 							order.push(2);
-							return { destroy: () => {} };
+							return { dispose: () => {} };
 						},
-						tags: [],
 					},
 					{
 						key: 'third',
 						factory: () => {
 							order.push(3);
-							return { destroy: () => {} };
+							return { dispose: () => {} };
 						},
-						tags: [],
 					},
 				],
 			});
@@ -464,17 +539,15 @@ describe('createDocuments', () => {
 						key: 'first',
 						factory: () => ({
 							whenReady: Promise.resolve(),
-							destroy: () => {},
+							dispose: () => {},
 						}),
-						tags: [],
 					},
 					{
 						key: 'second',
 						factory: ({ whenReady }) => {
 							secondReceivedWhenReady = whenReady instanceof Promise;
-							return { destroy: () => {} };
+							return { dispose: () => {} };
 						},
-						tags: [],
 					},
 				],
 			});
@@ -494,15 +567,13 @@ describe('createDocuments', () => {
 							hooksCalled++;
 							return undefined; // void return
 						},
-						tags: [],
 					},
 					{
 						key: 'normal-hook',
 						factory: () => {
 							hooksCalled++;
-							return { destroy: () => {} };
+							return { dispose: () => {} };
 						},
-						tags: [],
 					},
 				],
 			});
@@ -517,94 +588,6 @@ describe('createDocuments', () => {
 			const handle = await documents.open('f1');
 			expect(handle.ydoc).toBeInstanceOf(Y.Doc);
 		});
-
-		test('tag matching: extension with no tags fires for all documents', async () => {
-			let called = false;
-			const { documents } = setup({
-				documentTags: ['persistent'],
-				documentExtensions: [
-					{
-						key: 'universal',
-						factory: () => {
-							called = true;
-							return { destroy: () => {} };
-						},
-						tags: [], // universal — no tags
-					},
-				],
-			});
-
-			await documents.open('f1');
-			expect(called).toBe(true);
-		});
-
-		test('tag matching: extension with matching tag fires', async () => {
-			let called = false;
-			const { documents } = setup({
-				documentTags: ['persistent', 'synced'],
-				documentExtensions: [
-					{
-						key: 'sync-ext',
-						factory: () => {
-							called = true;
-							return { destroy: () => {} };
-						},
-						tags: ['synced'],
-					},
-				],
-			});
-
-			await documents.open('f1');
-			expect(called).toBe(true);
-		});
-
-		test('tag matching: extension with non-matching tag does NOT fire', async () => {
-			let called = false;
-			const { documents } = setup({
-				documentTags: ['persistent'],
-				documentExtensions: [
-					{
-						key: 'ephemeral-ext',
-						factory: () => {
-							called = true;
-							return { destroy: () => {} };
-						},
-						tags: ['ephemeral'],
-					},
-				],
-			});
-
-			await documents.open('f1');
-			expect(called).toBe(false);
-		});
-
-		test('tag matching: doc with no tags only gets universal extensions', async () => {
-			const calls: string[] = [];
-			const { documents } = setup({
-				documentTags: [], // no tags on doc
-				documentExtensions: [
-					{
-						key: 'tagged',
-						factory: () => {
-							calls.push('tagged');
-							return { destroy: () => {} };
-						},
-						tags: ['persistent'],
-					},
-					{
-						key: 'universal',
-						factory: () => {
-							calls.push('universal');
-							return { destroy: () => {} };
-						},
-						tags: [],
-					},
-				],
-			});
-
-			await documents.open('f1');
-			expect(calls).toEqual(['universal']);
-		});
 	});
 
 	describe('document extension whenReady and typed extensions', () => {
@@ -617,17 +600,15 @@ describe('createDocuments', () => {
 						key: 'first',
 						factory: () => ({
 							someValue: 42,
-							destroy: () => {},
+							dispose: () => {},
 						}),
-						tags: [],
 					},
 					{
 						key: 'second',
 						factory: (context) => {
 							capturedFirstExtension = context.extensions.first;
-							return { destroy: () => {} };
+							return { dispose: () => {} };
 						},
-						tags: [],
 					},
 				],
 			});
@@ -639,64 +620,6 @@ describe('createDocuments', () => {
 			).toBe(42);
 		});
 
-		test('document extension extensions map is optional (tag filtering may skip)', async () => {
-			let taggedPresentForPersistentDoc = false;
-			let taggedPresentForEphemeralDoc = true;
-
-			const persistentSetup = setup({
-				documentTags: ['persistent'],
-				documentExtensions: [
-					{
-						key: 'tagged',
-						factory: () => ({
-							label: 'tagged',
-							destroy: () => {},
-						}),
-						tags: ['persistent'],
-					},
-					{
-						key: 'universal',
-						factory: (context) => {
-							taggedPresentForPersistentDoc =
-								context.extensions.tagged !== undefined;
-							return { destroy: () => {} };
-						},
-						tags: [],
-					},
-				],
-			});
-
-			await persistentSetup.documents.open('f1');
-
-			const ephemeralSetup = setup({
-				documentTags: ['ephemeral'],
-				documentExtensions: [
-					{
-						key: 'tagged',
-						factory: () => ({
-							label: 'tagged',
-							destroy: () => {},
-						}),
-						tags: ['persistent'],
-					},
-					{
-						key: 'universal',
-						factory: (context) => {
-							taggedPresentForEphemeralDoc =
-								context.extensions.tagged !== undefined;
-							return { destroy: () => {} };
-						},
-						tags: [],
-					},
-				],
-			});
-
-			await ephemeralSetup.documents.open('f1');
-
-			expect(taggedPresentForPersistentDoc).toBe(true);
-			expect(taggedPresentForEphemeralDoc).toBe(false);
-		});
-
 		test('document extension with no exports is still accessible', async () => {
 			let firstExtensionSeen = false;
 
@@ -705,17 +628,15 @@ describe('createDocuments', () => {
 					{
 						key: 'first',
 						factory: () => ({
-							destroy: () => {},
+							dispose: () => {},
 						}),
-						tags: [],
 					},
 					{
 						key: 'second',
 						factory: (context) => {
 							firstExtensionSeen = context.extensions.first !== undefined;
-							return { destroy: () => {} };
+							return { dispose: () => {} };
 						},
-						tags: [],
 					},
 				],
 			});
@@ -724,26 +645,297 @@ describe('createDocuments', () => {
 			expect(firstExtensionSeen).toBe(true);
 		});
 
-		test('handle.exports includes flat exports from extensions', async () => {
+		test('handle.extensions includes flat exports from extensions', async () => {
 			const { documents } = setup({
 				documentExtensions: [
 					{
 						key: 'test',
 						factory: () => ({
 							helper: () => 42,
-							destroy: () => {},
+							dispose: () => {},
 						}),
-						tags: [],
 					},
 				],
 			});
 
 			const handle = await documents.open('f1');
-			expect(handle.exports).toBeDefined();
-			if (!handle.exports.test) {
-				throw new Error('Expected exports for test extension');
+			expect(handle.extensions).toBeDefined();
+			if (!handle.extensions.test) {
+				throw new Error('Expected extensions for test extension');
 			}
-			expect(typeof handle.exports.test.helper).toBe('function');
+			expect(typeof handle.extensions.test.helper).toBe('function');
 		});
+	});
+
+	describe('document awareness', () => {
+		test('document handle has awareness with raw property', async () => {
+			const filesTable = defineTable(
+				type({ id: 'string', name: 'string', updatedAt: 'number', _v: '1' }),
+			).withDocument('content', {
+				guid: 'id',
+				onUpdate: () => ({ updatedAt: Date.now() }),
+				awareness: {
+					cursor: cursorSchema,
+				},
+			});
+
+			const client = createWorkspace({
+				id: 'doc-awareness-typed-handle',
+				tables: { files: filesTable },
+			});
+
+			const handle = await client.documents.files.content.open('f1');
+			handle.awareness.setLocalField('cursor', { x: 3, y: 4 });
+
+			const cursor = handle.awareness.getLocalField('cursor');
+			const _typedCursor: { x: number; y: number } | undefined = cursor;
+			void _typedCursor;
+
+			// @ts-expect-error unknown awareness field should fail type-checking
+			handle.awareness.setLocalField('presence', { online: true });
+
+			expect(handle.awareness.raw).toBeInstanceOf(Awareness);
+			expect(cursor).toEqual({ x: 3, y: 4 });
+		});
+
+		test('document awareness is independent per document', async () => {
+			const filesTable = defineTable(
+				type({ id: 'string', name: 'string', updatedAt: 'number', _v: '1' }),
+			).withDocument('content', {
+				guid: 'id',
+				onUpdate: () => ({ updatedAt: Date.now() }),
+				awareness: {
+					cursor: cursorSchema,
+				},
+			});
+
+			const client = createWorkspace({
+				id: 'doc-awareness-isolated',
+				tables: { files: filesTable },
+			});
+
+			const first = await client.documents.files.content.open('f1');
+			const second = await client.documents.files.content.open('f2');
+
+			first.awareness.setLocalField('cursor', { x: 7, y: 9 });
+
+			expect(first.awareness.getLocalField('cursor')).toEqual({ x: 7, y: 9 });
+			expect(second.awareness.getLocalField('cursor')).toBeUndefined();
+		});
+	});
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// as*() conversion methods
+// ════════════════════════════════════════════════════════════════════════════
+
+describe('handle.asText / asRichText / asSheet', () => {
+	function setupSimple() {
+		const ydoc = new Y.Doc({ guid: 'workspace' });
+		const tableDef = defineTable(
+			type({ id: 'string', name: 'string', updatedAt: 'number', _v: '1' }),
+		);
+		const tables = createTables(ydoc, { files: tableDef });
+		const documents = createDocuments({
+			id: 'test-timeline',
+			tableName: 'files',
+			documentName: 'content',
+			guidKey: 'id',
+			onUpdate: () => ({ updatedAt: Date.now() }),
+			tableHelper: tables.files,
+			ydoc,
+		});
+		tables.files.set({ id: 'f1', name: 'test', updatedAt: 0, _v: 1 });
+		return { documents, tables };
+	}
+
+	// ─── asText ────────────────────────────────────────────────────────
+
+	test('asText on empty timeline auto-creates text entry', async () => {
+		const { documents } = setupSimple();
+		const handle = await documents.open('f1');
+
+		const text = handle.asText();
+		expect(text).toBeInstanceOf(Y.Text);
+		expect(handle.currentType).toBe('text');
+	});
+
+	test('asText on text entry returns existing Y.Text', async () => {
+		const { documents } = setupSimple();
+		const handle = await documents.open('f1');
+		handle.write('hello');
+
+		const text = handle.asText();
+		expect(text.toString()).toBe('hello');
+		expect(handle.length).toBe(1);
+	});
+
+	test('asText on richtext entry converts (lossy)', async () => {
+		const { documents } = setupSimple();
+		const handle = await documents.open('f1');
+
+		const fragment = handle.asRichText();
+		const p = new Y.XmlElement('paragraph');
+		const t = new Y.XmlText();
+		t.insert(0, 'Rich content');
+		p.insert(0, [t]);
+		fragment.insert(0, [p]);
+
+		expect(handle.currentType).toBe('richtext');
+
+		const text = handle.asText();
+		expect(text.toString()).toBe('Rich content');
+		expect(handle.currentType).toBe('text');
+		expect(handle.length).toBe(2);
+	});
+
+	test('asText on sheet entry converts to CSV', async () => {
+		const { documents } = setupSimple();
+		const handle = await documents.open('f1');
+
+		handle.write('Name,Age\nAlice,30\n');
+		handle.asSheet();
+		expect(handle.currentType).toBe('sheet');
+
+		const text = handle.asText();
+		expect(text.toString()).toBe('Name,Age\nAlice,30\n');
+		expect(handle.currentType).toBe('text');
+		expect(handle.length).toBe(3);
+	});
+
+	// ─── asRichText ────────────────────────────────────────────────────
+
+	test('asRichText on empty timeline auto-creates richtext entry', async () => {
+		const { documents } = setupSimple();
+		const handle = await documents.open('f1');
+
+		const fragment = handle.asRichText();
+		expect(fragment).toBeInstanceOf(Y.XmlFragment);
+		expect(handle.currentType).toBe('richtext');
+	});
+
+	test('asRichText on richtext entry returns existing fragment', async () => {
+		const { documents } = setupSimple();
+		const handle = await documents.open('f1');
+		handle.asRichText();
+
+		const fragment = handle.asRichText();
+		expect(fragment).toBeInstanceOf(Y.XmlFragment);
+		expect(handle.length).toBe(1);
+	});
+
+	test('asRichText on text entry converts to paragraphs', async () => {
+		const { documents } = setupSimple();
+		const handle = await documents.open('f1');
+		handle.write('Line 1\nLine 2');
+
+		const fragment = handle.asRichText();
+		expect(fragment).toBeInstanceOf(Y.XmlFragment);
+		expect(handle.currentType).toBe('richtext');
+		expect(handle.length).toBe(2);
+		expect(handle.read()).toBe('Line 1\nLine 2');
+	});
+
+	test('asRichText on sheet entry converts CSV to paragraphs', async () => {
+		const { documents } = setupSimple();
+		const handle = await documents.open('f1');
+		handle.write('A,B\n1,2\n');
+		handle.asSheet();
+
+		const fragment = handle.asRichText();
+		expect(fragment).toBeInstanceOf(Y.XmlFragment);
+		expect(handle.currentType).toBe('richtext');
+		expect(handle.length).toBe(3);
+	});
+
+	// ─── asSheet ──────────────────────────────────────────────────────
+
+	test('asSheet on empty timeline auto-creates sheet entry', async () => {
+		const { documents } = setupSimple();
+		const handle = await documents.open('f1');
+
+		const sheet = handle.asSheet();
+		expect(sheet.columns).toBeInstanceOf(Y.Map);
+		expect(sheet.rows).toBeInstanceOf(Y.Map);
+		expect(handle.currentType).toBe('sheet');
+	});
+
+	test('asSheet on sheet entry returns existing binding', async () => {
+		const { documents } = setupSimple();
+		const handle = await documents.open('f1');
+		handle.write('X,Y\n1,2\n');
+		handle.asSheet();
+
+		const sheet = handle.asSheet();
+		expect(sheet.columns.size).toBe(2);
+		expect(sheet.rows.size).toBe(1);
+		expect(handle.length).toBe(2);
+	});
+
+	test('asSheet on text entry parses as CSV', async () => {
+		const { documents } = setupSimple();
+		const handle = await documents.open('f1');
+		handle.write('Col1,Col2\nA,B\n');
+
+		const sheet = handle.asSheet();
+		expect(sheet.columns.size).toBe(2);
+		expect(sheet.rows.size).toBe(1);
+		expect(handle.currentType).toBe('sheet');
+		expect(handle.length).toBe(2);
+	});
+
+	test('asSheet on richtext entry extracts text then parses CSV', async () => {
+		const { documents } = setupSimple();
+		const handle = await documents.open('f1');
+
+		const fragment = handle.asRichText();
+		const p1 = new Y.XmlElement('paragraph');
+		const t1 = new Y.XmlText();
+		t1.insert(0, 'Name,Age');
+		p1.insert(0, [t1]);
+		const p2 = new Y.XmlElement('paragraph');
+		const t2 = new Y.XmlText();
+		t2.insert(0, 'Alice,30');
+		p2.insert(0, [t2]);
+		fragment.insert(0, [p1, p2]);
+
+		const sheet = handle.asSheet();
+		expect(sheet.columns.size).toBe(2);
+		expect(handle.currentType).toBe('sheet');
+		expect(handle.length).toBe(2);
+	});
+
+	// ─── mode getter ──────────────────────────────────────────────────
+
+	test('mode reflects current timeline state', async () => {
+		const { documents } = setupSimple();
+		const handle = await documents.open('f1');
+
+		expect(handle.currentType).toBeUndefined(); // empty
+		handle.write('text');
+		expect(handle.currentType).toBe('text');
+	});
+
+	// ─── consecutive conversions ──────────────────────────────────────
+
+	test('consecutive conversions: text → richtext → sheet → text', async () => {
+		const { documents } = setupSimple();
+		const handle = await documents.open('f1');
+
+		handle.write('hello');
+		expect(handle.currentType).toBe('text');
+		expect(handle.length).toBe(1);
+
+		handle.asRichText();
+		expect(handle.currentType).toBe('richtext');
+		expect(handle.length).toBe(2);
+
+		handle.asSheet();
+		expect(handle.currentType).toBe('sheet');
+		expect(handle.length).toBe(3);
+
+		handle.asText();
+		expect(handle.currentType).toBe('text');
+		expect(handle.length).toBe(4);
 	});
 });

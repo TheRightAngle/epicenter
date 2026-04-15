@@ -30,6 +30,7 @@
 	import { PARAKEET_MODELS } from '$lib/services/transcription/local/parakeet';
 	import type { DirectMlAdapter } from '$lib/services/transcription/local/types';
 	import { WHISPER_MODELS } from '$lib/services/transcription/local/whispercpp';
+	import { deviceConfig } from '$lib/state/device-config.svelte';
 	import { settings } from '$lib/state/settings.svelte';
 	import { createCopyFn } from '$lib/utils/createCopyFn';
 	import { hasNavigatorLocalTranscriptionIssue } from '$routes/(app)/_layout-utils/check-ffmpeg';
@@ -41,8 +42,7 @@
 	 * Used to conditionally disable UI fields that aren't supported by the service.
 	 */
 	const currentServiceCapabilities = $derived(
-		TRANSCRIPTION[settings.value['transcription.selectedTranscriptionService']]
-			.capabilities,
+		TRANSCRIPTION[settings.get('transcription.service')].capabilities,
 	);
 
 	// Model options arrays — derived from the single TRANSCRIPTION record
@@ -79,37 +79,37 @@
 	// Selected labels for select triggers
 	const openaiModelLabel = $derived(
 		openaiModelItems.find(
-			(i) => i.value === settings.value['transcription.openai.model'],
+			(i) => i.value === settings.get('transcription.openai.model'),
 		)?.label,
 	);
 
 	const groqModelLabel = $derived(
 		groqModelItems.find(
-			(i) => i.value === settings.value['transcription.groq.model'],
+			(i) => i.value === settings.get('transcription.groq.model'),
 		)?.label,
 	);
 
 	const deepgramModelLabel = $derived(
 		deepgramModelItems.find(
-			(i) => i.value === settings.value['transcription.deepgram.model'],
+			(i) => i.value === settings.get('transcription.deepgram.model'),
 		)?.label,
 	);
 
 	const mistralModelLabel = $derived(
 		mistralModelItems.find(
-			(i) => i.value === settings.value['transcription.mistral.model'],
+			(i) => i.value === settings.get('transcription.mistral.model'),
 		)?.label,
 	);
 
 	const elevenlabsModelLabel = $derived(
 		elevenlabsModelItems.find(
-			(i) => i.value === settings.value['transcription.elevenlabs.model'],
+			(i) => i.value === settings.get('transcription.elevenlabs.model'),
 		)?.label,
 	);
 
 	const outputLanguageLabel = $derived(
 		SUPPORTED_LANGUAGES_OPTIONS.find(
-			(i) => i.value === settings.value['transcription.outputLanguage'],
+			(i) => i.value === settings.get('transcription.language'),
 		)?.label,
 	);
 
@@ -175,21 +175,18 @@
 		<TranscriptionServiceSelect
 			id="selected-transcription-service"
 			label="Transcription Service"
-			bind:selected={() => settings.value['transcription.selectedTranscriptionService'],
+			bind:selected={() => settings.get('transcription.service'),
 				(selected) =>
-					settings.updateKey(
-						'transcription.selectedTranscriptionService',
-						selected,
-					)}
+					settings.set('transcription.service', selected)}
 		/>
 
-		{#if settings.value['transcription.selectedTranscriptionService'] === 'OpenAI'}
+		{#if settings.get('transcription.service') === 'OpenAI'}
 			<Field.Field>
 				<Field.Label for="openai-model">OpenAI Model</Field.Label>
 				<Select.Root
 					type="single"
-					bind:value={() => settings.value['transcription.openai.model'],
-						(v) => settings.updateKey('transcription.openai.model', v)}
+					bind:value={() => settings.get('transcription.openai.model'),
+						(v) => settings.set('transcription.openai.model', v)}
 				>
 					<Select.Trigger id="openai-model" class="w-full">
 						{openaiModelLabel ?? 'Select a model'}
@@ -214,13 +211,13 @@
 				</Field.Description>
 			</Field.Field>
 			<OpenAiApiKeyInput />
-		{:else if settings.value['transcription.selectedTranscriptionService'] === 'Groq'}
+		{:else if settings.get('transcription.service') === 'Groq'}
 			<Field.Field>
 				<Field.Label for="groq-model">Groq Model</Field.Label>
 				<Select.Root
 					type="single"
-					bind:value={() => settings.value['transcription.groq.model'],
-						(v) => settings.updateKey('transcription.groq.model', v)}
+					bind:value={() => settings.get('transcription.groq.model'),
+						(v) => settings.set('transcription.groq.model', v)}
 				>
 					<Select.Trigger id="groq-model" class="w-full">
 						{groqModelLabel ?? 'Select a model'}
@@ -245,13 +242,13 @@
 				</Field.Description>
 			</Field.Field>
 			<GroqApiKeyInput />
-		{:else if settings.value['transcription.selectedTranscriptionService'] === 'Deepgram'}
+		{:else if settings.get('transcription.service') === 'Deepgram'}
 			<Field.Field>
 				<Field.Label for="deepgram-model">Deepgram Model</Field.Label>
 				<Select.Root
 					type="single"
-					bind:value={() => settings.value['transcription.deepgram.model'],
-						(v) => settings.updateKey('transcription.deepgram.model', v)}
+					bind:value={() => settings.get('transcription.deepgram.model'),
+						(v) => settings.set('transcription.deepgram.model', v)}
 				>
 					<Select.Trigger id="deepgram-model" class="w-full">
 						{deepgramModelLabel ?? 'Select a model'}
@@ -266,13 +263,13 @@
 				</Select.Root>
 			</Field.Field>
 			<DeepgramApiKeyInput />
-		{:else if settings.value['transcription.selectedTranscriptionService'] === 'Mistral'}
+		{:else if settings.get('transcription.service') === 'Mistral'}
 			<Field.Field>
 				<Field.Label for="mistral-model">Mistral Model</Field.Label>
 				<Select.Root
 					type="single"
-					bind:value={() => settings.value['transcription.mistral.model'],
-						(v) => settings.updateKey('transcription.mistral.model', v)}
+					bind:value={() => settings.get('transcription.mistral.model'),
+						(v) => settings.set('transcription.mistral.model', v)}
 				>
 					<Select.Trigger id="mistral-model" class="w-full">
 						{mistralModelLabel ?? 'Select a model'}
@@ -297,13 +294,13 @@
 				</Field.Description>
 			</Field.Field>
 			<MistralApiKeyInput />
-		{:else if settings.value['transcription.selectedTranscriptionService'] === 'ElevenLabs'}
+		{:else if settings.get('transcription.service') === 'ElevenLabs'}
 			<Field.Field>
 				<Field.Label for="elevenlabs-model">ElevenLabs Model</Field.Label>
 				<Select.Root
 					type="single"
-					bind:value={() => settings.value['transcription.elevenlabs.model'],
-						(v) => settings.updateKey('transcription.elevenlabs.model', v)}
+					bind:value={() => settings.get('transcription.elevenlabs.model'),
+						(v) => settings.set('transcription.elevenlabs.model', v)}
 				>
 					<Select.Trigger id="elevenlabs-model" class="w-full">
 						{elevenlabsModelLabel ?? 'Select a model'}
@@ -328,7 +325,7 @@
 				</Field.Description>
 			</Field.Field>
 			<ElevenLabsApiKeyInput />
-		{:else if settings.value['transcription.selectedTranscriptionService'] === 'speaches'}
+		{:else if settings.get('transcription.service') === 'speaches'}
 			<div class="space-y-4">
 				<Card.Root>
 					<Card.Header>
@@ -440,9 +437,9 @@
 					id="speaches-base-url"
 					placeholder="http://localhost:8000"
 					autocomplete="off"
-					bind:value={() => settings.value['transcription.speaches.baseUrl'],
+					bind:value={() => deviceConfig.get('transcription.speaches.baseUrl'),
 						(value) =>
-							settings.updateKey('transcription.speaches.baseUrl', value)}
+							deviceConfig.set('transcription.speaches.baseUrl', value)}
 				/>
 				<Field.Description>
 					The URL where your Speaches server is running (<code>
@@ -466,9 +463,9 @@
 					id="speaches-model-id"
 					placeholder="Systran/faster-distil-whisper-small.en"
 					autocomplete="off"
-					bind:value={() => settings.value['transcription.speaches.modelId'],
+					bind:value={() => deviceConfig.get('transcription.speaches.modelId'),
 						(value) =>
-							settings.updateKey('transcription.speaches.modelId', value)}
+							deviceConfig.set('transcription.speaches.modelId', value)}
 				/>
 				<Field.Description>
 					The model you downloaded in step 3 (<code>MODEL_ID</code>), e.g.
@@ -483,7 +480,7 @@
 					</CopyButton>
 				</Field.Description>
 			</Field.Field>
-		{:else if settings.value['transcription.selectedTranscriptionService'] === 'whispercpp'}
+		{:else if settings.get('transcription.service') === 'whispercpp'}
 			<div class="space-y-4">
 				<!-- Whisper Model Selector Component -->
 				{#if window.__TAURI_INTERNALS__}
@@ -493,11 +490,11 @@
 						description="Select a pre-built model or browse for your own. Models run locally for private, offline transcription."
 						fileSelectionMode="file"
 						fileExtensions={['bin', 'gguf', 'ggml']}
-						bind:value={() => settings.value['transcription.whispercpp.modelPath'],
-							(v) => settings.updateKey('transcription.whispercpp.modelPath', v)}
+						bind:value={() => deviceConfig.get('transcription.whispercpp.modelPath'),
+							(v) => deviceConfig.set('transcription.whispercpp.modelPath', v)}
 					>
 						{#snippet prebuiltFooter()}
-							<p class="text-sm text-muted-foreground">
+							<Field.Description>
 								Models are downloaded from{' '}
 								<Link
 									href="https://huggingface.co/ggerganov/whisper.cpp"
@@ -508,7 +505,7 @@
 								</Link>
 								{' '}and stored locally in your app data directory. Quantized
 								models offer smaller sizes with minimal quality loss.
-							</p>
+							</Field.Description>
 						{/snippet}
 
 						{#snippet manualInstructions()}
@@ -575,7 +572,7 @@
 					{/if}
 				{/if}
 			</div>
-		{:else if settings.value['transcription.selectedTranscriptionService'] === 'parakeet'}
+		{:else if settings.get('transcription.service') === 'parakeet'}
 			<div class="space-y-4">
 				<!-- Parakeet Model Selector Component -->
 				{#if window.__TAURI_INTERNALS__}
@@ -667,11 +664,11 @@
 						title="Parakeet Model"
 						description="Parakeet is an NVIDIA NeMo model optimized for fast local transcription. It automatically detects the language and doesn't support manual language selection."
 						fileSelectionMode="directory"
-						bind:value={() => settings.value['transcription.parakeet.modelPath'],
-							(v) => settings.updateKey('transcription.parakeet.modelPath', v)}
+						bind:value={() => deviceConfig.get('transcription.parakeet.modelPath'),
+						(v) => deviceConfig.set('transcription.parakeet.modelPath', v)}
 					>
 						{#snippet prebuiltFooter()}
-							<p class="text-sm text-muted-foreground">
+							<Field.Description>
 								Models are downloaded from{' '}
 								<Link
 									href="https://github.com/EpicenterHQ/epicenter/releases/tag/models/parakeet-tdt-0.6b-v3-int8"
@@ -683,15 +680,15 @@
 								{' '}and stored in your app data directory. The pre-packaged
 								archive contains the NVIDIA Parakeet model with INT8
 								quantization and is extracted after download.
-							</p>
+							</Field.Description>
 						{/snippet}
 
 						{#snippet manualInstructions()}
 							<Card.Root class="bg-muted/50">
 								<Card.Content class="p-4">
-									<h4 class="mb-2 text-sm font-medium">
+									<Field.Legend variant="label">
 										Getting Parakeet Models
-									</h4>
+									</Field.Legend>
 									<ul class="space-y-2 text-sm text-muted-foreground">
 										<li class="flex items-start gap-2">
 											<span
@@ -765,7 +762,7 @@
 					{/if}
 				{/if}
 			</div>
-		{:else if settings.value['transcription.selectedTranscriptionService'] === 'moonshine'}
+		{:else if settings.get('transcription.service') === 'moonshine'}
 			<div class="space-y-4">
 				<!-- Moonshine Model Selector Component -->
 				{#if window.__TAURI_INTERNALS__}
@@ -774,11 +771,11 @@
 						title="Moonshine Model"
 						description="Moonshine is an efficient ONNX model by UsefulSensors. English-only with fast inference and small model sizes (~30 MB)."
 						fileSelectionMode="directory"
-						bind:value={() => settings.value['transcription.moonshine.modelPath'],
-							(v) => settings.updateKey('transcription.moonshine.modelPath', v)}
+						bind:value={() => deviceConfig.get('transcription.moonshine.modelPath'),
+						(v) => deviceConfig.set('transcription.moonshine.modelPath', v)}
 					>
 						{#snippet prebuiltFooter()}
-							<p class="text-sm text-muted-foreground">
+							<Field.Description>
 								Models are downloaded from{' '}
 								<Link
 									href="https://huggingface.co/UsefulSensors/moonshine"
@@ -789,15 +786,15 @@
 								</Link>
 								{' '}and stored in your app data directory. Moonshine uses
 								quantized ONNX models for efficient local inference.
-							</p>
+							</Field.Description>
 						{/snippet}
 
 						{#snippet manualInstructions()}
 							<Card.Root class="bg-muted/50">
 								<Card.Content class="p-4">
-									<h4 class="mb-2 text-sm font-medium">
+									<Field.Legend variant="label">
 										Getting Moonshine Models
-									</h4>
+									</Field.Legend>
 									<ul class="space-y-2 text-sm text-muted-foreground">
 										<li class="flex items-start gap-2">
 											<span
@@ -904,8 +901,8 @@
 			<Field.Label for="output-language">Output Language</Field.Label>
 			<Select.Root
 				type="single"
-				bind:value={() => settings.value['transcription.outputLanguage'],
-					(v) => settings.updateKey('transcription.outputLanguage', v)}
+				bind:value={() => settings.get('transcription.language'),
+					(v) => settings.set('transcription.language', v)}
 				disabled={!currentServiceCapabilities.supportsLanguage}
 			>
 				<Select.Trigger id="output-language" class="w-full">
@@ -919,7 +916,7 @@
 			</Select.Root>
 			{#if !currentServiceCapabilities.supportsLanguage}
 				<Field.Description>
-					{settings.value['transcription.selectedTranscriptionService'] ===
+					{settings.get('transcription.service') ===
 					'moonshine'
 						? 'Moonshine is English-only'
 						: 'Parakeet automatically detects the language'}
@@ -938,9 +935,9 @@
 				placeholder="0"
 				autocomplete="off"
 				disabled={!currentServiceCapabilities.supportsTemperature}
-				bind:value={() => settings.value['transcription.temperature'],
+				bind:value={() => settings.get('transcription.temperature'),
 					(value) =>
-						settings.updateKey('transcription.temperature', String(value))}
+						settings.set('transcription.temperature', Number(value))}
 			/>
 			<Field.Description>
 				{currentServiceCapabilities.supportsTemperature
@@ -955,8 +952,8 @@
 				id="transcription-prompt"
 				placeholder="e.g., This is an academic lecture about quantum physics with technical terms like 'eigenvalue' and 'Schrödinger'"
 				disabled={!currentServiceCapabilities.supportsPrompt}
-				bind:value={() => settings.value['transcription.prompt'],
-					(value) => settings.updateKey('transcription.prompt', value)}
+				bind:value={() => settings.get('transcription.prompt'),
+					(value) => settings.set('transcription.prompt', value)}
 			/>
 			<Field.Description>
 				{currentServiceCapabilities.supportsPrompt

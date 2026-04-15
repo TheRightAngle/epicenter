@@ -1,16 +1,32 @@
 import { Err, Ok, partitionResults, type Result } from 'wellcrafted/result';
+import {
+	SUPPORTED_LANGUAGES,
+	type SupportedLanguage,
+} from '$lib/constants/languages';
+import { rpc } from '$lib/query';
 import { defineMutation, queryClient } from '$lib/query/client';
 import { WhisperingErr, type WhisperingError } from '$lib/result';
-import { desktopServices, services } from '$lib/services';
-import type { Recording } from '$lib/services/db';
+import { services } from '$lib/services';
+import { desktopServices } from '$lib/services/desktop';
+import { deviceConfig } from '$lib/state/device-config.svelte';
+import type { Recording } from '$lib/state/recordings.svelte';
+import { recordings } from '$lib/state/recordings.svelte';
 import { settings } from '$lib/state/settings.svelte';
-import { rpc } from './index';
-import { db } from './db';
 import { notify } from './notify';
 
 const transcriptionKeys = {
 	isTranscribing: ['transcription', 'isTranscribing'] as const,
 } as const;
+
+function getOutputLanguage(): SupportedLanguage {
+	const language = settings.get('transcription.language');
+	for (const supportedLanguage of SUPPORTED_LANGUAGES) {
+		if (supportedLanguage === language) {
+			return supportedLanguage;
+		}
+	}
+	return 'auto';
+}
 
 export const transcription = {
 	isCurrentlyTranscribing() {
@@ -36,61 +52,18 @@ export const transcription = {
 				});
 			}
 
-			const { error: setRecordingTranscribingError } =
-				await db.recordings.update({
-					...recording,
-					transcriptionStatus: 'TRANSCRIBING',
-				});
-			if (setRecordingTranscribingError) {
-				notify.warning({
-					title:
-						'⚠️ Unable to set recording transcription status to transcribing',
-					description: 'Continuing with the transcription process...',
-					action: {
-						type: 'more-details',
-						error: setRecordingTranscribingError,
-					},
-				});
-			}
+			recordings.update(recording.id, { transcriptionStatus: 'TRANSCRIBING' });
 			const { data: transcribedText, error: transcribeError } =
 				await transcribeBlob(audioBlob);
 			if (transcribeError) {
-				const { error: setRecordingTranscribingError } =
-					await db.recordings.update({
-						...recording,
-						transcriptionStatus: 'FAILED',
-					});
-				if (setRecordingTranscribingError) {
-					notify.warning({
-						title: '⚠️ Unable to update recording after transcription',
-						description:
-							"Transcription failed but unable to update recording's transcription status in database",
-						action: {
-							type: 'more-details',
-							error: setRecordingTranscribingError,
-						},
-					});
-				}
+				recordings.update(recording.id, { transcriptionStatus: 'FAILED' });
 				return Err(transcribeError);
 			}
 
-			const { error: setRecordingTranscribedTextError } =
-				await db.recordings.update({
-					...recording,
-					transcribedText,
-					transcriptionStatus: 'DONE',
-				});
-			if (setRecordingTranscribedTextError) {
-				notify.warning({
-					title: '⚠️ Unable to update recording after transcription',
-					description:
-						"Transcription completed but unable to update recording's transcribed text and status in database",
-					action: {
-						type: 'more-details',
-						error: setRecordingTranscribedTextError,
-					},
-				});
-			}
+			recordings.update(recording.id, {
+				transcribedText,
+				transcriptionStatus: 'DONE',
+			});
 			return Ok(transcribedText);
 		},
 	}),
@@ -127,8 +100,7 @@ export const transcription = {
 export async function transcribeBlob(
 	blob: Blob,
 ): Promise<Result<string, WhisperingError>> {
-	const selectedService =
-		settings.value['transcription.selectedTranscriptionService'];
+	const selectedService = settings.get('transcription.service');
 
 	// Log transcription request
 	const startTime = Date.now();
@@ -139,11 +111,11 @@ export async function transcribeBlob(
 
 	// Compress audio if enabled, else pass through original blob
 	let audioToTranscribe = blob;
-	if (settings.value['transcription.compressionEnabled']) {
+	if (settings.get('transcription.compressionEnabled')) {
 		const { data: compressedBlob, error: compressionError } =
 			await desktopServices.ffmpeg.compressAudioBlob(
 				blob,
-				settings.value['transcription.compressionOptions'],
+				settings.get('transcription.compressionOptions'),
 			);
 
 		if (compressionError) {
@@ -177,75 +149,87 @@ export async function transcribeBlob(
 		}
 	}
 
+	// Diagnostic: log blob state to help debug 400 "Invalid file format" errors.
+	// If size is 0 or type is empty, the blob is the problem—not the extension.
+	console.debug('[Transcription] Blob diagnostics:', {
+		size: audioToTranscribe.size,
+		type: audioToTranscribe.type,
+		sizeKb: Math.round(audioToTranscribe.size / 1024),
+		service: selectedService,
+	});
 	const transcriptionResult: Result<string, WhisperingError> =
 		await (async () => {
+			const outputLanguage = getOutputLanguage();
+			const prompt = settings.get('transcription.prompt');
+			const temperature = String(settings.get('transcription.temperature'));
+
 			switch (selectedService) {
 				case 'OpenAI':
 					return await services.transcriptions.openai.transcribe(
 						audioToTranscribe,
 						{
-							outputLanguage: settings.value['transcription.outputLanguage'],
-							prompt: settings.value['transcription.prompt'],
-							temperature: settings.value['transcription.temperature'],
-							apiKey: settings.value['apiKeys.openai'],
-							modelName: settings.value['transcription.openai.model'],
-							baseURL: settings.value['apiEndpoints.openai'] || undefined,
+							outputLanguage,
+							prompt,
+							temperature,
+							apiKey: deviceConfig.get('apiKeys.openai'),
+							modelName: settings.get('transcription.openai.model'),
+							baseURL: deviceConfig.get('apiEndpoints.openai') || undefined,
 						},
 					);
 				case 'Groq':
 					return await services.transcriptions.groq.transcribe(
 						audioToTranscribe,
 						{
-							outputLanguage: settings.value['transcription.outputLanguage'],
-							prompt: settings.value['transcription.prompt'],
-							temperature: settings.value['transcription.temperature'],
-							apiKey: settings.value['apiKeys.groq'],
-							modelName: settings.value['transcription.groq.model'],
-							baseURL: settings.value['apiEndpoints.groq'] || undefined,
+							outputLanguage,
+							prompt,
+							temperature,
+							apiKey: deviceConfig.get('apiKeys.groq'),
+							modelName: settings.get('transcription.groq.model'),
+							baseURL: deviceConfig.get('apiEndpoints.groq') || undefined,
 						},
 					);
 				case 'speaches':
 					return await services.transcriptions.speaches.transcribe(
 						audioToTranscribe,
 						{
-							outputLanguage: settings.value['transcription.outputLanguage'],
-							prompt: settings.value['transcription.prompt'],
-							temperature: settings.value['transcription.temperature'],
-							modelId: settings.value['transcription.speaches.modelId'],
-							baseUrl: settings.value['transcription.speaches.baseUrl'],
+							outputLanguage,
+							prompt,
+							temperature,
+							modelId: deviceConfig.get('transcription.speaches.modelId'),
+							baseUrl: deviceConfig.get('transcription.speaches.baseUrl'),
 						},
 					);
 				case 'ElevenLabs':
 					return await services.transcriptions.elevenlabs.transcribe(
 						audioToTranscribe,
 						{
-							outputLanguage: settings.value['transcription.outputLanguage'],
-							prompt: settings.value['transcription.prompt'],
-							temperature: settings.value['transcription.temperature'],
-							apiKey: settings.value['apiKeys.elevenlabs'],
-							modelName: settings.value['transcription.elevenlabs.model'],
+							outputLanguage,
+							prompt,
+							temperature,
+							apiKey: deviceConfig.get('apiKeys.elevenlabs'),
+							modelName: settings.get('transcription.elevenlabs.model'),
 						},
 					);
 				case 'Deepgram':
 					return await services.transcriptions.deepgram.transcribe(
 						audioToTranscribe,
 						{
-							outputLanguage: settings.value['transcription.outputLanguage'],
-							prompt: settings.value['transcription.prompt'],
-							temperature: settings.value['transcription.temperature'],
-							apiKey: settings.value['apiKeys.deepgram'],
-							modelName: settings.value['transcription.deepgram.model'],
+							outputLanguage,
+							prompt,
+							temperature,
+							apiKey: deviceConfig.get('apiKeys.deepgram'),
+							modelName: settings.get('transcription.deepgram.model'),
 						},
 					);
 				case 'Mistral':
 					return await services.transcriptions.mistral.transcribe(
 						audioToTranscribe,
 						{
-							outputLanguage: settings.value['transcription.outputLanguage'],
-							prompt: settings.value['transcription.prompt'],
-							temperature: settings.value['transcription.temperature'],
-							apiKey: settings.value['apiKeys.mistral'],
-							modelName: settings.value['transcription.mistral.model'],
+							outputLanguage,
+							prompt,
+							temperature,
+							apiKey: deviceConfig.get('apiKeys.mistral'),
+							modelName: settings.get('transcription.mistral.model'),
 						},
 					);
 				case 'whispercpp': {
@@ -255,9 +239,9 @@ export async function transcribeBlob(
 					return await services.transcriptions.whispercpp.transcribe(
 						audioToTranscribe,
 						{
-							outputLanguage: settings.value['transcription.outputLanguage'],
-							modelPath: settings.value['transcription.whispercpp.modelPath'],
-							prompt: settings.value['transcription.prompt'],
+							outputLanguage,
+							modelPath: deviceConfig.get('transcription.whispercpp.modelPath'),
+							prompt,
 						},
 					);
 				}
@@ -289,7 +273,7 @@ export async function transcribeBlob(
 					return await services.transcriptions.parakeet.transcribe(
 						audioToTranscribe,
 						{
-							modelPath: settings.value['transcription.parakeet.modelPath'],
+							modelPath: deviceConfig.get('transcription.parakeet.modelPath'),
 							accelerationMode: parakeetAccelerationMode,
 							deviceId: parakeetDeviceId,
 						},
@@ -301,7 +285,7 @@ export async function transcribeBlob(
 					return await services.transcriptions.moonshine.transcribe(
 						audioToTranscribe,
 						{
-							modelPath: settings.value['transcription.moonshine.modelPath'],
+							modelPath: deviceConfig.get('transcription.moonshine.modelPath'),
 						},
 					);
 				}

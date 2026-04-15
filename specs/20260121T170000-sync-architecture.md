@@ -1,11 +1,45 @@
 # Sync Architecture
 
-**Status**: Design Complete  
+**Status**: Outdated — significant architectural divergence (see Current Reality below)  
 **Created**: 2026-01-21  
-**Updated**: 2026-01-21  
+**Updated**: 2026-03-20  
 **Purpose**: Define how Epicenter syncs Y.js documents across devices and users
 
 ---
+
+## Current Reality (2026-03-20)
+
+> This spec's core ownership model (org-scoped workspaces) was evaluated and deliberately rejected in favor of per-user scoping. The sync backend changed from Y-Sweet to Cloudflare Durable Objects. Only the cloud sync mode is implemented. The original design below remains as historical context for why these decisions were explored.
+
+### What actually shipped
+
+The implementation diverged from this spec in three fundamental ways:
+
+**1. Per-user ownership, not org-scoped.** Durable Object names follow `user:{userId}:workspace:{name}` (Google Docs model). Each user gets their own DO instance per workspace. The org-scoped model (`{orgId}:{workspaceId}-{epoch}`) described below was rejected because most workspaces contain personal data (transcriptions, notes) that shouldn't merge into a shared Y.Doc. See the rationale in `apps/api/src/app.ts` lines 427–453.
+
+**2. Cloudflare Durable Objects, not Y-Sweet.** Sync runs on Cloudflare Workers with Durable Objects providing single-threaded per-user isolates, built-in SQLite for update logs, and WebSocket hibernation for idle connections. The Y-Sweet references in this spec no longer apply.
+
+**3. Only cloud mode exists.** Of the three sync modes described below, only Epicenter Cloud (Tier 1) is implemented via `apps/api/`. Self-hosted hub is not yet available—the CLI prints a notice directing users to Epicenter Cloud. Local-only mode works trivially by omitting the sync extension.
+
+### What this spec still gets right
+
+- The three-mode concept (local, self-hosted, cloud) remains the long-term vision
+- The SDK's sync interface is auth-agnostic—the developer provides `getToken`, not a specific auth system
+- The separation between SDK (client) and hub (server) holds
+
+### Current implementation references
+
+- Hub server: `apps/api/src/app.ts`
+- Sync extension (client): `packages/workspace/src/extensions/sync.ts`
+- Sync provider: `packages/sync-client/src/provider.ts`
+- Hub-sidecar architecture spec: `specs/20260304T120000-hub-sidecar-architecture.md`
+- HKDF key derivation spec: `specs/20260314T070000-per-user-workspace-hkdf-key-derivation.md`
+
+---
+
+## Original Design (January 2026)
+
+> Everything below is the original spec from January 2026. It does not reflect the current implementation. Kept for historical context on why the org-ownership model was explored and what trade-offs it carried.
 
 ## Executive Summary
 

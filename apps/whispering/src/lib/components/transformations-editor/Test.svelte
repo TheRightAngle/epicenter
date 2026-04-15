@@ -8,13 +8,20 @@
 	import PlayIcon from '@lucide/svelte/icons/play';
 	import { createMutation } from '@tanstack/svelte-query';
 	import { rpc } from '$lib/query';
-	import type { Transformation } from '$lib/services/db';
+	import type { TransformationStep } from '$lib/state/transformation-steps.svelte';
+	import type { Transformation } from '$lib/state/transformations.svelte';
 
 	const transformInput = createMutation(
 		() => rpc.transformer.transformInput.options,
 	);
 
-	let { transformation }: { transformation: Transformation } = $props();
+	let {
+		transformation,
+		steps,
+	}: {
+		transformation: Transformation;
+		steps: TransformationStep[];
+	} = $props();
 
 	let input = $state('');
 	let output = $state('');
@@ -56,7 +63,7 @@
 	<Button
 		onclick={() =>
 			transformInput.mutate(
-				{ input, transformation },
+				{ input, transformation, steps },
 				{
 					onSuccess: (o) => {
 						if (o) {
@@ -65,7 +72,7 @@
 					},
 				},
 			)}
-		disabled={!input.trim() || transformation.steps.length === 0}
+		disabled={!input.trim() || steps.length === 0}
 		class="w-full"
 	>
 		{#if transformInput.isPending}

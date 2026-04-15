@@ -2,9 +2,11 @@
 	import { Button } from '@epicenter/ui/button';
 	import { confirmationDialog } from '@epicenter/ui/confirmation-dialog';
 	import { Link } from '@epicenter/ui/link';
+	import * as SectionHeader from '@epicenter/ui/section-header';
 	import { Separator } from '@epicenter/ui/separator';
 	import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
 	import { rpc } from '$lib/query';
+	import { deviceConfig } from '$lib/state/device-config.svelte';
 	import { settings } from '$lib/state/settings.svelte';
 	import SidebarNav from './SidebarNav.svelte';
 
@@ -41,9 +43,11 @@
 	<div
 		class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between"
 	>
-		<div class="space-y-0.5">
-			<h2 class="text-2xl font-bold tracking-tight">Settings</h2>
-			<p class="text-muted-foreground">
+		<SectionHeader.Root class="space-y-0.5">
+			<SectionHeader.Title level={2} class="text-2xl font-bold tracking-tight"
+				>Settings</SectionHeader.Title
+			>
+			<SectionHeader.Description>
 				{#await versionPromise}
 					Customize your Whispering experience.
 				{:then v}
@@ -65,8 +69,8 @@
 				{:catch error}
 					Customize your Whispering experience.
 				{/await}
-			</p>
-		</div>
+			</SectionHeader.Description>
+		</SectionHeader.Root>
 		<Button
 			variant="outline"
 			size="sm"
@@ -78,6 +82,7 @@
 					confirm: { text: 'Reset Settings', variant: 'destructive' },
 					onConfirm: () => {
 						settings.reset();
+						deviceConfig.reset();
 						rpc.notify.success({
 							title: 'Settings reset',
 							description: 'All settings have been reset to defaults.',

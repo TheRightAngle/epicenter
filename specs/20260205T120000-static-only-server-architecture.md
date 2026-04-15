@@ -1,6 +1,8 @@
+> **Status: Superseded** by `20260313T063000-workspace-architecture-decisions.md`. The static vs dynamic API distinction is resolved; the main spec uses the builder chain pattern exclusively.
+
 # Static-Only Server & CLI Architecture
 
-**Status:** Draft
+**Status:** Superseded
 **Created:** 2026-02-05
 **Author:** System Analysis
 

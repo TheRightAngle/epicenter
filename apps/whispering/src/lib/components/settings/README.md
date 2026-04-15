@@ -1,41 +1,54 @@
 # Settings Components
 
-This folder contains all components that are directly bound to the global settings state. These components encapsulate settings management logic and provide reusable UI elements for configuring various aspects of the application.
+Components directly bound to reactive settings state. Each component encapsulates settings management logic and provides reusable UI for configuring the application.
+
+## Two Settings Stores
+
+Components here import from one or both stores depending on where the setting lives:
+
+- **`settings`** — synced settings (Yjs KV). Sound toggles, output behavior, transcription service, UI prefs.
+- **`deviceConfig`** — device-bound config (per-key localStorage). API keys, hardware IDs, model paths, global shortcuts.
+
+```svelte
+<script lang="ts">
+	import { settings } from '$lib/state/settings.svelte';
+	import { deviceConfig } from '$lib/state/device-config.svelte';
+</script>
+```
 
 ## Purpose
 
 Components in this directory:
 
-- Import and use the global `settings` state from `$lib/state/settings.svelte`
-- Either take **no props** or only take **minimal configuration props** (like `mode` or `settingsKey`) to determine which setting to bind to
-- Update settings directly using `settings.updateKey()` or `settings.update()` methods
+- Import and use `settings` and/or `deviceConfig` from `$lib/state/`
+- Either take **no props** or only take **minimal configuration props** (like `mode` or `settingKey`) to determine which setting to bind to
+- Update settings directly using `.set(key, value)` methods
 - Are self-contained and can be used globally throughout the application
-
-## Criteria for Inclusion
-
-A component belongs here if it meets ALL of the following criteria:
-
-1. **Directly bound to settings**: The component imports and uses `settings` from `$lib/state/settings.svelte`
-2. **Minimal props**: Takes either no props OR only minimal configuration props like `mode` or `settingsKey` (no value/onChange props)
-3. **Self-contained**: All state management is handled internally via the settings state
-4. **Reusable**: Can be dropped into any part of the app without additional setup
 
 ## Component Organization
 
 ```
 settings/
-├── api-key-inputs/         # API key input components
+├── api-key-inputs/         # API key input components (deviceConfig)
 │   ├── OpenAiApiKeyInput.svelte
 │   ├── GroqApiKeyInput.svelte
 │   ├── AnthropicApiKeyInput.svelte
 │   ├── ElevenLabsApiKeyInput.svelte
-│   └── GoogleApiKeyInput.svelte
-├── selectors/             # Various selector components
-│   ├── DeviceSelector.svelte
+│   ├── GoogleApiKeyInput.svelte
+│   ├── DeepgramApiKeyInput.svelte
+│   ├── MistralApiKeyInput.svelte
+│   ├── OpenRouterApiKeyInput.svelte
+│   └── CustomEndpointInput.svelte
+├── selectors/              # Various selector components
+│   ├── ManualDeviceSelector.svelte
+│   ├── VadDeviceSelector.svelte
 │   ├── TransformationSelector.svelte
-│   └── TranscriptionSelector.svelte
-├── index.ts               # Re-exports all components
-└── README.md             # This file
+│   ├── TranscriptionSelector.svelte
+│   ├── RecordingModeSelector.svelte
+│   └── CompressionSelector.svelte
+├── LocalModelDownloadCard.svelte
+├── CompressionBody.svelte
+└── README.md               # This file
 ```
 
 ## Usage Examples
@@ -44,62 +57,40 @@ settings/
 
 ```svelte
 <script>
-	import { OpenAiApiKeyInput } from '$lib/components/settings';
+	import OpenAiApiKeyInput from '$lib/components/settings/api-key-inputs/OpenAiApiKeyInput.svelte';
 </script>
 
 <OpenAiApiKeyInput />
 ```
 
-### With Mode Prop
+### With Settings Key Prop
 
 ```svelte
 <script>
-	import { DeviceSelector } from '$lib/components/settings';
+	import VadDeviceSelector from '$lib/components/settings/selectors/VadDeviceSelector.svelte';
 </script>
 
-<!-- For VAD recording device -->
-<DeviceSelector mode="vad" />
-
-<!-- For manual recording device -->
-<DeviceSelector mode="manual" />
+<VadDeviceSelector settingKey="recording.navigator.deviceId" />
 ```
 
 ## Creating New Settings Components
 
-When creating a new settings component for this folder:
-
-1. **Import the settings state**:
+1. **Import the appropriate store**:
 
    ```svelte
    <script lang="ts">
-   	import { settings } from '$lib/state/settings.svelte';
+   	import { deviceConfig } from '$lib/state/device-config.svelte';
    </script>
    ```
 
-2. **Define props (if needed)**:
-
-   ```svelte
-   <script lang="ts">
-   	import type { Settings } from '$lib/settings';
-
-   	let { settingsKey }: { settingsKey: keyof Settings } = $props();
-   </script>
-   ```
-
-3. **Bind to settings**:
+2. **Bind to settings**:
 
    ```svelte
    <Input
-   	value={settings.value[settingsKey]}
-   	oninput={({ currentTarget: { value } }) => {
-   		settings.updateKey(settingsKey, value);
-   	}}
+	bind:value={() => settings.get('apiKeys.openai'),
+		(value) => settings.set('apiKeys.openai', value)}
+   		(value) => deviceConfig.set('apiKeys.openai', value)}
    />
-   ```
-
-4. **Export from index.ts**:
-   ```ts
-   export { default as YourNewComponent } from './YourNewComponent.svelte';
    ```
 
 ## Best Practices
@@ -118,13 +109,3 @@ Do not add components that:
 - Require complex external state management
 - Are page-specific and not reusable
 - Don't interact with the settings state
-
-## Migration Guide
-
-If you're moving an existing component to this folder:
-
-1. Remove any `value` and `onChange` props
-2. Import the `settings` state
-3. Update bindings to use `settings.value` directly
-4. Test that the component still works in all its current usages
-5. Update import paths throughout the codebase

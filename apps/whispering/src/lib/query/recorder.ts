@@ -5,9 +5,12 @@ import type { WhisperingRecordingState } from '$lib/constants/audio';
 import { PATHS } from '$lib/constants/paths';
 import { defineMutation, defineQuery, queryClient } from '$lib/query/client';
 import { WhisperingErr } from '$lib/result';
-import { desktopServices, services } from '$lib/services';
+import { services } from '$lib/services';
+import { desktopServices } from '$lib/services/desktop';
 import { getFileExtensionFromFfmpegOptions } from '$lib/services/desktop/recorder/ffmpeg';
-import type { Device } from '$lib/services/types';
+import type { Device, DeviceIdentifier } from '$lib/services/types';
+import { asDeviceIdentifier } from '$lib/services/types';
+import { deviceConfig } from '$lib/state/device-config.svelte';
 import { settings } from '$lib/state/settings.svelte';
 import { disambiguateDeviceLabels } from '../services/device-labels';
 import { notify } from './notify';
@@ -32,6 +35,11 @@ let currentRecordingSourceFilePath: string | null = null;
 
 const invalidateRecorderState = () =>
 	queryClient.invalidateQueries({ queryKey: recorderKeys.recorderState });
+
+function parseDeviceId(deviceId: string | null): DeviceIdentifier | null {
+	if (!deviceId) return null;
+	return asDeviceIdentifier(deviceId);
+}
 
 function hasDuplicateDeviceLabels(devices: Device[]) {
 	const labels = devices.map((device) => device.label.toLowerCase());
@@ -61,14 +69,15 @@ async function resolveDesktopSourceFilePath(
 	const { join } = await import('@tauri-apps/api/path');
 
 	const outputFolder =
-		settings.value['recording.cpal.outputFolder'] ?? (await PATHS.DB.RECORDINGS());
+		deviceConfig.get('recording.cpal.outputFolder') ??
+		(await PATHS.DB.RECORDINGS());
 
-	switch (settings.value['recording.method']) {
+	switch (deviceConfig.get('recording.method')) {
 		case 'cpal':
 			return await join(outputFolder, `${recordingId}.wav`);
 		case 'ffmpeg': {
 			const extension = getFileExtensionFromFfmpegOptions(
-				settings.value['recording.ffmpeg.outputOptions'],
+				deviceConfig.get('recording.ffmpeg.outputOptions'),
 			);
 			return await join(outputFolder, `${recordingId}.${extension}`);
 		}
@@ -78,13 +87,13 @@ async function resolveDesktopSourceFilePath(
 }
 
 function getEffectiveRecordingMethod(
-	method: RecordingMethod = settings.value['recording.method'],
+	method: RecordingMethod = deviceConfig.get('recording.method'),
 ): RecordingMethod {
 	return window.__TAURI_INTERNALS__ ? method : 'navigator';
 }
 
 async function enumerateDevicesForMethod(
-	method: RecordingMethod = settings.value['recording.method'],
+	method: RecordingMethod = deviceConfig.get('recording.method'),
 ) {
 	const effectiveMethod = getEffectiveRecordingMethod(method);
 	const { data, error } =
@@ -157,7 +166,7 @@ export const recorder = {
 
 				// Resolve the output folder - use default if null
 				const outputFolder = window.__TAURI_INTERNALS__
-					? (settings.value['recording.cpal.outputFolder'] ??
+					? (deviceConfig.get('recording.cpal.outputFolder') ??
 						(await PATHS.DB.RECORDINGS()))
 					: '';
 
@@ -165,26 +174,33 @@ export const recorder = {
 					navigator: {
 						...baseParams,
 						method: 'navigator' as const,
-						selectedDeviceId: settings.value['recording.navigator.deviceId'],
-						bitrateKbps: settings.value['recording.navigator.bitrateKbps'],
+						selectedDeviceId: parseDeviceId(
+							deviceConfig.get('recording.navigator.deviceId'),
+						),
+						bitrateKbps: deviceConfig.get('recording.navigator.bitrateKbps'),
 					},
 					ffmpeg: {
 						...baseParams,
 						method: 'ffmpeg' as const,
-						selectedDeviceId: settings.value['recording.ffmpeg.deviceId'],
-						globalOptions: settings.value['recording.ffmpeg.globalOptions'],
-						inputOptions: settings.value['recording.ffmpeg.inputOptions'],
-						outputOptions: settings.value['recording.ffmpeg.outputOptions'],
+						selectedDeviceId: parseDeviceId(
+							deviceConfig.get('recording.ffmpeg.deviceId'),
+						),
+						globalOptions: deviceConfig.get('recording.ffmpeg.globalOptions'),
+						inputOptions: deviceConfig.get('recording.ffmpeg.inputOptions'),
+						outputOptions: deviceConfig.get('recording.ffmpeg.outputOptions'),
 						outputFolder,
 					},
 					cpal: {
 						...baseParams,
 						method: 'cpal' as const,
-						selectedDeviceId: settings.value['recording.cpal.deviceId'],
+						selectedDeviceId: parseDeviceId(
+							deviceConfig.get('recording.cpal.deviceId'),
+						),
 						outputFolder,
-						sampleRate: settings.value['recording.cpal.sampleRate'],
-						experimentalBufferedCapture:
-							settings.value['recording.cpal.experimentalBufferedCapture'],
+						sampleRate: deviceConfig.get('recording.cpal.sampleRate'),
+						experimentalBufferedCapture: deviceConfig.get(
+							'recording.cpal.experimentalBufferedCapture',
+						),
 					},
 				} as const;
 
@@ -192,7 +208,7 @@ export const recorder = {
 					paramsMap[
 						!window.__TAURI_INTERNALS__
 							? 'navigator'
-							: settings.value['recording.method']
+							: deviceConfig.get('recording.method')
 					];
 				currentRecordingSourceFilePath =
 					params.method === 'cpal' && params.experimentalBufferedCapture
@@ -332,7 +348,7 @@ async function recoverDesktopCpalRecordingId() {
 	if (!window.__TAURI_INTERNALS__) {
 		return { recordingId: null, lookupError: null };
 	}
-	if (settings.value['recording.method'] !== 'cpal') {
+	if (deviceConfig.get('recording.method') !== 'cpal') {
 		return { recordingId: null, lookupError: null };
 	}
 
@@ -351,5 +367,8 @@ async function recoverDesktopCpalRecordingId() {
 }
 
 function isDesktopCpalContext() {
-	return Boolean(window.__TAURI_INTERNALS__) && settings.value['recording.method'] === 'cpal';
+	return (
+		Boolean(window.__TAURI_INTERNALS__) &&
+		deviceConfig.get('recording.method') === 'cpal'
+	);
 }

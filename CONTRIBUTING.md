@@ -189,6 +189,58 @@ cd packages/epicenter
 bun unlink
 ```
 
+## Releasing
+
+This section is for maintainers with npm publish access to the `@epicenter` scope.
+
+### Prerequisites
+
+- Bun installed (see above)
+- An npm account with publish access to the `@epicenter` scope
+- `npm login` completed in your terminal
+
+### How versioning works
+
+All seven public packages (`@epicenter/workspace`, `@epicenter/cli`, `@epicenter/sync`, `@epicenter/filesystem`, `@epicenter/skills`, `@epicenter/ui`, `@epicenter/svelte`) share a single version number. They move together.
+
+**Apps are completely separate from changesets.** Changesets only touches packages that are (a) not marked `"private": true` and (b) listed under `packages/`. Every app in `apps/` is `"private": true` and has its own deploy mechanism—changesets will never version or publish them. Whispering versions come from `tauri.conf.json` and git tags. Web apps deploy on push to `main`. See [App deployments](#app-deployments) below.
+
+We use [changesets](https://github.com/changesets/changesets) to track changes and publish. Never edit `version` fields in `package.json` by hand.
+
+### Adding a changeset
+
+After making changes to any package, run this before committing:
+
+```bash
+bunx changeset
+```
+
+Select the affected packages, pick the semver bump (patch for fixes, minor for new features), and write a short summary. Commit the generated `.changeset/*.md` file with your code.
+
+### Publishing a release
+
+```bash
+# 1. Consume all pending changesets, bump versions, write CHANGELOGs
+bunx changeset version
+
+# 2. Commit
+git add . && git commit -m "chore: release vX.Y.Z"
+
+# 3. Publish to npm and create git tags
+bunx changeset publish
+
+# 4. Push
+git push && git push --tags
+```
+
+### App deployments
+
+Apps deploy separately from npm packages:
+
+- **Whispering (desktop)**: Push a `v*` tag. `release.whispering.yml` builds for all four platforms and publishes a GitHub Release draft.
+- **Web apps (Cloudflare Workers)**: Merge to `main`. `deploy.cloudflare.yml` deploys automatically.
+
+See [`.github/workflows/README.md`](.github/workflows/README.md) for the full workflow reference.
 ## Coding Standards
 
 ### TypeScript
@@ -245,6 +297,12 @@ curl -fsSL https://bun.sh/install | bash -s "bun-v1.2.19"
 - **Discord**: Join our community at [go.epicenter.so/discord](https://go.epicenter.so/discord) and DM me to get started contributing
 - **Issues**: Check existing issues or create a new one
 - **Documentation**: Each app has its own README with specific details
+
+## Licensing
+
+Epicenter uses split licensing. Most packages and apps are MIT—contribute freely, no strings attached. The sync server (`apps/api`) and sync protocol (`packages/sync`) are AGPL-3.0. Contributions to either layer are welcome under their respective licenses.
+
+See [FINANCIAL_SUSTAINABILITY.md](FINANCIAL_SUSTAINABILITY.md) for the full reasoning behind the split.
 
 ## Philosophy
 

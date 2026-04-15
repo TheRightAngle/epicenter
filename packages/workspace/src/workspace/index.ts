@@ -4,8 +4,9 @@
  * A composable, type-safe API for defining and creating workspaces
  * with versioned tables and KV stores.
  *
- * All table and KV schemas must include `_v: number` as a discriminant field.
- * Use shorthand for single versions, variadic args for multiple versions with migrations.
+ * Tables use `_v: number` as a discriminant field for versioning and migration
+ * (underscore signals framework metadata—see `BaseRow` for rationale).
+ * KV stores use `defineKv(schema, defaultValue)` with validate-or-default semantics.
  *
  * @example
  * ```typescript
@@ -26,30 +27,20 @@
  *   }
  * });
  *
- * // KV: shorthand for single version
- * const sidebar = defineKv(type({ collapsed: 'boolean', width: 'number', _v: '1' }));
- *
- * // KV: variadic for multiple versions with migration
- * const theme = defineKv(
- *   type({ mode: "'light' | 'dark'", _v: '1' }),
- *   type({ mode: "'light' | 'dark' | 'system'", fontSize: 'number', _v: '2' }),
- * ).migrate((v) => {
- *   switch (v._v) {
- *     case 1: return { ...v, fontSize: 14, _v: 2 };
- *     case 2: return v;
- *   }
- * });
+ * // KV: schema + default value (no versioning)
+ * const sidebar = defineKv(type('boolean'), false);
+ * const fontSize = defineKv(type('number'), 14);
  *
  * // Create client (synchronous, directly usable)
  * const client = createWorkspace({
  *   id: 'my-app',
  *   tables: { users, posts },
- *   kv: { sidebar, theme },
+ *   kv: { sidebar, fontSize },
  * });
  *
  * // Use tables and KV
  * client.tables.posts.set({ id: '1', title: 'Hello', views: 0, _v: 2 });
- * client.kv.set('theme', { mode: 'system', fontSize: 16, _v: 2 });
+ * client.kv.set('fontSize', 16);
  *
  * // Or add extensions
  * const clientWithExt = createWorkspace({ id: 'my-app', tables: { posts } })
@@ -57,7 +48,7 @@
  *   .withExtension('persistence', persistence);
  *
  * // Cleanup
- * await client.destroy();
+ * await client.dispose();
  * ```
  *
  * @packageDocumentation
@@ -81,11 +72,10 @@ export {
 export { ExtensionError } from '../shared/errors.js';
 // Lifecycle protocol
 export type {
-	DocumentContext,
 	Extension,
-	Lifecycle,
 	MaybePromise,
 } from './lifecycle.js';
+export type { DocumentContext } from './types.js';
 
 // ════════════════════════════════════════════════════════════════════════════
 // Y.DOC STORAGE KEYS
@@ -107,15 +97,9 @@ export { defineWorkspace } from './define-workspace.js';
 // Workspace Creation
 // ════════════════════════════════════════════════════════════════════════════
 
+// Document origin sentinel (for filtering auto-bumps in table observers)
+export { DOCUMENTS_ORIGIN } from './create-document.js';
 export { createWorkspace } from './create-workspace.js';
-
-// ════════════════════════════════════════════════════════════════════════════
-// Lower-Level APIs (Bring Your Own Y.Doc)
-// ════════════════════════════════════════════════════════════════════════════
-
-export { createAwareness } from './create-awareness.js';
-export { createKv } from './create-kv.js';
-export { createTables } from './create-tables.js';
 
 // ════════════════════════════════════════════════════════════════════════════
 // Introspection
@@ -147,8 +131,8 @@ export type {
 	AwarenessState,
 	// Base row type
 	BaseRow,
-	DeleteResult,
 	// Document types
+	DocumentClient,
 	DocumentConfig,
 	DocumentHandle,
 	Documents,
@@ -167,11 +151,11 @@ export type {
 	KvChange,
 	KvDefinition,
 	KvDefinitions,
-	KvGetResult,
 	KvHelper,
 	NotFoundResult,
 	// Result types - composed
 	RowResult,
+	SharedExtensionContext,
 	// Definition types
 	TableDefinition,
 	// Map types
@@ -184,7 +168,6 @@ export type {
 	ValidRowResult,
 	WorkspaceClient,
 	WorkspaceClientBuilder,
-	WorkspaceClientWithActions,
 	// Workspace types
 	WorkspaceDefinition,
 } from './types.js';

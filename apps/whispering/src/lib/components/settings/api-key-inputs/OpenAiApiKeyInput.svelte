@@ -2,7 +2,7 @@
 	import * as Field from '@epicenter/ui/field';
 	import { Input } from '@epicenter/ui/input';
 	import { Link } from '@epicenter/ui/link';
-	import { settings } from '$lib/state/settings.svelte';
+	import { deviceConfig } from '$lib/state/device-config.svelte';
 </script>
 
 <Field.Group>
@@ -13,8 +13,8 @@
 			type="password"
 			placeholder="Your OpenAI API Key"
 			autocomplete="off"
-			bind:value={() => settings.value['apiKeys.openai'],
-				(value) => settings.updateKey('apiKeys.openai', value)}
+			bind:value={() => deviceConfig.get('apiKeys.openai'),
+				(value) => deviceConfig.set('apiKeys.openai', value)}
 		/>
 		<Field.Description>
 			You can find your API key in your <Link
@@ -42,8 +42,8 @@
 			type="url"
 			placeholder="https://api.openai.com/v1 (default)"
 			autocomplete="off"
-			bind:value={() => settings.value['apiEndpoints.openai'],
-				(value) => settings.updateKey('apiEndpoints.openai', value)}
+			bind:value={() => deviceConfig.get('apiEndpoints.openai'),
+				(value) => deviceConfig.set('apiEndpoints.openai', value)}
 		/>
 		<Field.Description>
 			Override the default OpenAI API endpoint. Useful for reverse proxies or

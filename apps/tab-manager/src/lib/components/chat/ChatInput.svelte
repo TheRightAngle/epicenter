@@ -3,8 +3,8 @@
 	import { Textarea } from '@epicenter/ui/textarea';
 	import SendIcon from '@lucide/svelte/icons/send';
 	import SquareIcon from '@lucide/svelte/icons/square';
-	import type { ConversationHandle } from '$lib/state/chat-state.svelte';
-	import { aiChatState } from '$lib/state/chat-state.svelte';
+	import type { ConversationHandle } from '$lib/chat/chat-state.svelte';
+	import { aiChatState } from '$lib/chat/chat-state.svelte';
 	import ModelCombobox from './ModelCombobox.svelte';
 	import ProviderSelect from './ProviderSelect.svelte';
 

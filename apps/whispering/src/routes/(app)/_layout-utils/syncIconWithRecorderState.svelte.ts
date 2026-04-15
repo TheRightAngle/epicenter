@@ -1,5 +1,6 @@
 import { createQuery } from '@tanstack/svelte-query';
-import { desktopRpc, rpc } from '$lib/query';
+import { rpc } from '$lib/query';
+import { desktopRpc } from '$lib/query/desktop';
 
 export function syncIconWithRecorderState() {
 	const getRecorderStateQuery = createQuery(

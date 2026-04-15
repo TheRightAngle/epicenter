@@ -129,19 +129,18 @@
 				if (options.input && inputText !== options.input.confirmationText)
 					return;
 
-				const result = options.onConfirm();
+				try {
+					const result = options.onConfirm();
 
-				if (result instanceof Promise) {
-					isPending = true;
-					try {
-						await result;
-						isOpen = false;
-					} catch {
-						// Keep dialog open on error (caller should handle notification)
-					} finally {
-						isPending = false;
+					if (result instanceof Promise) {
+						isPending = true;
+						try {
+							await result;
+						} finally {
+							isPending = false;
+						}
 					}
-				} else {
+				} finally {
 					isOpen = false;
 				}
 			},

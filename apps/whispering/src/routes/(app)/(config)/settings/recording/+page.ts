@@ -1,4 +1,4 @@
-import { desktopRpc } from '$lib/query';
+import { desktopRpc } from '$lib/query/desktop';
 
 export const load = async () => {
 	const { data: ffmpegInstalled } =

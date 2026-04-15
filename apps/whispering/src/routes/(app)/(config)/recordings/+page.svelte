@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { createPersistedState } from '@epicenter/svelte-utils';
+	import { createPersistedState } from '@epicenter/svelte';
 	import { Badge } from '@epicenter/ui/badge';
 	import { Button, buttonVariants } from '@epicenter/ui/button';
 	import * as ButtonGroup from '@epicenter/ui/button-group';
@@ -12,7 +12,7 @@
 	import { Input } from '@epicenter/ui/input';
 	import { Label } from '@epicenter/ui/label';
 	import * as Modal from '@epicenter/ui/modal';
-	import { Skeleton } from '@epicenter/ui/skeleton';
+	import * as SectionHeader from '@epicenter/ui/section-header';
 	import * as Table from '@epicenter/ui/table';
 	import { SelectAllPopover, SortableTableHeader } from '@epicenter/ui/table';
 	import { Textarea } from '@epicenter/ui/textarea';
@@ -26,7 +26,7 @@
 	import RetryTranscriptionIcon from '@lucide/svelte/icons/repeat';
 	import SearchIcon from '@lucide/svelte/icons/search';
 	import TrashIcon from '@lucide/svelte/icons/trash-2';
-	import { createMutation, createQuery } from '@tanstack/svelte-query';
+	import { createMutation } from '@tanstack/svelte-query';
 	import {
 		createTable as createSvelteTable,
 		FlexRender,
@@ -51,7 +51,8 @@
 	import OpenFolderButton from '$lib/components/OpenFolderButton.svelte';
 	import { PATHS } from '$lib/constants/paths';
 	import { rpc } from '$lib/query';
-	import type { Recording } from '$lib/services/db';
+	import { services } from '$lib/services';
+	import { type Recording, recordings } from '$lib/state/recordings.svelte';
 	import { createCopyFn } from '$lib/utils/createCopyFn';
 	import { recordingActions } from '$lib/utils/recording-actions';
 	import LatestTransformationRunOutputByRecordingId from './LatestTransformationRunOutputByRecordingId.svelte';
@@ -77,9 +78,6 @@
 		};
 	}
 
-	const getAllRecordingsQuery = createQuery(
-		() => rpc.db.recordings.getAll.options,
-	);
 	const transcribeRecordings = createMutation(
 		() => rpc.transcription.transcribeRecordings.options,
 	);
@@ -110,8 +108,8 @@
 			},
 		},
 		{
-			id: 'ID',
 			accessorKey: 'id',
+			meta: { label: 'ID' },
 			header: ({ column }) =>
 				renderComponent(SortableTableHeader, { column, headerText: 'ID' }),
 			cell: ({ getValue }) => {
@@ -125,8 +123,8 @@
 			},
 		},
 		{
-			id: 'Title',
 			accessorKey: 'title',
+			meta: { label: 'Title' },
 			header: ({ column }) =>
 				renderComponent(SortableTableHeader, {
 					column,
@@ -134,8 +132,8 @@
 				}),
 		},
 		{
-			id: 'Subtitle',
 			accessorKey: 'subtitle',
+			meta: { label: 'Subtitle' },
 			header: ({ column }) =>
 				renderComponent(SortableTableHeader, {
 					column,
@@ -143,8 +141,8 @@
 				}),
 		},
 		{
-			id: 'Timestamp',
 			accessorKey: 'timestamp',
+			meta: { label: 'Timestamp' },
 			header: ({ column }) =>
 				renderComponent(SortableTableHeader, {
 					column,
@@ -153,8 +151,8 @@
 			cell: formattedCell(DATE_FORMAT),
 		},
 		{
-			id: 'Created At',
 			accessorKey: 'createdAt',
+			meta: { label: 'Created At' },
 			header: ({ column }) =>
 				renderComponent(SortableTableHeader, {
 					column,
@@ -163,8 +161,8 @@
 			cell: formattedCell(DATE_FORMAT),
 		},
 		{
-			id: 'Updated At',
 			accessorKey: 'updatedAt',
+			meta: { label: 'Updated At' },
 			header: ({ column }) =>
 				renderComponent(SortableTableHeader, {
 					column,
@@ -173,8 +171,8 @@
 			cell: formattedCell(DATE_FORMAT),
 		},
 		{
-			id: 'Transcript',
 			accessorKey: 'transcribedText',
+			meta: { label: 'Transcript' },
 			header: ({ column }) =>
 				renderComponent(SortableTableHeader, {
 					column,
@@ -191,16 +189,9 @@
 							title: 'Delete recording',
 							description: 'Are you sure you want to delete this recording?',
 							confirm: { text: 'Delete', variant: 'destructive' },
-							onConfirm: async () => {
-								const { error } = await rpc.db.recordings.delete(row.original);
-								if (error) {
-									rpc.notify.error({
-										title: 'Failed to delete recording!',
-										description: 'Your recording could not be deleted.',
-										action: { type: 'more-details', error },
-									});
-									throw error;
-								}
+							onConfirm: () => {
+								services.db.recordings.revokeAudioUrl(row.original.id);
+								recordings.delete(row.original.id);
 								rpc.notify.success({
 									title: 'Deleted recording!',
 									description: 'Your recording has been deleted.',
@@ -212,7 +203,8 @@
 			},
 		},
 		{
-			id: 'Latest Transformation Run Output',
+			id: 'latestTransformationRunOutput',
+			meta: { label: 'Latest Transformation Run Output' },
 			accessorFn: ({ id }) => id,
 			header: ({ column }) =>
 				renderComponent(SortableTableHeader, {
@@ -227,7 +219,8 @@
 			},
 		},
 		{
-			id: 'Audio',
+			id: 'audio',
+			meta: { label: 'Audio' },
 			accessorFn: ({ id }) => id,
 			header: ({ column }) =>
 				renderComponent(SortableTableHeader, {
@@ -240,7 +233,8 @@
 			},
 		},
 		{
-			id: 'Actions',
+			id: 'actions',
+			meta: { label: 'Actions' },
 			accessorFn: (recording) => recording,
 			header: ({ column }) =>
 				renderComponent(SortableTableHeader, {
@@ -265,11 +259,11 @@
 	let columnVisibility = createPersistedState({
 		key: 'whispering-recordings-data-table-column-visibility',
 		onParseError: (_error) => ({
-			ID: false,
-			Title: false,
-			Subtitle: false,
-			'Created At': false,
-			'Updated At': false,
+			id: false,
+			title: false,
+			subtitle: false,
+			createdAt: false,
+			updatedAt: false,
 		}),
 		schema: type('Record<string, boolean>'),
 	});
@@ -284,7 +278,7 @@
 	const table = createSvelteTable({
 		getRowId: (originalRow) => originalRow.id,
 		get data() {
-			return getAllRecordingsQuery.data ?? [];
+			return recordings.sorted;
 		},
 		columns,
 		getCoreRowModel: getCoreRowModel(),
@@ -384,13 +378,18 @@
 <svelte:head> <title>All Recordings</title> </svelte:head>
 
 <main class="flex w-full flex-1 flex-col gap-2 px-4 py-4 sm:px-8 mx-auto">
-	<h1 class="scroll-m-20 text-4xl font-bold tracking-tight lg:text-5xl">
-		Recordings
-	</h1>
-	<p class="text-muted-foreground">
-		Your latest recordings and transcriptions, stored locally
-		{window.__TAURI_INTERNALS__ ? 'on your file system' : 'in IndexedDB'}.
-	</p>
+	<SectionHeader.Root>
+		<SectionHeader.Title
+			level={1}
+			class="scroll-m-20 text-4xl tracking-tight lg:text-5xl"
+		>
+			Recordings
+		</SectionHeader.Title>
+		<SectionHeader.Description>
+			Your latest recordings and transcriptions, stored locally
+			{window.__TAURI_INTERNALS__ ? 'on your file system' : 'in IndexedDB'}.
+		</SectionHeader.Description>
+	</SectionHeader.Root>
 	<Card class="flex flex-col gap-4 p-6">
 		<div class="flex flex-col md:flex-row items-center justify-between gap-2">
 			<Input
@@ -456,12 +455,12 @@
 						{#if transcribeRecordings.isPending}
 							<EllipsisIcon class="size-4" />
 						{:else if selectedRecordingRows.some(({ id }) => {
-							const currentRow = getAllRecordingsQuery.data?.find((r) => r.id === id);
+							const currentRow = recordings.get(id);
 							return currentRow?.transcriptionStatus === 'TRANSCRIBING';
 						})}
 							<LoadingTranscriptionIcon class="size-4" />
 						{:else if selectedRecordingRows.some(({ id }) => {
-							const currentRow = getAllRecordingsQuery.data?.find((r) => r.id === id);
+							const currentRow = recordings.get(id);
 							return currentRow?.transcriptionStatus === 'DONE';
 						})}
 							<RetryTranscriptionIcon class="size-4" />
@@ -566,7 +565,7 @@
 								bind:checked={() => column.getIsVisible(),
 									(value) => column.toggleVisibility(!!value)}
 							>
-								{column.columnDef.id}
+								{(column.columnDef.meta as { label?: string })?.label ?? column.id}
 							</DropdownMenu.CheckboxItem>
 						{/each}
 					</DropdownMenu.Content>
@@ -593,16 +592,7 @@
 					{/each}
 				</Table.Header>
 				<Table.Body>
-					{#if getAllRecordingsQuery.isPending}
-						{#each { length: 5 } as _}
-							<Table.Row>
-								<Table.Cell> <Skeleton class="size-4" /> </Table.Cell>
-								<Table.Cell colspan={columns.length - 1}>
-									<Skeleton class="h-4 w-full" />
-								</Table.Cell>
-							</Table.Row>
-						{/each}
-					{:else if table.getRowModel().rows?.length}
+					{#if table.getRowModel().rows?.length}
 						{#each table.getRowModel().rows as row (row.id)}
 							<Table.Row>
 								{#each row.getVisibleCells() as cell}

@@ -1,19 +1,24 @@
 <script lang="ts">
 	import { Button } from '@epicenter/ui/button';
+	import * as Empty from '@epicenter/ui/empty';
 	import DesktopIcon from '@lucide/svelte/icons/laptop';
 	import { ChromeWebStoreIcon } from '$lib/components/icons';
 </script>
 
 <svelte:head> <title>Change Global Keyboard Shortcut</title> </svelte:head>
 
-<main class="flex flex-1 items-center justify-center">
-	<section class="container flex flex-col items-center gap-4 text-center">
-		<h1 class="scroll-m-20 text-4xl font-bold tracking-tight lg:text-5xl">
+<Empty.Root class="flex-1">
+	<Empty.Header>
+		<Empty.Title
+			class="scroll-m-20 text-4xl font-bold tracking-tight lg:text-5xl"
+		>
 			Change Your Global Keyboard Shortcut
-		</h1>
-		<p class="text-muted-foreground lg:text-xl">
+		</Empty.Title>
+		<Empty.Description class="lg:text-xl">
 			You can access global keyboard shortcuts on the extension and desktop app.
-		</p>
+		</Empty.Description>
+	</Empty.Header>
+	<Empty.Content>
 		<div class="flex flex-col gap-2 md:flex-row">
 			<Button
 				tooltip="Check out the Chrome Extension"
@@ -41,5 +46,5 @@
 		<Button onclick={() => window.history.back()} variant="ghost"
 			>Go back</Button
 		>
-	</section>
-</main>
+	</Empty.Content>
+</Empty.Root>

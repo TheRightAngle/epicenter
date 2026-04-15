@@ -2,9 +2,9 @@
  * CLI Tests
  *
  * These tests verify that the CLI entry point correctly dispatches
- * commands via command groups (workspace, local, remote, auth, data).
+ * commands via top-level commands (get, list, count, delete, tables, kv, export, auth, start).
  */
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, spyOn, test } from 'bun:test';
 import { createCLI } from './cli';
 
 describe('createCLI', () => {
@@ -13,19 +13,17 @@ describe('createCLI', () => {
 		expect(typeof cli.run).toBe('function');
 	});
 
-	test('shows usage when no arguments provided', async () => {
+	test('rejects with usage when no arguments provided', async () => {
 		const cli = createCLI();
-		const originalError = console.error;
-		let errorOutput = '';
-		console.error = (msg: string) => {
-			errorOutput += msg;
-		};
+		const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
 
-		await cli.run([]);
+		// exitProcess(false) makes yargs throw instead of calling process.exit
+		await expect(cli.run([])).rejects.toThrow(
+			'Not enough non-option arguments',
+		);
 
-		console.error = originalError;
+		const errorOutput = errorSpy.mock.calls.flat().join(' ');
 		expect(errorOutput).toContain('epicenter');
-		expect(process.exitCode).toBe(1);
-		process.exitCode = undefined;
+		errorSpy.mockRestore();
 	});
 });

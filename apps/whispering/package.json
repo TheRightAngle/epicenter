@@ -2,13 +2,17 @@
 	"name": "@epicenter/whispering",
 	"private": true,
 	"version": "7.11.0",
-	"description": "",
+	"description": "Desktop and web speech-to-text with global shortcuts and AI transformations",
 	"exports": {
-		"./commands": "./src/lib/commands.ts"
+		"./commands": "./src/lib/commands.ts",
+		"./workspace": "./src/lib/workspace/index.ts"
 	},
 	"scripts": {
 		"dev:web": "vite dev",
-		"dev": "bun tauri dev --config '{\"identifier\": \"com.bradenwong.whispering.dev\"}'",
+		"dev:web:remote": "vite dev --mode production",
+		"dev": "bun run dev:local",
+		"dev:local": "bun tauri dev --config '{\"identifier\": \"com.bradenwong.whispering.dev\"}'",
+		"dev:remote": "bun tauri dev --config '{\"identifier\": \"com.bradenwong.whispering.dev\", \"build\": {\"beforeDevCommand\": \"bun run dev:web:remote\"}}'",
 		"build": "NODE_ENV=production bun --bun vite build",
 		"preview": "vite preview",
 		"prepare": "svelte-kit sync || echo ''",
@@ -17,9 +21,10 @@
 		"tauri": "tauri",
 		"deploy": "bun run build && wrangler deploy"
 	},
-	"license": "AGPL-3.0",
+	"license": "MIT",
 	"devDependencies": {
 		"@epicenter/ui": "workspace:*",
+		"bun-types": "catalog:",
 		"@lucide/svelte": "catalog:",
 		"@sveltejs/adapter-static": "catalog:",
 		"@sveltejs/kit": "catalog:",
@@ -45,7 +50,7 @@
 		"@aptabase/tauri": "^0.4.1",
 		"@aptabase/web": "^0.5.0",
 		"@epicenter/constants": "workspace:*",
-		"@epicenter/svelte-utils": "workspace:*",
+		"@epicenter/svelte": "workspace:*",
 		"@epicenter/workspace": "workspace:*",
 		"@google/generative-ai": "^0.24.1",
 		"@mistralai/mistralai": "^1.15.1",

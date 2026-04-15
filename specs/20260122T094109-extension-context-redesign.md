@@ -110,7 +110,7 @@ tables: {
     upsertMany(rows: Row[]): void;
     update(partial: PartialRow): UpdateResult;
     updateMany(partials: PartialRow[]): UpdateManyResult;
-    delete(id: string): DeleteResult;
+    delete(id: string): void;
     deleteMany(ids: string[]): DeleteManyResult;
     clear(): void;
 

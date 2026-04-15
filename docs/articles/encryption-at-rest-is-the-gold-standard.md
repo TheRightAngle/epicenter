@@ -1,37 +1,46 @@
 # Encryption at Rest Is the Gold Standard
 
-An important concept in security is encryption at rest. It means the data is encrypted all the way through: even when it's sitting in the database, it's fully encrypted. Not just while it's moving between your browser and a server (that's encryption in transit, which TLS handles), but always. At every point where data comes to rest on a disk somewhere, it's ciphertext.
+Encryption at rest is the baseline for modern data ownership. It means your data is ciphertext wherever it sits—on your local disk, on a sync server, or in a cloud backup. If someone steals the entire database, they get noise.
 
-This is how password managers work. When 1Password or Bitwarden store your vault, they don't just encrypt it during download. The vault is stored as ciphertext on their servers. If someone steals their entire database, they get encrypted blobs that are useless without your master password. The server never has the keys to decrypt what it's storing.
+## Workspace data is ciphertext by default
 
-In Epicenter, the same principle applies to the API key vault. When you add an OpenAI key, encryption happens on your machine before the data goes anywhere:
+In Epicenter, this protection covers every piece of workspace data. Your notes, transcripts, and settings are all encrypted at the CRDT level before they ever leave your application memory. The downstream storage layers only ever see the encrypted result.
 
 ```
-USER TYPES API KEY: "sk-abc123..."
-         │
-    Client encrypts with AES-GCM
-         │
-         ▼
-YJS DOCUMENT (in memory)
-    val: { ct: "x8f2k...", iv: "m3n..." }
-         │
-         ├────────────────────────────┐
-         ▼                            ▼
-INDEXEDDB (local cache)        Y-SWEET SERVER (sync)
-Ciphertext on disk.            Ciphertext in S3/R2.
-    ENCRYPTED AT REST ✅         ENCRYPTED AT REST ✅
+App code → createEncryptedKvLww → encrypt (XChaCha20-Poly1305) → Y.Doc → IndexedDB / Durable Objects / backups
 ```
 
-At every resting point—your local IndexedDB, the sync server, the S3 bucket—the actual API key is ciphertext. The key names (like `apiKey:openai`) are visible for indexing and conflict resolution, but the values are always encrypted. Someone with raw access to any of these storage layers sees noise.
+This approach provides defense-in-depth for your most sensitive information. An attacker needs two things to read your data: a full copy of the database and the application secret. Stealing one is hard—stealing both is significantly harder.
 
-This isn't full-document encryption, where the entire Yjs document would be opaque. The CRDT structure, metadata, and key names remain readable so sync and conflict resolution work normally. Only the sensitive values are encrypted. That's a deliberate tradeoff: we encrypt what matters and leave the plumbing visible so the system can function.
+## Metadata remains visible for sync
 
-| Strategy                    | Protects Against                                   | Doesn't Protect Against                           |
-| --------------------------- | -------------------------------------------------- | ------------------------------------------------- |
-| No encryption               | Nothing                                            | Network sniffing, database theft, physical access |
-| Encryption in transit (TLS) | Network sniffing, man-in-the-middle                | Database theft, rogue admins, server compromise   |
-| Encryption at rest          | Database theft, storage snapshots, physical access | Memory scraping on the active client              |
+The encryption uses XChaCha20-Poly1305. Each value is stored as a bare `Uint8Array` with a self-describing binary header: `[formatVersion(1) ‖ keyVersion(1) ‖ nonce(24) ‖ ciphertext ‖ tag(16)]`. The format version is the sole contract for the encryption format—algorithm, nonce size, tag size, and encoding are all implied by the version.
 
-Some systems claim encryption at rest but don't quite get there. They encrypt the disk but leave database files readable to anyone with root access, or they encrypt the database but store the keys in a config file on the same server. That's not encryption at rest; that's encryption with the key taped to the lock.
+```
+[0x01][keyVer][...24-byte nonce...][...ciphertext + 16-byte Poly1305 tag...]
+```
 
-The real test: if someone gets a full copy of your storage layer, can they read anything useful? If the answer is no, you have encryption at rest. If the answer is "well, they'd also need to find the key file," you don't.
+Key names and timestamps remain in plaintext to allow for CRDT conflict resolution. This is a deliberate design choice that mirrors how column names in a database are visible while the row data is encrypted. It allows the system to sync and merge changes without needing to decrypt the values first.
+
+| Strategy | Protects Against | Doesn't Protect Against |
+| :--- | :--- | :--- |
+| No encryption | Nothing | Network sniffing, database theft, physical access |
+| Encryption in transit (TLS) | Network sniffing, man-in-the-middle | Database theft, rogue admins, server compromise |
+| Encryption at rest | Database theft, storage snapshots, physical access | Memory scraping on the active client |
+
+## Storage layers see only noise
+
+A raw database dump shows exactly what an attacker would see. Instead of private notes, they find a series of opaque JSON objects.
+
+```sql
+SELECT * FROM workspace_data WHERE key = 'note-123';
+-- Result: Uint8Array [0x01, keyVer, ...nonce(24), ...ciphertext, ...tag(16)]
+```
+
+This ensures a total compromise of the storage infrastructure doesn't lead to a data breach. The storage layer is just a bucket for ciphertext. Application keys stay within the boundary.
+
+## Encryption is part of a larger strategy
+
+- [Why E2E Encryption Keeps Failing](./why-e2e-encryption-keeps-failing.md)
+- [Let the Server Handle Encryption](./let-the-server-handle-encryption.md)
+- [If You Don't Trust the Server, Become the Server](./if-you-dont-trust-the-server-become-the-server.md)

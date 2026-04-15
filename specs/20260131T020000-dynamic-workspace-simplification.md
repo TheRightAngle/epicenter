@@ -101,8 +101,8 @@ type TableHelper = {
 	/** Update specific fields of an existing row */
 	update(partialRow: PartialRow): UpdateResult; // Keep current name
 
-	/** Delete a row (all its cells) */
-	delete(id: string): DeleteResult; // Keep current name
+	/** Delete a row (all its cells). Fire-and-forget — no-op if missing. */
+	delete(id: string): void;
 
 	// ═══════════════════════════════════════════════════════════════════════════
 	// BULK OPERATIONS (Keep current)

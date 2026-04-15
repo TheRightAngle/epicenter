@@ -1,102 +1,46 @@
 /**
- * createKv() - Lower-level API for binding KV definitions to an existing Y.Doc.
+ * Creates a KvHelper from a pre-created YKeyValue store.
  *
- * @example
- * ```typescript
- * import * as Y from 'yjs';
- * import { createKv, defineKv } from '@epicenter/workspace';
- * import { type } from 'arktype';
+ * Provides typed get/set/delete/observe methods over a backing store.
+ * KV uses validate-or-default semantics: invalid or missing data returns
+ * the default value from the KV definition.
  *
- * // Shorthand for single version
- * const sidebar = defineKv(type({ collapsed: 'boolean', width: 'number' }));
- *
- * // Variadic for multiple versions with migration
- * const theme = defineKv(
- *   type({ mode: "'light' | 'dark'", _v: '1' }),
- *   type({ mode: "'light' | 'dark' | 'system'", fontSize: 'number', _v: '2' }),
- * ).migrate((v) => {
- *   switch (v._v) {
- *     case 1: return { ...v, fontSize: 14, _v: 2 };
- *     case 2: return v;
- *   }
- * });
- *
- * const ydoc = new Y.Doc({ guid: 'my-doc' });
- * const kv = createKv(ydoc, { sidebar, theme });
- *
- * kv.set('sidebar', { collapsed: false, width: 300 });
- * kv.set('theme', { mode: 'system', fontSize: 16, _v: 2 });
- * ```
+ * This is the primary building block for KV construction, used by
+ * createWorkspace (which creates the store for encryption coordination)
+ * and by tests.
  */
 
-import type * as Y from 'yjs';
-import type { CombinedStandardSchema } from '../shared/standard-schema/types.js';
-import {
-	YKeyValueLww,
-	type YKeyValueLwwChange,
-	type YKeyValueLwwEntry,
-} from '../shared/y-keyvalue/y-keyvalue-lww.js';
-import type {
-	InferKvValue,
-	KvDefinition,
-	KvDefinitions,
-	KvGetResult,
-	KvHelper,
-} from './types.js';
-import { KV_KEY } from './ydoc-keys.js';
+import type { YKeyValueLwwChange } from '../shared/y-keyvalue/y-keyvalue-lww.js';
+import type { EncryptedYKeyValueLww } from '../shared/y-keyvalue/y-keyvalue-lww-encrypted.js';
+import type { KvChange, KvDefinitions, KvHelper } from './types.js';
 
 /**
- * Binds KV definitions to an existing Y.Doc.
+ * Creates a KvHelper with typed get/set/delete/observe methods.
  *
- * Creates a KvHelper with dictionary-style access methods.
- * All KV values are stored in a shared Y.Array at `kv`.
+ * All KV logic lives here. Used by createWorkspace (which creates the
+ * store itself for encryption coordination).
  *
- * @param ydoc - The Y.Doc to bind KV to
+ * @param ykv - The backing YKeyValue store (encrypted or passthrough)
  * @param definitions - Map of key name to KvDefinition
  * @returns KvHelper with type-safe get/set/delete/observe methods
  */
 export function createKv<TKvDefinitions extends KvDefinitions>(
-	ydoc: Y.Doc,
+	ykv: EncryptedYKeyValueLww<unknown>,
 	definitions: TKvDefinitions,
 ): KvHelper<TKvDefinitions> {
-	// All KV values share a single YKeyValueLww store
-	const yarray = ydoc.getArray<YKeyValueLwwEntry<unknown>>(KV_KEY);
-	const ykv = new YKeyValueLww(yarray);
-
-	/**
-	 * Parse and migrate a raw value using the given definition.
-	 */
-	function parseValue<TValue>(
-		raw: unknown,
-		definition: KvDefinition<readonly CombinedStandardSchema[]>,
-	): KvGetResult<TValue> {
-		const result = definition.schema['~standard'].validate(raw);
-		if (result instanceof Promise)
-			throw new TypeError('Async schemas not supported');
-
-		if (result.issues) {
-			return {
-				status: 'invalid',
-				errors: result.issues,
-				value: raw,
-			};
-		}
-
-		// Migrate to latest version
-		const migrated = definition.migrate(result.value);
-		return { status: 'valid', value: migrated as TValue };
-	}
-
 	return {
 		get(key) {
 			const definition = definitions[key];
 			if (!definition) throw new Error(`Unknown KV key: ${key}`);
 
 			const raw = ykv.get(key);
-			if (raw === undefined) {
-				return { status: 'not_found', value: undefined };
-			}
-			return parseValue(raw, definition);
+			if (raw === undefined) return definition.defaultValue;
+
+			const result = definition.schema['~standard'].validate(raw);
+			if (result instanceof Promise) throw new TypeError('Async schemas not supported');
+			if (result.issues) return definition.defaultValue;
+
+			return result.value;
 		},
 
 		set(key, value) {
@@ -115,28 +59,29 @@ export function createKv<TKvDefinitions extends KvDefinitions>(
 
 			const handler = (
 				changes: Map<string, YKeyValueLwwChange<unknown>>,
-				transaction: Y.Transaction,
+				origin: unknown,
 			) => {
 				const change = changes.get(key);
 				if (!change) return;
 
 				switch (change.action) {
 					case 'delete':
-						callback({ type: 'delete' }, transaction);
+						callback({ type: 'delete' }, origin);
 						break;
 					case 'add':
 					case 'update': {
-						// Parse and migrate the new value
-						const parsed = parseValue(change.newValue, definition);
-						if (parsed.status === 'valid') {
+						const result = definition.schema['~standard'].validate(
+							change.newValue,
+						);
+						if (!(result instanceof Promise) && !result.issues) {
 							callback(
-								{ type: 'set', value: parsed.value } as Parameters<
+								{ type: 'set', value: result.value } as Parameters<
 									typeof callback
 								>[0],
-								transaction,
+								origin,
 							);
 						}
-						// Skip callback for invalid values (could add an error callback if needed)
+						// Skip callback for invalid values
 						break;
 					}
 				}
@@ -145,8 +90,55 @@ export function createKv<TKvDefinitions extends KvDefinitions>(
 			ykv.observe(handler);
 			return () => ykv.unobserve(handler);
 		},
+
+		observeAll(
+			callback: (
+				changes: Map<string, KvChange<unknown>>,
+				origin: unknown,
+			) => void,
+		) {
+			const handler = (
+				changes: Map<string, YKeyValueLwwChange<unknown>>,
+				origin: unknown,
+			) => {
+				const parsed = new Map<string, KvChange<unknown>>();
+				for (const [key, change] of changes) {
+					const definition = definitions[key];
+					if (!definition) continue;
+					if (change.action === 'delete') {
+						parsed.set(key, { type: 'delete' });
+					} else {
+						const result = definition.schema['~standard'].validate(
+							change.newValue,
+						);
+						if (!(result instanceof Promise) && !result.issues) {
+							parsed.set(key, {
+								type: 'set',
+								value: result.value,
+							});
+						}
+					}
+				}
+				if (parsed.size > 0) callback(parsed, origin);
+			};
+			ykv.observe(handler);
+			return () => ykv.unobserve(handler);
+		},
+
+		/**
+		 * Get all KV values as a plain record.
+		 *
+		 * Iterates every defined key and delegates to `get()`, which handles
+		 * validation and default-value fallback. Useful for snapshotting the
+		 * full KV state (e.g., materializer initial flush).
+		 */
+		getAll() {
+			const result: Record<string, unknown> = {};
+			for (const key of Object.keys(definitions)) {
+				result[key] = this.get(key);
+			}
+			return result;
+		},
+
 	} as KvHelper<TKvDefinitions>;
 }
-
-// Re-export types for convenience
-export type { InferKvValue, KvDefinition, KvDefinitions, KvHelper };

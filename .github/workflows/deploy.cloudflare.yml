@@ -52,6 +52,16 @@ jobs:
           packageManager: bun
           command: deploy
 
+      - name: Deploy API
+        id: api
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: apps/api
+          packageManager: bun
+          command: deploy
+
       - name: Deployment summary
         if: always()
         run: |
@@ -61,6 +71,7 @@ jobs:
           echo "|-----|-----|" >> $GITHUB_STEP_SUMMARY
           echo "| Whispering | ${{ steps.whispering.outputs.deployment-url }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Landing | ${{ steps.landing.outputs.deployment-url }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| API | ${{ steps.api.outputs.deployment-url }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Commit:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
 
@@ -87,6 +98,11 @@ jobs:
                 {
                   "name": "Landing",
                   "value": "${{ steps.landing.outputs.deployment-url }}",
+                  "inline": true
+                },
+                {
+                  "name": "API",
+                  "value": "${{ steps.api.outputs.deployment-url }}",
                   "inline": true
                 }
               ],

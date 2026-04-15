@@ -2,7 +2,7 @@
 	import * as Field from '@epicenter/ui/field';
 	import { Input } from '@epicenter/ui/input';
 	import { Link } from '@epicenter/ui/link';
-	import { settings } from '$lib/state/settings.svelte';
+	import { deviceConfig } from '$lib/state/device-config.svelte';
 </script>
 
 <Field.Field>
@@ -12,8 +12,8 @@
 		type="password"
 		placeholder="Your Anthropic API Key"
 		autocomplete="off"
-		bind:value={() => settings.value['apiKeys.anthropic'],
-			(value) => settings.updateKey('apiKeys.anthropic', value)}
+		bind:value={() => deviceConfig.get('apiKeys.anthropic'),
+			(value) => deviceConfig.set('apiKeys.anthropic', value)}
 	/>
 	<Field.Description>
 		You can find your Anthropic API key in your <Link

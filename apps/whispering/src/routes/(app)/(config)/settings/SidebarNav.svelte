@@ -1,6 +1,8 @@
 <script lang="ts">
+	import { APPS } from '@epicenter/constants/apps';
 	import { Button } from '@epicenter/ui/button';
 	import { cn } from '@epicenter/ui/utils';
+	import ExternalLinkIcon from '@lucide/svelte/icons/external-link';
 	import { cubicInOut } from 'svelte/easing';
 	import { crossfade } from 'svelte/transition';
 	import { page } from '$app/state';
@@ -64,4 +66,16 @@
 			<span class="relative z-10"> {item.title} </span>
 		</Button>
 	{/each}
+
+	<Button
+		href="{APPS.API.url}/dashboard"
+		target="_blank"
+		variant="ghost"
+		class="relative justify-start text-left font-normal text-sidebar-foreground hover:bg-sidebar-accent/50 hover:text-sidebar-accent-foreground"
+	>
+		<span class="relative z-10 flex items-center gap-2">
+			Manage billing
+			<ExternalLinkIcon class="size-3 text-muted-foreground" />
+		</span>
+	</Button>
 </nav>

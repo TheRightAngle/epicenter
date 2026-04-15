@@ -34,15 +34,20 @@ export {
 } from './shared/actions';
 
 // ════════════════════════════════════════════════════════════════════════════
+// RPC
+// ════════════════════════════════════════════════════════════════════════════
+
+export type { InferRpcMap, RpcActionMap } from './rpc/types';
+
+// ════════════════════════════════════════════════════════════════════════════
 // LIFECYCLE PROTOCOL
 // ════════════════════════════════════════════════════════════════════════════
 
 export type {
-	DocumentContext,
 	Extension,
-	Lifecycle,
 	MaybePromise,
 } from './workspace/lifecycle';
+export type { DocumentContext } from './workspace/types';
 
 // ════════════════════════════════════════════════════════════════════════════
 // ERROR TYPES
@@ -67,8 +72,25 @@ export { generateGuid, generateId, Id as createId } from './shared/id';
 // DATE UTILITIES
 // ════════════════════════════════════════════════════════════════════════════
 
-export type { DateIsoString, TimezoneId } from './shared/datetime-string';
-export { DateTimeString, dateTimeStringNow } from './shared/datetime-string';
+export type { DateIsoString, ParsedDateTimeString, TimezoneId } from './shared/datetime-string';
+export { DateTimeString } from './shared/datetime-string';
+
+// ════════════════════════════════════════════════════════════════════════════
+// TIMELINE
+// ════════════════════════════════════════════════════════════════════════════
+
+export type {
+	ContentType,
+	RichTextEntry,
+	SheetBinding,
+	SheetEntry,
+	TextEntry,
+	TimelineEntry,
+} from './timeline';
+export {
+	computeMidpoint,
+	type Timeline,
+} from './timeline';
 // ════════════════════════════════════════════════════════════════════════════
 // Y.DOC STORAGE KEYS
 // ════════════════════════════════════════════════════════════════════════════
@@ -88,15 +110,8 @@ export { defineWorkspace } from './workspace/define-workspace';
 // WORKSPACE CREATION
 // ════════════════════════════════════════════════════════════════════════════
 
+export { DOCUMENTS_ORIGIN } from './workspace/create-document';
 export { createWorkspace } from './workspace/create-workspace';
-
-// ════════════════════════════════════════════════════════════════════════════
-// LOWER-LEVEL APIs (Bring Your Own Y.Doc)
-// ════════════════════════════════════════════════════════════════════════════
-
-export { createAwareness } from './workspace/create-awareness';
-export { createKv } from './workspace/create-kv';
-export { createTables } from './workspace/create-tables';
 
 // ════════════════════════════════════════════════════════════════════════════
 // INTROSPECTION
@@ -110,23 +125,22 @@ export type {
 export { describeWorkspace } from './workspace/describe-workspace';
 
 // ════════════════════════════════════════════════════════════════════════════
-// VALIDATION UTILITIES
-// ════════════════════════════════════════════════════════════════════════════
-
-export { standardSchemaToJsonSchema } from './shared/standard-schema';
-export { createUnionSchema } from './workspace/schema-union';
-
-// ════════════════════════════════════════════════════════════════════════════
 // TYPES
 // ════════════════════════════════════════════════════════════════════════════
 
+// Runtime schemas (arktype) — for validation at deserialization boundaries
+export {
+	EncryptionKey,
+	EncryptionKeys,
+	encryptionKeysFingerprint,
+} from './workspace/encryption-key';
 export type {
 	AnyWorkspaceClient,
 	AwarenessDefinitions,
 	AwarenessHelper,
 	AwarenessState,
 	BaseRow,
-	DeleteResult,
+	DocumentClient,
 	DocumentConfig,
 	DocumentHandle,
 	Documents,
@@ -141,10 +155,10 @@ export type {
 	KvChange,
 	KvDefinition,
 	KvDefinitions,
-	KvGetResult,
 	KvHelper,
 	NotFoundResult,
 	RowResult,
+	SharedExtensionContext,
 	TableDefinition,
 	TableDefinitions,
 	TableHelper,
@@ -153,30 +167,19 @@ export type {
 	ValidRowResult,
 	WorkspaceClient,
 	WorkspaceClientBuilder,
-	WorkspaceClientWithActions,
 	WorkspaceDefinition,
 } from './workspace/types';
 
 // ════════════════════════════════════════════════════════════════════════════
-// DRIZZLE RE-EXPORTS
+// EPICENTER LINKS
 // ════════════════════════════════════════════════════════════════════════════
 
-// Commonly used Drizzle utilities for querying extensions
 export {
-	and,
-	asc,
-	desc,
-	eq,
-	gt,
-	gte,
-	inArray,
-	isNotNull,
-	isNull,
-	like,
-	lt,
-	lte,
-	ne,
-	not,
-	or,
-	sql,
-} from 'drizzle-orm';
+	convertEpicenterLinksToWikilinks,
+	convertWikilinksToEpicenterLinks,
+	EPICENTER_LINK_RE,
+	type EpicenterLink,
+	isEpicenterLink,
+	makeEpicenterLink,
+	parseEpicenterLink,
+} from './links.js';

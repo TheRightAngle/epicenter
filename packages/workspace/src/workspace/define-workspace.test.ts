@@ -27,7 +27,7 @@ describe('defineWorkspace', () => {
 				posts: defineTable(type({ id: 'string', title: 'string', _v: '1' })),
 			},
 			kv: {
-				theme: defineKv(type({ mode: "'light' | 'dark'" })),
+				theme: defineKv(type({ mode: "'light' | 'dark'" }), { mode: 'light' }),
 			},
 		});
 
@@ -43,7 +43,7 @@ describe('defineWorkspace', () => {
 				posts: defineTable(type({ id: 'string', title: 'string', _v: '1' })),
 			},
 			kv: {
-				theme: defineKv(type({ mode: "'light' | 'dark'" })),
+				theme: defineKv(type({ mode: "'light' | 'dark'" }), { mode: 'light' }),
 			},
 		});
 
@@ -60,7 +60,7 @@ describe('defineWorkspace', () => {
 				posts: defineTable(type({ id: 'string', title: 'string', _v: '1' })),
 			},
 			kv: {
-				theme: defineKv(type({ mode: "'light' | 'dark'" })),
+				theme: defineKv(type({ mode: "'light' | 'dark'" }), { mode: 'light' }),
 			},
 		});
 
@@ -72,15 +72,15 @@ describe('defineWorkspace', () => {
 		// Use KV
 		client.kv.set('theme', { mode: 'dark' });
 		const themeResult = client.kv.get('theme');
-		expect(themeResult.status).toBe('valid');
+		expect(themeResult).toEqual({ mode: 'dark' });
 	});
 
 	test('createWorkspace().withExtension() adds extensions', () => {
 		// Mock extension with custom exports
 		const mockExtension = (_context: {
 			ydoc: Y.Doc;
-			tables: unknown;
-			kv: unknown;
+			tables?: unknown;
+			kv?: unknown;
 		}) => ({
 			customMethod: () => 'hello',
 		});
@@ -148,11 +148,11 @@ describe('defineWorkspace', () => {
 		void _statusType;
 	});
 
-	test('client.destroy() cleans up', async () => {
-		let destroyed = false;
+	test('client.dispose() cleans up', async () => {
+		let disposed = false;
 		const mockExtension = () => ({
-			destroy: async () => {
-				destroyed = true;
+			dispose: async () => {
+				disposed = true;
 			},
 		});
 
@@ -163,8 +163,8 @@ describe('defineWorkspace', () => {
 			},
 		}).withExtension('mock', mockExtension);
 
-		await client.destroy();
-		expect(destroyed).toBe(true);
+		await client.dispose();
+		expect(disposed).toBe(true);
 	});
 
 	test('workspace with empty tables and kv initializes base client APIs', () => {
@@ -237,17 +237,17 @@ describe('defineWorkspace', () => {
 				posts: defineTable(type({ id: 'string', title: 'string', _v: '1' })),
 			},
 		})
-			.withExtension('first', () => ({
+			.withWorkspaceExtension('first', () => ({
 				value: 42,
 				helper: () => 'from-first',
 			}))
-			.withExtension('second', ({ extensions }) => {
+			.withWorkspaceExtension('second', ({ extensions }) => {
 				// extensions.first is fully typed here — no casts needed
 				const doubled = extensions.first.value * 2;
 				const msg = extensions.first.helper();
 				return { doubled, msg };
 			})
-			.withExtension('third', ({ extensions }) => {
+			.withWorkspaceExtension('third', ({ extensions }) => {
 				// extensions.first AND extensions.second are both fully typed
 				const tripled = extensions.first.value * 3;
 				const fromSecond = extensions.second.doubled;
@@ -367,44 +367,37 @@ describe('defineWorkspace', () => {
 		createWorkspace({
 			id: 'full-context-test',
 			tables: { posts: tableDef },
-		}).withExtension(
-			'inspector',
-			({ id, ydoc, tables, kv, extensions, whenReady }) => {
-				// All ExtensionContext fields should be present
-				expect(id).toBe('full-context-test');
-				expect(ydoc).toBeDefined();
-				expect(tables).toBeDefined();
-				expect(kv).toBeDefined();
-				expect(extensions).toBeDefined();
-				expect(whenReady).toBeInstanceOf(Promise);
-				return {};
-			},
-		);
+		}).withExtension('inspector', ({ ydoc, whenReady }) => {
+			// SharedExtensionContext only has ydoc + whenReady
+			expect(ydoc).toBeDefined();
+			expect(whenReady).toBeInstanceOf(Promise);
+			return {};
+		});
 	});
 
-	test('destroy runs in reverse order (LIFO)', async () => {
+	test('dispose runs in reverse order (LIFO)', async () => {
 		const order: string[] = [];
 
 		const client = createWorkspace({
-			id: 'destroy-order',
+			id: 'dispose-order',
 		})
 			.withExtension('a', () => ({
-				destroy: () => {
+				dispose: () => {
 					order.push('a');
 				},
 			}))
 			.withExtension('b', () => ({
-				destroy: () => {
+				dispose: () => {
 					order.push('b');
 				},
 			}))
 			.withExtension('c', () => ({
-				destroy: () => {
+				dispose: () => {
 					order.push('c');
 				},
 			}));
 
-		await client.destroy();
+		await client.dispose();
 		expect(order).toEqual(['c', 'b', 'a']);
 	});
 });

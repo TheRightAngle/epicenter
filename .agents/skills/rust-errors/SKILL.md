@@ -1,9 +1,25 @@
 ---
 name: rust-errors
-description: Rust to TypeScript error handling patterns for Tauri apps. Use when defining Rust errors that will be passed to TypeScript, handling Tauri command errors, or creating discriminated union error types.
+description: Rust to TypeScript error handling patterns for Tauri apps. Use when the user mentions Rust errors, Tauri command errors, invoke errors, or when defining Rust error types for TypeScript consumption or creating discriminated union error types from Rust.
+metadata:
+  author: epicenter
+  version: '1.0'
 ---
 
 # Rust to TypeScript Error Handling
+## Reference Repositories
+
+- [Tauri](https://github.com/tauri-apps/tauri) — Desktop app framework (source of Rust-to-TypeScript error patterns)
+
+## When to Apply This Skill
+
+Use this pattern when you need to:
+
+- Send Rust errors through Tauri commands to TypeScript clients.
+- Define Rust enums that serialize into discriminated union error shapes.
+- Validate unknown error payloads in TypeScript before switching on variants.
+- Keep cross-language error payloads consistent with `name` and `message` fields.
+- Avoid serde tagging patterns that produce nested, awkward TypeScript shapes.
 
 ## Discriminated Union Pattern for Errors
 

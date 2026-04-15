@@ -1,12 +1,26 @@
 ---
 name: elysia
-description: Elysia.js server patterns for error handling, status responses, and plugin composition. Use when writing Elysia route handlers, returning HTTP errors, creating plugins, or working with Eden Treaty type safety.
+description: Elysia.js server patterns for error handling, status responses, and plugin composition. Use when the user mentions Elysia, Eden Treaty, or when writing API route handlers, returning HTTP errors, creating server plugins, or working with type-safe API clients.
 metadata:
   author: epicenter
   version: '1.0'
 ---
 
 # Elysia.js Patterns (v1.2+)
+## Reference Repositories
+
+- [Hono](https://github.com/honojs/hono) — Ultrafast web framework for Cloudflare Workers
+- [Cloudflare Docs](https://github.com/cloudflare/cloudflare-docs) — Cloudflare Workers, Durable Objects, KV documentation
+
+## When to Apply This Skill
+
+Use this pattern when you need to:
+
+- Write or refactor Elysia handlers to use `status()` responses.
+- Define per-status response schemas for Eden Treaty type safety.
+- Migrate handlers away from `set.status` plus error-object returns.
+- Compose Elysia plugins/guards for shared auth and route behavior.
+- Choose between `return status(...)` and `throw status(...)` by control-flow context.
 
 ## The `status()` Helper (ALWAYS use this)
 

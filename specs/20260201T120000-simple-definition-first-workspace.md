@@ -778,7 +778,7 @@ Recommendation: Start fresh for now (dev mode), add migration later if needed.
 
 ## Related Documents
 
-- **Handoff Prompt**: `specs/20260201T120000-simple-definition-first-workspace-handoff.md` - Copy-paste prompt for agent execution
+- **Handoff Prompt**: `specs/20260201T120000-simple-definition-first-workspace.handoff.md` - Copy-paste prompt for agent execution
 - **Archived Patterns**: `docs/articles/archived-head-registry-patterns.md` - HeadDoc and Registry patterns preserved for future versioned workspace implementation
 - **GC Decision Guide**: `docs/articles/ykeyvalue-vs-ymap-decision-guide.md` - Why we use `gc: true` with YKeyValueLww
 - **GC Deep Dive**: `docs/articles/ykeyvalue-gc-the-hidden-variable.md` - The hidden variable that determines data structure choice

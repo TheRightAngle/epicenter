@@ -9,8 +9,10 @@ import type { JsonObject } from 'wellcrafted/json';
 import type { Awareness } from 'y-protocols/awareness';
 import type * as Y from 'yjs';
 import type { Actions } from '../shared/actions.js';
-import type { CombinedStandardSchema } from '../shared/standard-schema/types.js';
-import type { DocumentContext, Extension, MaybePromise } from './lifecycle.js';
+import type { CombinedStandardSchema } from '../shared/standard-schema.js';
+import type { Timeline } from '../timeline/timeline.js';
+import type { EncryptionKeys } from './encryption-key.js';
+import type { Extension, MaybePromise } from './lifecycle.js';
 
 // Re-export JSON types for consumers
 export type { JsonObject, JsonValue } from 'wellcrafted/json';
@@ -24,6 +26,18 @@ export type { JsonObject, JsonValue } from 'wellcrafted/json';
  *
  * - `id`: Unique identifier for row lookup and identity
  * - `_v`: Schema version number for tracking which version this row conforms to
+ *
+ * ### Why `_v` instead of `v`
+ *
+ * The underscore prefix signals "framework metadata, not user data" (same convention
+ * as `_id` in MongoDB or `__typename` in GraphQL). Users intuitively avoid
+ * underscore-prefixed fields for business data, which prevents accidental collisions
+ * with framework internals.
+ *
+ * Historically, this also avoided collision with the old `EncryptedBlob.v` field.
+ * That rationale no longer applies—`EncryptedBlob` is now a branded bare `Uint8Array`
+ * detected via `instanceof Uint8Array && value[0] === 1`—but the underscore convention
+ * remains good practice for framework metadata regardless.
  *
  * Intersected with `JsonObject` to ensure all field values are JSON-serializable.
  * This guarantees data stored in Yjs can be safely serialized/deserialized.
@@ -70,11 +84,6 @@ export type RowResult<TRow> = ValidRowResult<TRow> | InvalidRowResult;
  */
 export type GetResult<TRow> = RowResult<TRow> | NotFoundResult;
 
-/** Result of deleting a single row */
-export type DeleteResult =
-	| { status: 'deleted' }
-	| { status: 'not_found_locally' };
-
 /** Result of updating a single row */
 export type UpdateResult<TRow> =
 	| { status: 'updated'; row: TRow }
@@ -84,16 +93,6 @@ export type UpdateResult<TRow> =
 // ════════════════════════════════════════════════════════════════════════════
 // KV RESULT TYPES
 // ════════════════════════════════════════════════════════════════════════════
-
-/** Result of getting a KV value */
-export type KvGetResult<TValue> =
-	| { status: 'valid'; value: TValue }
-	| {
-			status: 'invalid';
-			errors: readonly StandardSchemaV1.Issue[];
-			value: unknown;
-	  }
-	| { status: 'not_found'; value: undefined };
 
 /** Change event for KV observation */
 export type KvChange<TValue> =
@@ -140,13 +139,6 @@ export type InferTableRow<T> = T extends {
 	? TLatest
 	: never;
 
-/** Extract the version union type from a TableDefinition */
-export type InferTableVersionUnion<T> = T extends {
-	schema: CombinedStandardSchema<unknown, infer TOutput>;
-}
-	? TOutput
-	: never;
-
 // ════════════════════════════════════════════════════════════════════════════
 // DOCUMENT CONFIG TYPES
 // ════════════════════════════════════════════════════════════════════════════
@@ -155,80 +147,54 @@ export type InferTableVersionUnion<T> = T extends {
  * A named document declared via `.withDocument()`.
  *
  * Maps a document concept (e.g., 'content') to a GUID column and an `onUpdate` callback
- * that fires when the content Y.Doc changes:
+ * that fires whenever the content Y.Doc changes -- both local edits and remote sync updates.
+ *
  * - `guid`: The column storing the Y.Doc GUID (must be a string column)
- * - `onUpdate`: Zero-argument callback returning `Partial<Omit<TRow, 'id'>>` — the fields
- *   to write when the doc changes. Callers control both the value and which columns to update.
- * - `tags`: Optional tag literals for document extension targeting
+ * - `onUpdate`: Zero-argument callback returning `Partial<Omit<TRow, 'id'>>` -- the fields
+ *   to write when the doc changes. Must return at least one field so the table row actually
+ *   changes and `table.observe` fires. Returning `{}` is a no-op that silently breaks
+ *   downstream observers (materializers, indexes) that depend on the table observer.
  *
  * @typeParam TGuid - Literal string type of the guid column name
  * @typeParam TRow - The row type of the table (used to type-check `onUpdate` return)
- * @typeParam TTags - Literal union of tag strings for document extension targeting.
- *   Defaults to `string` so bare `DocumentConfig` works as a wide constraint (accepts any tags).
- *   When `.withDocument()` is called without tags, `TTags` infers as `never` via the
- *   method's own default, which makes the `tags` property `undefined` — preventing
- *   tags on untagged documents.
  */
 export type DocumentConfig<
 	TGuid extends string = string,
 	TRow extends BaseRow = BaseRow,
-	TTags extends string = string,
+	TAwarenessDefs extends AwarenessDefinitions = Record<string, never>,
 > = {
 	guid: TGuid;
-	/** Called when the content Y.Doc changes. Return the fields to write to the row. */
-	onUpdate: () => Partial<Omit<TRow, 'id'>>;
 	/**
-	 * Tag literals for document extension targeting.
-	 *
-	 * Always present — defaults to `[]` when no tags are declared.
-	 *
-	 * - `TTags = never` (no tags on document) → `readonly never[]` (only accepts `[]`)
-	 * - `TTags = 'persistent' | 'synced'` → `readonly ('persistent' | 'synced')[]`
-	 * - `TTags = string` (bare `DocumentConfig`) → `readonly string[]`
+	 * Called on every content Y.Doc change (local and remote). Return the
+	 * fields to write to the table row -- typically `{ updatedAt: now() }`.
+	 * The row write fires `table.observe`, which is how materializers and
+	 * other consumers learn that content changed. Return at least one field.
 	 */
-	tags: readonly TTags[];
+	onUpdate: () => Partial<Omit<TRow, 'id'>>;
+	/** Optional awareness schemas for this document scope. */
+	awareness?: TAwarenessDefs;
 };
 
 /**
  * Internal registration for a document extension.
  *
  * Stored in an array by `withDocumentExtension()`. Each entry contains
- * the extension key, factory function, and optional tag filter.
+ * the extension key and factory function.
  *
- * At document open time, the runtime iterates registrations and fires
- * factories whose tags match (set intersection) or have no tags (universal).
+ * At document open time, the runtime calls every registered factory.
+ * Factories receive `DocumentContext` with `tableName` and `documentName`
+ * and can return `void` to opt out for specific documents.
  */
 export type DocumentExtensionRegistration = {
 	key: string;
 	factory: (context: DocumentContext) =>
 		| (Record<string, unknown> & {
 				whenReady?: Promise<unknown>;
-				destroy?: () => MaybePromise<void>;
+				dispose?: () => MaybePromise<void>;
+				clearLocalData?: () => MaybePromise<void>;
 		  })
 		| void;
-	tags: readonly string[];
 };
-
-/**
- * Extract all tags across all tables' document configs.
- *
- * Collects all tag literal types from all table definitions into a union
- * for type-safe autocomplete in `withDocumentExtension({ tags: [...] })`.
- *
- * @example
- * ```typescript
- * // Given tables with tags ['persistent', 'synced'] and ['ephemeral']:
- * type Tags = ExtractAllDocumentTags<typeof tables>;
- * // => 'persistent' | 'synced' | 'ephemeral'
- * ```
- */
-export type ExtractAllDocumentTags<TTableDefs extends TableDefinitions> = {
-	[K in keyof TTableDefs]: TTableDefs[K] extends {
-		documents: Record<string, DocumentConfig<string, BaseRow, infer TTags>>;
-	}
-		? TTags
-		: never;
-}[keyof TTableDefs];
 
 /**
  * Extract keys of `TRow` whose value type extends `string`.
@@ -253,36 +219,124 @@ export type ClaimedDocumentColumns<
 	TDocuments extends Record<string, DocumentConfig>,
 > = TDocuments[keyof TDocuments]['guid'];
 
+// ════════════════════════════════════════════════════════════════════════════
+// DOCUMENT CLIENT — The document's API surface (mirrors WorkspaceClient)
+// ════════════════════════════════════════════════════════════════════════════
+
+/**
+ * The full API surface of an open content document.
+ *
+ * Mirrors `WorkspaceClient` for consistency: the document's core type that
+ * `DocumentContext` derives from via `Pick` and `DocumentHandle` derives from
+ * via `Omit`. Extends `Timeline` so all content operations (read, write, mode
+ * conversion) are available directly.
+ *
+ * @typeParam TDocExtensions - Accumulated document extension exports
+ */
+export type DocumentClient<
+	TDocExtensions extends Record<string, unknown> = Record<string, never>,
+> = Timeline & {
+	/** The workspace identifier. */
+	id: string;
+	/** The table this document belongs to (e.g., 'files', 'notes'). */
+	tableName: string;
+	/** The document name declared via `.withDocument()` (e.g., 'content', 'body'). */
+	documentName: string;
+	/**
+	 * Self-reference for destructuring convenience.
+	 *
+	 * The document client IS the timeline (via intersection). This property
+	 * allows factories to destructure `({ timeline })` and get the same object.
+	 */
+	timeline: Timeline;
+	/**
+	 * Accumulated document extension exports with lifecycle hooks.
+	 *
+	 * Each entry is optional because extension factories may return `void`
+	 * to skip specific documents. Guard access with optional chaining.
+	 */
+	extensions: {
+		[K in keyof TDocExtensions]?: Extension<
+			TDocExtensions[K] extends Record<string, unknown>
+				? TDocExtensions[K]
+				: Record<string, unknown>
+		>;
+	};
+	/** Composite whenReady of all document extensions. */
+	whenReady: Promise<void>;
+	/** Cleanup all document extension resources. */
+	dispose(): Promise<void>;
+};
+
+/**
+ * Context passed to document extension factories registered via `withDocumentExtension()`.
+ *
+ * Picks the fields factories need from `DocumentClient` without inheriting the
+ * `Timeline` intersection. This preserves the HAS-A relationship (`ctx.timeline`)
+ * rather than IS-A (`ctx.read()`), matching how factories actually destructure:
+ *
+ * ```typescript
+ * .withDocumentExtension('persistence', ({ ydoc }) => { ... })
+ * .withDocumentExtension('sync', ({ id, tableName, documentName, ydoc }) => { ... })
+ * ```
+ *
+ * Factories inspect `tableName` and `documentName` to decide whether to activate.
+ * Return `void` to skip a specific document.
+ *
+ * @typeParam TDocExtensions - Accumulated document extension exports from prior calls.
+ *   Defaults to `Record<string, unknown>` so `DocumentExtensionRegistration` can
+ *   store factories with the wide type.
+ */
+export type DocumentContext<
+	TDocExtensions extends Record<string, unknown> = Record<string, unknown>,
+> = Pick<
+	DocumentClient<TDocExtensions>,
+	| 'id'
+	| 'tableName'
+	| 'documentName'
+	| 'ydoc'
+	| 'timeline'
+	| 'extensions'
+	| 'whenReady'
+> & {
+	/**
+	 * Raw awareness instance for this document scope.
+	 *
+	 * Uses a minimal wrapper (`{ raw }`) so document and workspace scopes
+	 * share the same structural contract for `withExtension()` factories.
+	 */
+	awareness: { raw: Awareness };
+};
+
 /**
  * A handle to an open content Y.Doc, returned by `documents.open()`.
  *
- * All operations are scoped to this specific document. Content methods
- * (read, write) are synchronous because the Y.Doc is already open.
- * Exports are a property, not a function, because they belong to this doc.
+ * Computed from `DocumentClient` minus lifecycle control. The handle IS the
+ * timeline—all read, write, and mode conversion methods are available directly.
+ * Extension exports are accessed via `handle.extensions`.
+ *
+ * When `TDocExtensions` is specified (after generic threading), extension access
+ * is fully typed. Without generics, extensions are accessible but untyped.
+ *
+ * @typeParam TDocExtensions - Accumulated document extension exports.
+ *   Defaults to `Record<string, unknown>` for untyped access.
+ *
+ * @example
+ * ```typescript
+ * const handle = await documents.open(id);
+ * handle.read();                          // read from timeline (always string)
+ * handle.write('hello');                   // write to timeline (mode-aware)
+ * handle.asText();                         // Y.Text for editor binding
+ * handle.currentType;                      // current content type
+ * handle.extensions.persistence?.whenReady; // extension access
+ * ```
  */
-export type DocumentHandle = {
-	/** The raw Y.Doc — escape hatch for custom operations (timelines, binary, sheets). */
-	ydoc: Y.Doc;
-
-	/** Read the document's text content (from `ydoc.getText('content')`). */
-	read(): string;
-
-	/** Replace the document's text content. */
-	write(text: string): void;
-
-	/**
-	 * Per-doc extension exports, keyed by extension name.
-	 *
-	 * Each key corresponds to a document extension registered via
-	 * `withDocumentExtension()`. The value is that extension's `exports` object.
-	 *
-	 * @example
-	 * ```typescript
-	 * const handle = await documents.open(guid);
-	 * await handle.exports.persistence?.clearData?.();
-	 * ```
-	 */
-	exports: Record<string, Record<string, unknown>>;
+export type DocumentHandle<
+	TDocExtensions extends Record<string, unknown> = Record<string, unknown>,
+	TAwarenessDefs extends AwarenessDefinitions = Record<string, never>,
+> = Omit<DocumentClient<TDocExtensions>, 'dispose'> & {
+	/** Typed awareness helper scoped to this document. */
+	awareness: AwarenessHelper<TAwarenessDefs>;
 };
 
 /**
@@ -297,7 +351,7 @@ export type DocumentHandle = {
  * @example
  * ```typescript
  * const handle = await documents.open(row);
- * handle.ydoc.getText('body').insert(0, 'hello');
+ * handle.write('hello');
  * // updatedAt on the row is bumped automatically
  *
  * const text = handle.read();
@@ -305,7 +359,11 @@ export type DocumentHandle = {
  * await documents.close(row);
  * ```
  */
-export type Documents<TRow extends BaseRow> = {
+export type Documents<
+	TRow extends BaseRow,
+	TDocExtensions extends Record<string, unknown> = Record<string, unknown>,
+	TAwarenessDefs extends AwarenessDefinitions = Record<string, never>,
+> = {
 	/**
 	 * Open a content Y.Doc for a row.
 	 *
@@ -315,7 +373,9 @@ export type Documents<TRow extends BaseRow> = {
 	 *
 	 * @param input - A row (extracts GUID from the bound column) or a GUID string
 	 */
-	open(input: TRow | string): Promise<DocumentHandle>;
+	open(
+		input: TRow | string,
+	): Promise<DocumentHandle<TDocExtensions, TAwarenessDefs>>;
 
 	/**
 	 * Close a document — free memory, disconnect providers.
@@ -326,7 +386,7 @@ export type Documents<TRow extends BaseRow> = {
 	close(input: TRow | string): Promise<void>;
 
 	/**
-	 * Close all open documents. Called automatically by workspace destroy().
+	 * Close all open documents. Called automatically by workspace dispose().
 	 */
 	closeAll(): Promise<void>;
 };
@@ -344,17 +404,53 @@ export type HasDocuments<T> = T extends { documents: infer TDocuments }
 	: false;
 
 /**
+ * Extract all document names across all tables.
+ *
+ * Collects all document names (from `.withDocument()` calls) into a union
+ * for type-safe autocomplete in `withDocumentExtension()` factory context.
+ *
+ * @example
+ * ```typescript
+ * // Given tables with .withDocument('content') and .withDocument('body'):
+ * type Names = AllDocumentNames<typeof tables>;
+ * // => 'content' | 'body'
+ * ```
+ */
+export type AllDocumentNames<TTableDefs extends TableDefinitions> = {
+	[K in keyof TTableDefs]: TTableDefs[K] extends {
+		documents: infer TDocuments;
+	}
+		? keyof TDocuments & string
+		: never;
+}[keyof TTableDefs];
+
+/**
  * Extract the document map for a single table definition.
  *
  * Maps each doc name to a `Documents<TLatest>` where `TLatest` is the
  * table's latest row type (inferred from the `migrate` function's return type).
  */
-export type DocumentsOf<T> = T extends {
+export type DocumentsOf<
+	T,
+	TDocExtensions extends Record<string, unknown> = Record<string, unknown>,
+> = T extends {
 	documents: infer TDocuments;
 	migrate: (...args: never[]) => infer TLatest;
 }
 	? TLatest extends BaseRow
-		? { [K in keyof TDocuments]: Documents<TLatest> }
+		? {
+				[K in keyof TDocuments]: Documents<
+					TLatest,
+					TDocExtensions,
+					TDocuments[K] extends DocumentConfig<
+						string,
+						BaseRow,
+						infer TAwarenessDefs
+					>
+						? TAwarenessDefs
+						: Record<string, never>
+				>;
+			}
 		: never
 	: never;
 
@@ -373,12 +469,15 @@ export type DocumentsOf<T> = T extends {
  * client.documents.tags // Property 'tags' does not exist
  * ```
  */
-export type DocumentsHelper<TTableDefinitions extends TableDefinitions> = {
+export type DocumentsHelper<
+	TTableDefinitions extends TableDefinitions,
+	TDocExtensions extends Record<string, unknown> = Record<string, unknown>,
+> = {
 	[K in keyof TTableDefinitions as HasDocuments<
 		TTableDefinitions[K]
 	> extends true
 		? K
-		: never]: DocumentsOf<TTableDefinitions[K]>;
+		: never]: DocumentsOf<TTableDefinitions[K], TDocExtensions>;
 };
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -386,31 +485,49 @@ export type DocumentsHelper<TTableDefinitions extends TableDefinitions> = {
 // ════════════════════════════════════════════════════════════════════════════
 
 /**
- * A KV definition created by `defineKv(schema)` or `defineKv(v1, v2, ...).migrate(fn)`
+ * A KV definition created by `defineKv(schema, defaultValue)`.
  *
- * @typeParam TVersions - Tuple of schema versions
+ * ## KV vs Tables: Different Data, Different Strategy
+ *
+ * Tables accumulate rows that must survive schema changes—migration is mandatory.
+ * Each row carries a `_v` version discriminant, and `defineTable(v1, v2).migrate(fn)`
+ * transforms old rows to the latest shape on read.
+ *
+ * KV stores hold scalar preferences (toggles, font sizes, selected options) where
+ * resetting to default is acceptable. There is no `_v` field, no migration function,
+ * and no version history. When a KV schema changes, either:
+ * - The old value still validates (e.g., widening an enum)—no action needed
+ * - The old value fails validation—`defaultValue` is returned automatically
+ *
+ * ## The `defaultValue` Contract
+ *
+ * `defaultValue` is returned whenever `get()` cannot produce a valid value:
+ * - **Key missing** — the value has never been set (initial state)
+ * - **Validation fails** — the stored value doesn't match the current schema
+ *
+ * The default is never written to storage. It exists only at read time, which
+ * avoids polluting CRDT history and prevents initialization races on multi-device sync.
+ *
+ * @typeParam TSchema - The schema for this KV entry
+ *
+ * @example
+ * ```typescript
+ * // Scalar preference — resets to 'light' if stored value is invalid
+ * const theme = defineKv(type("'light' | 'dark' | 'system'"), 'light');
+ *
+ * // Boolean toggle — resets to false if missing or corrupt
+ * const sidebar = defineKv(type('boolean'), false);
+ * ```
  */
-export type KvDefinition<TVersions extends readonly CombinedStandardSchema[]> =
-	{
-		schema: CombinedStandardSchema<
-			unknown,
-			StandardSchemaV1.InferOutput<TVersions[number]>
-		>;
-		migrate: (
-			value: StandardSchemaV1.InferOutput<TVersions[number]>,
-		) => StandardSchemaV1.InferOutput<LastSchema<TVersions>>;
-	};
+export type KvDefinition<TSchema extends CombinedStandardSchema> = {
+	schema: TSchema;
+	defaultValue: StandardSchemaV1.InferOutput<TSchema>;
+};
 
 /** Extract the value type from a KvDefinition */
 export type InferKvValue<T> =
-	T extends KvDefinition<infer V>
-		? StandardSchemaV1.InferOutput<LastSchema<V>>
-		: never;
-
-/** Extract the version union type from a KvDefinition */
-export type InferKvVersionUnion<T> =
-	T extends KvDefinition<infer V>
-		? StandardSchemaV1.InferOutput<V[number]>
+	T extends KvDefinition<infer TSchema>
+		? StandardSchemaV1.InferOutput<TSchema>
 		: never;
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -434,6 +551,7 @@ export type InferKvVersionUnion<T> =
  *
  * @typeParam TRow - The fully-typed row shape for this table (extends `{ id: string }`)
  */
+
 export type TableHelper<TRow extends BaseRow> = {
 	// ═══════════════════════════════════════════════════════════════════════
 	// PARSE
@@ -464,6 +582,39 @@ export type TableHelper<TRow extends BaseRow> = {
 	 * @param row - The complete row to write (must include `id`)
 	 */
 	set(row: TRow): void;
+
+	/**
+	 * Insert or replace many rows with chunked transactions and progress reporting.
+	 *
+	 * Use this for large imports (1K+ rows) where you need:
+	 * - Non-blocking UI (yields to the event loop between chunks)
+	 * - Progress feedback (onProgress callback)
+	 * - Bounded memory (one observer fire per chunk, not one giant batch)
+	 *
+	 * For small batches (< 100 rows), prefer `workspace.batch()` instead:
+	 * ```typescript
+	 * workspace.batch(() => rows.forEach((row) => table.set(row)));
+	 * ```
+	 *
+	 * Each chunk runs in its own Y.js transaction. The observer fires once per
+	 * chunk, keeping memory bounded. Default chunk size (1000) targets < 16ms
+	 * per chunk on typical hardware.
+	 *
+	 * @example
+	 * ```typescript
+	 * await table.bulkSet(importedRows, {
+	 * 	chunkSize: 1000,
+	 * 	onProgress: (pct) => progressBar.update(pct),
+	 * });
+	 * ```
+	 */
+	bulkSet(
+		rows: TRow[],
+		options?: {
+			chunkSize?: number;
+			onProgress?: (percent: number) => void;
+		},
+	): Promise<void>;
 
 	// ═══════════════════════════════════════════════════════════════════════
 	// READ (validates + migrates to latest)
@@ -553,11 +704,38 @@ export type TableHelper<TRow extends BaseRow> = {
 	/**
 	 * Delete a single row by ID.
 	 *
-	 * If the row doesn't exist locally, returns `{ status: 'not_found_locally' }`.
+	 * Fire-and-forget — matches Y.Map.delete() semantics. If the row
+	 * doesn't exist locally, this is a silent no-op.
 	 *
 	 * @param id - The row ID to delete
 	 */
-	delete(id: string): DeleteResult;
+	delete(id: string): void;
+
+	/**
+	 * Delete many rows by ID with chunked operations and progress reporting.
+	 *
+	 * Unlike calling `delete(id)` in a loop (which scans the array per call — O(n²)
+	 * for N deletions), `bulkDelete` collects all matching entries in a single scan
+	 * and removes them in batch. For 10K deletions, this is ~10x faster.
+	 *
+	 * Use this for purge operations (1K+ rows). For small batches (< 100 rows),
+	 * calling `delete(id)` in a `workspace.batch()` is simpler and fine.
+	 *
+	 * @example
+	 * ```typescript
+	 * const staleIds = table.filter((r) => r.archived).map((r) => r.id);
+	 * await table.bulkDelete(staleIds, {
+	 * 	onProgress: (pct) => console.log(`${Math.round(pct * 100)}% deleted`),
+	 * });
+	 * ```
+	 */
+	bulkDelete(
+		ids: string[],
+		options?: {
+			chunkSize?: number;
+			onProgress?: (percent: number) => void;
+		},
+	): Promise<void>;
 
 	/**
 	 * Delete all rows from the table.
@@ -574,18 +752,20 @@ export type TableHelper<TRow extends BaseRow> = {
 	/**
 	 * Watch for row changes.
 	 *
-	 * The callback receives a `Set<string>` of row IDs that changed. To
+	 * The callback receives a `ReadonlySet<TRow['id']>` of row IDs that changed. To
 	 * determine what happened, call `table.get(id)`:
 	 * - `status === 'not_found'` → the row was deleted
 	 * - Otherwise → the row was added or updated
 	 *
-	 * Changes are batched per Y.Transaction.
+	 * Changes are batched per Y.Transaction. The `origin` parameter exposes
+	 * the transaction origin for distinguishing local writes (`null`) from remote syncs.
+	 * Encryption lifecycle events (activate/deactivate) pass `undefined`.
 	 *
-	 * @param callback - Receives changed IDs and the Y.Transaction
+	 * @param callback - Receives changed IDs and optional transaction origin
 	 * @returns Unsubscribe function
 	 */
 	observe(
-		callback: (changedIds: Set<string>, transaction: unknown) => void,
+		callback: (changedIds: ReadonlySet<TRow['id']>, origin?: unknown) => void,
 	): () => void;
 
 	// ═══════════════════════════════════════════════════════════════════════
@@ -615,9 +795,8 @@ export type TableHelper<TRow extends BaseRow> = {
 export type AwarenessDefinitions = Record<string, CombinedStandardSchema>;
 
 /** Extract the output type of an awareness field's schema. */
-export type InferAwarenessValue<T> = T extends StandardSchemaV1
-	? StandardSchemaV1.InferOutput<T>
-	: never;
+export type InferAwarenessValue<T> =
+	T extends CombinedStandardSchema<unknown, infer TOutput> ? TOutput : never;
 
 /**
  * The composed state type — all fields optional since peers may not have set every field.
@@ -687,6 +866,31 @@ export type AwarenessHelper<TDefs extends AwarenessDefinitions> = {
 	getAll(): Map<number, AwarenessState<TDefs>>;
 
 	/**
+	 * Get all remote peers' awareness states.
+	 *
+	 * Unlike `getAll()`, this method:
+	 * - Excludes the local client (self)
+	 * - Includes peers with zero valid fields (connected but haven't published identity)
+	 *
+	 * Use this for presence UIs and peer discovery. Each peer has a `clientId`
+	 * plus any validated awareness fields. Peers that haven't set awareness fields
+	 * appear with an empty state object—they're connected, just anonymous.
+	 *
+	 * @example
+	 * ```typescript
+	 * // Workspace: find all connected desktop clients
+	 * const desktops = [...client.awareness.peers()]
+	 *   .filter(([, state]) => state.client === 'desktop');
+	 *
+	 * // Document: show collaborator cursors
+	 * for (const [clientId, state] of handle.awareness.peers()) {
+	 *   if (state.cursor) renderCursor(clientId, state.cursor, state.color);
+	 * }
+	 * ```
+	 */
+	peers(): Map<number, AwarenessState<TDefs>>;
+
+	/**
 	 * Watch for awareness changes.
 	 * Callback receives a map of clientIDs to change type.
 	 * Returns unsubscribe function.
@@ -733,30 +937,125 @@ export type TablesHelper<TTableDefinitions extends TableDefinitions> = {
 	>;
 };
 
-/** KV helper with dictionary-style access */
+/**
+ * KV helper with dictionary-style access to typed key-value entries.
+ *
+ * All methods are keyed by the string keys defined in the workspace's `kv` map.
+ * Values are validated against their schema on read; invalid or missing values
+ * silently fall back to `defaultValue` (see {@link KvDefinition} for the full contract).
+ *
+ * @example
+ * ```typescript
+ * // Read — always returns T, never undefined
+ * const fontSize = client.kv.get('theme.fontSize');
+ *
+ * // Write — value is type-checked against the key's schema
+ * client.kv.set('theme.fontSize', 16);
+ *
+ * // React to changes
+ * const unsub = client.kv.observe('theme.fontSize', (change) => {
+ *   if (change.type === 'set') console.log('New size:', change.value);
+ * });
+ * ```
+ */
 export type KvHelper<TKvDefinitions extends KvDefinitions> = {
-	/** Get a value by key (validates + migrates). */
+	/**
+	 * Get a KV value by key.
+	 *
+	 * Always returns a valid `T`—never `undefined`, never a discriminated union.
+	 * The return value depends on the state of the underlying Yjs store:
+	 *
+	 * - **Stored + valid**: returns the stored value as-is
+	 * - **Stored + invalid**: returns `defaultValue` (schema mismatch, corrupt data)
+	 * - **Missing**: returns `defaultValue` (key never set)
+	 *
+	 * This is intentionally simpler than table `get()`, which returns a
+	 * `{ status, row }` discriminated union. KV entries are scalar preferences
+	 * where falling back to a sensible default is always acceptable.
+	 */
 	get<K extends keyof TKvDefinitions & string>(
 		key: K,
-	): KvGetResult<InferKvValue<TKvDefinitions[K]>>;
+	): InferKvValue<TKvDefinitions[K]>;
 
-	/** Set a value by key (always latest schema). */
+	/**
+	 * Set a KV value by key.
+	 *
+	 * Writes the value to the Yjs doc via LWW (last-writer-wins) semantics.
+	 * No runtime validation—TypeScript enforces the correct type at compile time.
+	 * The value is immediately visible to local `get()` calls and propagated
+	 * to all connected peers via Yjs sync.
+	 */
 	set<K extends keyof TKvDefinitions & string>(
 		key: K,
 		value: InferKvValue<TKvDefinitions[K]>,
 	): void;
 
-	/** Delete a value by key. */
+	/**
+	 * Delete a KV value by key.
+	 *
+	 * After deletion, `get()` returns `defaultValue` until a new value is set.
+	 * The delete is propagated to all connected peers via Yjs sync.
+	 */
 	delete<K extends keyof TKvDefinitions & string>(key: K): void;
 
-	/** Watch for changes to a key. Returns unsubscribe function. */
+	/**
+	 * Watch for changes to a single KV key. Returns an unsubscribe function.
+	 *
+	 * The callback fires with `{ type: 'set', value }` when the key is written
+	 * or `{ type: 'delete' }` when it's removed. Invalid values (schema mismatch)
+	 * are silently skipped—the callback only fires for valid state transitions.
+	 *
+	 * @param key - The KV key to observe
+	 * @param callback - Receives the change event and the transaction origin
+	 * @returns Unsubscribe function
+	 */
 	observe<K extends keyof TKvDefinitions & string>(
 		key: K,
 		callback: (
 			change: KvChange<InferKvValue<TKvDefinitions[K]>>,
-			transaction: unknown,
+			origin?: unknown,
 		) => void,
 	): () => void;
+
+	/**
+	 * Watch for changes to any KV key. Returns unsubscribe function.
+	 *
+	 * Fires once per Y.Transaction with all changed keys batched into a single Map.
+	 * Invalid values and unknown keys are skipped. Only valid, parsed changes
+	 * are included in the callback.
+	 *
+	 * Useful for bulk reactivity (e.g., syncing all settings to a SvelteMap)
+	 * without registering per-key observers.
+	 *
+	 * @param callback - Receives a Map of changed keys to their KvChange, plus the transaction origin
+	 * @returns Unsubscribe function
+	 */
+	observeAll(
+		callback: (
+			changes: Map<keyof TKvDefinitions & string, KvChange<unknown>>,
+			origin?: unknown,
+		) => void,
+	): () => void;
+
+	/**
+	 * Get all KV values as a plain record.
+	 *
+	 * Returns every defined key with its current value. Keys that have never
+	 * been set return their `defaultValue` from the KV definition. Invalid
+	 * stored values (schema mismatch) also fall back to `defaultValue`.
+	 *
+	 * Useful for seeding an initial snapshot (e.g., materializer KV export)
+	 * before subscribing to `observeAll()` for incremental changes.
+	 *
+	 * @example
+	 * ```typescript
+	 * const snapshot = kv.getAll();
+	 * // { theme: 'dark', fontSize: 14, sidebarOpen: true }
+	 * ```
+	 */
+	getAll(): {
+		[K in keyof TKvDefinitions & string]: InferKvValue<TKvDefinitions[K]>;
+	};
 };
 
 /**
@@ -776,29 +1075,6 @@ export type WorkspaceDefinition<
 	kv?: TKvDefinitions;
 	/** Record of awareness field schemas. Each field has its own StandardSchemaV1 schema. */
 	awareness?: TAwarenessDefinitions;
-};
-
-/**
- * A workspace client with actions attached via `.withActions()`.
- *
- * This is an intersection of the base `WorkspaceClient` and `{ actions: TActions }`.
- * It is terminal — no more builder methods are available after `.withActions()`.
- */
-export type WorkspaceClientWithActions<
-	TId extends string,
-	TTableDefs extends TableDefinitions,
-	TKvDefs extends KvDefinitions,
-	TAwarenessDefinitions extends AwarenessDefinitions,
-	TExtensions extends Record<string, unknown>,
-	TActions extends Actions,
-> = WorkspaceClient<
-	TId,
-	TTableDefs,
-	TKvDefs,
-	TAwarenessDefinitions,
-	TExtensions
-> & {
-	actions: TActions;
 };
 
 /**
@@ -831,6 +1107,7 @@ export type WorkspaceClientWithActions<
  *   }));
  * ```
  */
+
 export type WorkspaceClientBuilder<
 	TId extends string,
 	TTableDefinitions extends TableDefinitions,
@@ -838,13 +1115,17 @@ export type WorkspaceClientBuilder<
 	TAwarenessDefinitions extends AwarenessDefinitions,
 	TExtensions extends Record<string, unknown> = Record<string, never>,
 	TDocExtensions extends Record<string, unknown> = Record<string, never>,
+	TActions extends Actions = Record<string, never>,
 > = WorkspaceClient<
 	TId,
 	TTableDefinitions,
 	TKvDefinitions,
 	TAwarenessDefinitions,
-	TExtensions
+	TExtensions,
+	TDocExtensions
 > & {
+	/** Accumulated actions from `.withActions()` calls. Empty object when none declared. */
+	actions: TActions;
 	/**
 	 * Register an extension for BOTH the workspace Y.Doc AND all content document Y.Docs.
 	 *
@@ -853,7 +1134,7 @@ export type WorkspaceClientBuilder<
 	 * for persistence, sync, broadcast, or any extension that should apply everywhere.
 	 *
 	 * For workspace-only extensions, use {@link withWorkspaceExtension}.
-	 * For document-only extensions (with optional tag filtering), use {@link withDocumentExtension}.
+	 * For document-only extensions, use {@link withDocumentExtension}.
 	 *
 	 * @param key - Unique name for this extension (used as the key in `.extensions`)
 	 * @param factory - Factory receiving the client-so-far context, returns flat exports
@@ -861,7 +1142,6 @@ export type WorkspaceClientBuilder<
 	 *
 	 * @example
 	 * ```typescript
-	 * // One call covers both workspace and document persistence:
 	 * const client = createWorkspace(definition)
 	 *   .withExtension('persistence', indexeddbPersistence)
 	 *   .withExtension('sync', createSyncExtension({ ... }));
@@ -869,17 +1149,10 @@ export type WorkspaceClientBuilder<
 	 */
 	withExtension<TKey extends string, TExports extends Record<string, unknown>>(
 		key: TKey,
-		factory: (
-			context: ExtensionContext<
-				TId,
-				TTableDefinitions,
-				TKvDefinitions,
-				TAwarenessDefinitions,
-				TExtensions
-			>,
-		) => TExports & {
+		factory: (context: SharedExtensionContext) => TExports & {
 			whenReady?: Promise<unknown>;
-			destroy?: () => MaybePromise<void>;
+			dispose?: () => MaybePromise<void>;
+			clearLocalData?: () => MaybePromise<void>;
 		},
 	): WorkspaceClientBuilder<
 		TId,
@@ -887,8 +1160,13 @@ export type WorkspaceClientBuilder<
 		TKvDefinitions,
 		TAwarenessDefinitions,
 		TExtensions &
-			Record<TKey, Extension<Omit<TExports, 'whenReady' | 'destroy'>>>,
-		TDocExtensions & Record<TKey, Omit<TExports, 'whenReady' | 'destroy'>>
+			Record<
+				TKey,
+				Extension<Omit<TExports, 'whenReady' | 'dispose' | 'clearLocalData'>>
+			>,
+		TDocExtensions &
+			Record<TKey, Omit<TExports, 'whenReady' | 'dispose' | 'clearLocalData'>>,
+		TActions
 	>;
 
 	/**
@@ -896,20 +1174,16 @@ export type WorkspaceClientBuilder<
 	 *
 	 * The factory fires once at build time for the workspace doc. It does NOT
 	 * fire for content documents opened via `documents.open()`. Use this when
-	 * an extension is genuinely workspace-scoped (analytics, telemetry) and
-	 * should not run per-document.
+	 * an extension needs workspace-specific context (tables, kv, awareness) or
+	 * is genuinely workspace-scoped (SQLite index, analytics).
 	 *
 	 * Most consumers want {@link withExtension} (both scopes) instead.
-	 *
-	 * @param key - Unique name for this extension
-	 * @param factory - Factory receiving the client-so-far context, returns flat exports
-	 * @returns A new builder with the extension's exports added to the workspace type only
 	 *
 	 * @example
 	 * ```typescript
 	 * createWorkspace(definition)
-	 *   .withExtension('persistence', indexeddbPersistence)        // both scopes
-	 *   .withWorkspaceExtension('analytics', analyticsExtension);  // workspace only
+	 *   .withExtension('persistence', indexeddbPersistence)
+	 *   .withWorkspaceExtension('sqliteIndex', createSqliteIndex());
 	 * ```
 	 */
 	withWorkspaceExtension<
@@ -927,7 +1201,8 @@ export type WorkspaceClientBuilder<
 			>,
 		) => TExports & {
 			whenReady?: Promise<unknown>;
-			destroy?: () => MaybePromise<void>;
+			dispose?: () => MaybePromise<void>;
+			clearLocalData?: () => MaybePromise<void>;
 		},
 	): WorkspaceClientBuilder<
 		TId,
@@ -935,32 +1210,34 @@ export type WorkspaceClientBuilder<
 		TKvDefinitions,
 		TAwarenessDefinitions,
 		TExtensions &
-			Record<TKey, Extension<Omit<TExports, 'whenReady' | 'destroy'>>>,
-		TDocExtensions
+			Record<
+				TKey,
+				Extension<Omit<TExports, 'whenReady' | 'dispose' | 'clearLocalData'>>
+			>,
+		TDocExtensions,
+		TActions
 	>;
 
 	/**
-	 * Register a document extension that fires when content Y.Docs are opened
-	 * via a table's documents manager.
+	 * Register a document extension that fires when content Y.Docs are opened.
 	 *
-	 * Document extensions are separate from workspace extensions — they operate on
-	 * content Y.Docs (not the workspace Y.Doc). Use optional `{ tags }` to target
-	 * specific document types declared via `withDocument(..., { tags })`.
+	 * Document extensions operate on content Y.Docs (not the workspace Y.Doc).
+	 * Every registered factory fires for every document opened via `documents.open()`.
 	 *
-	 * If no `tags` option is provided, the extension is universal (fires for all content documents).
-	 * If `tags` is provided, the extension fires only for documents whose tags share at
-	 * least one value with the extension's tags (set intersection).
+	 * To skip specific documents, inspect `ctx.tableName` or `ctx.documentName`
+	 * in your factory and return `void` (the factory's return type allows this).
 	 *
-	 * @param key - Unique name for this document extension (independent namespace from workspace extensions)
-	 * @param factory - Factory function receiving DocumentContext, returns Extension or void
-	 * @param options - Optional tag filter for targeting specific document types
-	 * @returns A new builder with the document extension key accumulated
+	 * @param key - Unique name for this document extension
+	 * @param factory - Factory receiving DocumentContext, returns Extension or void to skip
 	 *
 	 * @example
 	 * ```typescript
-	 * createWorkspace({ id: 'app', tables: { notes } })
-	 *   .withExtension('persistence', workspacePersistence)
-	 *   .withDocumentExtension('persistence', indexeddbPersistence, { tags: ['persistent'] })
+	 * createWorkspace({ id: 'app', tables: { files, notes } })
+	 *   .withExtension('persistence', indexeddbPersistence)
+	 *   .withDocumentExtension('sync', (ctx) => {
+	 *     if (ctx.documentName === 'thumbnail') return; // skip ephemeral docs
+	 *     return ySweetSync(ctx);
+	 *   });
 	 * ```
 	 */
 	withDocumentExtension<
@@ -968,54 +1245,63 @@ export type WorkspaceClientBuilder<
 		TDocExports extends Record<string, unknown>,
 	>(
 		key: K,
-		factory: (context: DocumentContext<TDocExtensions>) =>
+		factory: (
+			context: DocumentContext<TDocExtensions> & {
+				tableName: keyof TTableDefinitions & string;
+				documentName: AllDocumentNames<TTableDefinitions>;
+			},
+		) =>
 			| (TDocExports & {
 					whenReady?: Promise<unknown>;
-					destroy?: () => MaybePromise<void>;
+					dispose?: () => MaybePromise<void>;
+					clearLocalData?: () => MaybePromise<void>;
 			  })
 			| void,
-		options?: { tags?: ExtractAllDocumentTags<TTableDefinitions>[] },
 	): WorkspaceClientBuilder<
 		TId,
 		TTableDefinitions,
 		TKvDefinitions,
 		TAwarenessDefinitions,
 		TExtensions,
-		TDocExtensions & Record<K, Omit<TDocExports, 'whenReady' | 'destroy'>>
+		TDocExtensions &
+			Record<K, Omit<TDocExports, 'whenReady' | 'dispose' | 'clearLocalData'>>,
+		TActions
 	>;
 
 	/**
-	 * Attach actions to the workspace client. Terminal — no more chaining after this.
+	 * Attach actions to the workspace client.
 	 *
-	 * Actions use a single map (not chaining) because they don't build on each other
-	 * and are always defined by the app author. The ergonomic benefit of declaring
-	 * all actions in one place outweighs the progressive composition that extensions need.
+	 * Non-terminal—the returned builder still supports `.withExtension()` and further
+	 * `.withActions()` calls. This allows extension-independent actions to be declared
+	 * before extensions in the chain.
 	 *
-	 * @param factory - Receives the finalized client, returns an actions map
-	 * @returns Client with actions attached (no more builder methods)
+	 * Multiple `.withActions()` calls shallow-merge their action trees (later calls
+	 * overwrite earlier keys at the top level).
+	 *
+	 * @param factory - Receives the client-so-far, returns an actions map
+	 * @returns A new builder with actions attached (still chainable)
 	 */
-	withActions<TActions extends Actions>(
+	withActions<TNewActions extends Actions>(
 		factory: (
 			client: WorkspaceClient<
 				TId,
 				TTableDefinitions,
 				TKvDefinitions,
 				TAwarenessDefinitions,
-				TExtensions
+				TExtensions,
+				TDocExtensions
 			>,
-		) => TActions,
-	): WorkspaceClientWithActions<
+		) => TNewActions,
+	): WorkspaceClientBuilder<
 		TId,
 		TTableDefinitions,
 		TKvDefinitions,
 		TAwarenessDefinitions,
 		TExtensions,
-		TActions
+		TDocExtensions,
+		TActions & TNewActions
 	>;
 };
-
-// Re-export Extension for convenience
-export type { Extension } from './lifecycle.js';
 
 // ════════════════════════════════════════════════════════════════════════════
 // EXTENSION TYPES
@@ -1024,7 +1310,7 @@ export type { Extension } from './lifecycle.js';
 /**
  * Context passed to workspace extension factories.
  *
- * This is a `WorkspaceClient` minus `destroy` and `[Symbol.asyncDispose]` —
+ * This is a `WorkspaceClient` minus lifecycle methods (`dispose`,
  * extension factories receive the full client surface but don't control
  * the workspace's lifecycle. They return their own lifecycle hooks instead.
  *
@@ -1053,13 +1339,39 @@ export type ExtensionContext<
 		TAwarenessDefinitions,
 		TExtensions
 	>,
-	'destroy' | typeof Symbol.asyncDispose
+	'dispose' | typeof Symbol.asyncDispose
 >;
+
+/**
+ * Context shared by workspace and document extension scopes.
+ *
+ * Used by `withExtension()`, which registers the same factory for both scopes.
+ * This type is intentionally standalone (not `Pick<ExtensionContext, ...>`) because
+ * workspace awareness is strongly typed (`AwarenessHelper<TDefs>`) while document
+ * awareness uses a scope-specific helper. The only guarantee both scopes share is
+ * a raw awareness instance (`{ raw: Awareness }`).
+ *
+ * If a factory needs workspace-specific fields (tables, full typed awareness, etc.),
+ * use `withWorkspaceExtension()`. For document-specific fields (timeline),
+ * use `withDocumentExtension()`.
+ *
+ * ```typescript
+ * // Sync needs ydoc + raw awareness — works for both scopes:
+ * .withExtension('sync', ({ ydoc, awareness, whenReady }) => {
+ *   return createProvider({ doc: ydoc, awareness: awareness.raw, whenReady });
+ * })
+ * ```
+ */
+export type SharedExtensionContext = {
+	ydoc: Y.Doc;
+	awareness: { raw: Awareness };
+	whenReady: Promise<void>;
+};
 
 /**
  * Factory function that creates an extension.
  *
- * Returns a flat object with custom exports + optional `whenReady` and `destroy`.
+ * Returns a flat object with custom exports + optional `whenReady` and `dispose`.
  * The framework normalizes defaults via `defineExtension()`.
  *
  * @example Simple extension (works with any workspace)
@@ -1069,7 +1381,7 @@ export type ExtensionContext<
  *   return {
  *     provider,
  *     whenReady: provider.whenReady,
- *     destroy: () => provider.destroy(),
+ *     dispose: () => provider.dispose(),
  *   };
  * };
  * ```
@@ -1080,7 +1392,8 @@ export type ExtensionFactory<
 	TExports extends Record<string, unknown> = Record<string, unknown>,
 > = (context: ExtensionContext) => TExports & {
 	whenReady?: Promise<unknown>;
-	destroy?: () => MaybePromise<void>;
+	dispose?: () => MaybePromise<void>;
+	clearLocalData?: () => MaybePromise<void>;
 };
 
 /** The workspace client returned by createWorkspace() */
@@ -1090,6 +1403,7 @@ export type WorkspaceClient<
 	TKvDefinitions extends KvDefinitions,
 	TAwarenessDefinitions extends AwarenessDefinitions,
 	TExtensions extends Record<string, unknown>,
+	TDocExtensions extends Record<string, unknown> = Record<string, unknown>,
 > = {
 	/** Workspace identifier */
 	id: TId;
@@ -1104,7 +1418,7 @@ export type WorkspaceClient<
 	/** Typed table helpers — pure CRUD, no document management */
 	tables: TablesHelper<TTableDefinitions>;
 	/** Document managers — only tables with `.withDocument()` appear here */
-	documents: DocumentsHelper<TTableDefinitions>;
+	documents: DocumentsHelper<TTableDefinitions, TDocExtensions>;
 	/** Typed KV helper */
 	kv: KvHelper<TKvDefinitions>;
 	/** Typed awareness helper — always present, like tables and kv */
@@ -1116,7 +1430,7 @@ export type WorkspaceClient<
 	 * Access exports directly — no wrapper:
 	 *
 	 * ```typescript
-	 * client.extensions.persistence.clearData();
+	 * client.extensions.persistence.clearLocalData();
 	 * client.extensions.sqlite.db.query('SELECT ...');
 	 * ```
 	 *
@@ -1167,12 +1481,74 @@ export type WorkspaceClient<
 	 *
 	 */
 	batch(fn: () => void): void;
+	/**
+	 * Apply a binary Y.js update to the underlying document.
+	 *
+	 * Use this to hydrate the workspace from a persisted snapshot (e.g. a `.yjs`
+	 * file on disk) without exposing the raw Y.Doc to consumer code.
+	 *
+	 * @param update - A Uint8Array produced by `Y.encodeStateAsUpdate()` or equivalent
+	 */
+	loadSnapshot(update: Uint8Array): void;
 
-	/** Promise resolving when all extensions are ready */
+	/**
+	 * Apply encryption keys to all stores.
+	 *
+	 * Decodes base64 user keys, derives per-workspace keys via HKDF-SHA256,
+	 * and activates encryption on all stores. Once activated, stores permanently
+	 * refuse plaintext writes — the only reset path is `clearLocalData()`.
+	 *
+	 * This method is synchronous — HKDF via @noble/hashes and XChaCha20 via
+	 * @noble/ciphers are both sync. Call it after persistence is ready but
+	 * before connecting sync.
+	 *
+	 * @param keys - Non-empty array of versioned user keys from the auth session
+	 *
+	 * @example
+	 * ```typescript
+	 * await workspace.whenReady;
+	 * workspace.applyEncryptionKeys(session.encryptionKeys);
+	 * workspace.extensions.sync.connect();
+	 * ```
+	 */
+	applyEncryptionKeys(keys: EncryptionKeys): void;
+
+	/**
+	 * Wipe local workspace data.
+	 *
+	 * Calls extension `clearLocalData()` hooks in LIFO order.
+	 */
+	clearLocalData(): Promise<void>;
+
+	/**
+	 * Resolves when all extensions have finished initializing.
+	 *
+	 * This is a composite promise—it resolves when every extension's individual
+	 * `whenReady` has resolved. Use it as a render gate in UI frameworks to
+	 * avoid showing the app before data is loaded.
+	 *
+	 * @example
+	 * ```svelte
+	 * {#await client.whenReady}
+	 *   <Loading />
+	 * {:then}
+	 *   <App />
+	 * {/await}
+	 * ```
+	 */
 	whenReady: Promise<void>;
 
-	/** Cleanup all resources */
-	destroy(): Promise<void>;
+	/**
+	 * Release all resources—data is preserved on disk.
+	 *
+	 * Calls `dispose()` on every extension in LIFO order (last registered, first disposed).
+	 * Stops observers, closes database connections, disconnects sync providers.
+	 *
+	 * After calling, the client is unusable.
+	 *
+	 * Safe to call multiple times (idempotent).
+	 */
+	dispose(): Promise<void>;
 
 	/** Async dispose support */
 	[Symbol.asyncDispose](): Promise<void>;
@@ -1180,12 +1556,14 @@ export type WorkspaceClient<
 
 /**
  * Type alias for any workspace client (used for duck-typing in CLI/server).
- *
- * Uses `WorkspaceClient & { actions?: Actions }` rather than `WorkspaceClientWithActions`
- * because `WorkspaceClientWithActions` requires `actions: TActions` (non-optional) —
- * it can't express "might or might not have actions."
  */
-// biome-ignore lint/suspicious/noExplicitAny: intentional variance-friendly type
-export type AnyWorkspaceClient = WorkspaceClient<any, any, any, any, any> & {
+export type AnyWorkspaceClient = WorkspaceClient<
+	string,
+	TableDefinitions,
+	KvDefinitions,
+	AwarenessDefinitions,
+	Record<string, unknown>,
+	Record<string, unknown>
+> & {
 	actions?: Actions;
 };

@@ -1,10 +1,12 @@
 {
 	"name": "@epicenter/landing",
+	"description": "Public landing site for Epicenter",
 	"private": true,
 	"type": "module",
 	"version": "0.0.1",
 	"scripts": {
-		"dev": "astro dev",
+		"dev": "bun run dev:local",
+		"dev:local": "astro dev",
 		"build": "astro build",
 		"preview": "astro preview",
 		"astro": "astro",
@@ -27,5 +29,6 @@
 		"@lucide/astro": "^0.536.0",
 		"@tailwindcss/typography": "catalog:",
 		"typescript": "catalog:"
-	}
+	},
+	"license": "MIT"
 }

@@ -6,8 +6,9 @@
  * validated against a Standard Schema on every read from storage — invalid
  * data silently falls back to the default.
  *
- * Follows Svelte 5 convention: `.current` accessor (same as `fromStore`,
- * `MediaQuery`, `ReactiveValue`).
+ * Two read channels: `.current` for reactive template bindings (may be the
+ * fallback before chrome.storage loads) and `.get()` for authoritative async
+ * reads that wait for the real value.
  *
  * @example
  * ```typescript
@@ -19,9 +20,12 @@
  *   schema: type('string'),
  * });
  *
- * // In a component:
+ * // Reactive read (may be fallback before load):
  * // <p>{serverUrl.current}</p>
  * // <input bind:value={serverUrl.current} />
+ * //
+ * // Authoritative read (waits for chrome.storage):
+ * // const url = await serverUrl.get();
  * ```
  */
 
@@ -76,6 +80,15 @@ export function createStorageState<TSchema extends StandardSchemaV1>(
 	 */
 	let writesInFlight = 0;
 
+	/**
+	 * External change watchers — notified when chrome.storage changes
+	 * from another extension context (NOT from our own writes).
+	 *
+	 * Inherits the same `writesInFlight` suppression as the internal
+	 * `item.watch` — only genuinely external mutations fire callbacks.
+	 */
+	const externalWatchers = new Set<(newValue: T) => void>();
+
 	// Async init — load persisted value from chrome.storage.
 	// Exposes a promise so consumers can await readiness before reading.
 	const whenReady = item.getValue().then((persisted) => {
@@ -87,6 +100,7 @@ export function createStorageState<TSchema extends StandardSchemaV1>(
 	item.watch((newValue) => {
 		if (writesInFlight > 0) return;
 		value = validate(newValue) ?? fallback;
+		for (const watcher of externalWatchers) watcher(value);
 	});
 
 	/** Persist a value and track the in-flight write. */
@@ -104,7 +118,12 @@ export function createStorageState<TSchema extends StandardSchemaV1>(
 	};
 
 	return {
-		/** Current reactive value. Starts as `fallback`, updates once loaded. */
+		/**
+		 * Reactive value for Svelte template bindings.
+		 *
+		 * Starts as `fallback` before chrome.storage loads.
+		 * Use `.get()` for imperative reads that need the real value.
+		 */
 		get current(): T {
 			return value;
 		},
@@ -119,6 +138,26 @@ export function createStorageState<TSchema extends StandardSchemaV1>(
 		},
 
 		/**
+		 * Authoritative read — waits for chrome.storage to load, then returns the real value.
+		 *
+		 * Unlike `.current` (which returns the fallback before chrome.storage loads),
+		 * `.get()` guarantees the returned value is from storage. Use this in imperative
+		 * code (boot scripts, closures, event handlers) — `.current` is for templates.
+		 *
+		 * @example
+		 * ```typescript
+		 * const cached = await session.get();
+		 * if (cached) {
+		 *   console.log('Cached session:', cached.token);
+		 * }
+		 * ```
+		 */
+		async get(): Promise<T> {
+			await whenReady;
+			return value;
+		},
+
+		/**
 		 * Awaitable set — updates UI immediately, resolves once persisted.
 		 * Useful when callers need to know the write completed.
 		 */
@@ -130,9 +169,26 @@ export function createStorageState<TSchema extends StandardSchemaV1>(
 		/**
 		 * Resolves once the initial value has been loaded from chrome.storage.
 		 *
-		 * Await this before reading `.current` in async code paths where the
-		 * fallback value would cause incorrect behavior (e.g. auth token checks).
+		 * Prefer `.get()` for one-off reads. `whenReady` is useful when composing
+		 * multiple stores' readiness (e.g. `Promise.all([a.whenReady, b.whenReady])`).
 		 */
 		whenReady,
+
+		/**
+		 * Watch for external changes from other extension contexts.
+		 *
+		 * Only fires when chrome.storage is mutated externally (e.g. sign-out
+		 * in a popup reflects in the sidebar). Writes from this context are
+		 * suppressed — use reactive `$effect` or `$derived` over `.current`
+		 * when you need to react to local changes.
+		 *
+		 * @returns Unsubscribe function
+		 */
+		watch(callback: (value: T) => void): () => void {
+			externalWatchers.add(callback);
+			return () => {
+				externalWatchers.delete(callback);
+			};
+		},
 	};
 }

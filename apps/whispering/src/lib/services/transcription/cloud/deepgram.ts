@@ -2,7 +2,6 @@ import { type } from 'arktype';
 import { Ok, type Result } from 'wellcrafted/result';
 import { WhisperingErr, type WhisperingError } from '$lib/result';
 import { HttpServiceLive } from '$lib/services/http';
-import type { Settings } from '$lib/settings';
 
 const MAX_FILE_SIZE_MB = 500 as const; // Deepgram supports larger files
 
@@ -24,7 +23,7 @@ export const DeepgramTranscriptionServiceLive = {
 		options: {
 			prompt: string;
 			temperature: string;
-			outputLanguage: Settings['transcription.outputLanguage'];
+			outputLanguage: string;
 			apiKey: string;
 			modelName: string;
 		},

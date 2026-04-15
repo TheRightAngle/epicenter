@@ -1,21 +1,42 @@
 {
 	"name": "@epicenter/cli",
-	"version": "0.0.1",
+	"version": "0.1.0",
+	"description": "CLI for Epicenter workspaces. Inspect tables, query data, run actions, and manage sync from the terminal.",
+	"keywords": [
+		"local-first",
+		"CLI",
+		"epicenter",
+		"workspace",
+		"CRDT",
+		"offline-first",
+		"PKM",
+		"terminal"
+	],
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/EpicenterHQ/epicenter.git",
+		"directory": "packages/cli"
+	},
+	"homepage": "https://epicenter.so",
 	"main": "./src/index.ts",
 	"types": "./src/index.ts",
 	"bin": {
-		"epicenter": "./src/bin.ts"
+		"epicenter": "./bin/epicenter.mjs"
 	},
 	"dependencies": {
 		"@epicenter/workspace": "workspace:*",
-		"jsrepo": "catalog:",
 		"typebox": "catalog:",
 		"wellcrafted": "catalog:",
 		"yargs": "catalog:",
 		"yjs": "catalog:"
 	},
 	"devDependencies": {
+		"@epicenter/api": "workspace:*",
+		"@epicenter/honeycrisp": "workspace:*",
+		"@epicenter/tab-manager": "workspace:*",
 		"@types/yargs": "catalog:",
+		"arktype": "catalog:",
 		"typescript": "catalog:"
-	}
+	},
+	"license": "MIT"
 }

@@ -5,6 +5,13 @@
 	"compatibility_date": "2026-03-06",
 	"compatibility_flags": ["nodejs_compat"],
 	"send_metrics": false,
+	// --- Static assets: Dashboard SPA (built by SvelteKit adapter-static) ---
+	// Build first: cd apps/dashboard && bun run build
+	// Static files are served at their path. Hono handles SPA fallback for /dashboard/*.
+	"assets": {
+		"directory": "../dashboard/build",
+		"binding": "ASSETS"
+	},
 	// --- Custom domain: api.epicenter.so (auto-creates DNS record on deploy) ---
 	"routes": [
 		{
@@ -14,8 +21,8 @@
 	],
 	// --- Vars: non-secret config accessible via env ---
 	"vars": {
-		"BASE_URL": "https://api.epicenter.so",
-		"GOOGLE_CLIENT_ID": "702083743841-820rm0nhf9kslmvqcikecgkmku5agbbi.apps.googleusercontent.com"
+		"GOOGLE_CLIENT_ID": "702083743841-820rm0nhf9kslmvqcikecgkmku5agbbi.apps.googleusercontent.com",
+		"ADMIN_USER_IDS": ""
 	},
 	// --- KV: Session cache (Better Auth SecondaryStorage) ---
 	// Create with: bunx wrangler kv namespace create "epicenter-sessions"
@@ -49,11 +56,15 @@
 	"secrets": {
 		"required": [
 			"BETTER_AUTH_SECRET",
+			// ENCRYPTION_SECRETS: Separate from BETTER_AUTH_SECRET. Used to derive per-user
+			// encryption keys via HKDF. Format: "version:secret,version:secret" (e.g.
+			// "2:newBase64,1:oldBase64"). Generate each secret with: openssl rand -base64 32
+			"ENCRYPTION_SECRETS",
 			"GOOGLE_CLIENT_SECRET",
 			"OPENAI_API_KEY",
-			"ANTHROPIC_API_KEY"
-			// "GEMINI_API_KEY",
-			// "GROK_API_KEY"
+			"ANTHROPIC_API_KEY",
+			"AUTUMN_SECRET_KEY",
+			"GEMINI_API_KEY"
 		]
 	},
 	// --- Hyperdrive: Postgres connection pool ---
@@ -61,12 +72,19 @@
 	"hyperdrive": [
 		{
 			"binding": "HYPERDRIVE",
-			"id": "005e81db57f845f681cb9e27edec2809",
+			"id": "d1a10cd127d64897a9c817291fde043f",
 			"localConnectionString": "postgres://postgres:postgres@localhost:5432/epicenter"
+		}
+	],
+	// --- R2: Asset storage (images, PDFs) ---
+	"r2_buckets": [
+		{
+			"binding": "ASSETS_BUCKET",
+			"bucket_name": "epicenter-assets"
 		}
 	],
 	// Smart Placement: Run your Worker close to your database for lower latency
 	"placement": {
-		"region": "aws:us-east-2"
+		"region": "aws:eu-central-1"
 	}
 }

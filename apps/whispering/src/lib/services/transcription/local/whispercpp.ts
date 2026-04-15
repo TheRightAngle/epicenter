@@ -4,7 +4,7 @@ import { type } from 'arktype';
 import { extractErrorMessage } from 'wellcrafted/error';
 import { Ok, type Result, tryAsync } from 'wellcrafted/result';
 import { WhisperingErr, type WhisperingError } from '$lib/result';
-import type { Settings } from '$lib/settings';
+
 import { isModelFileSizeValid, type WhisperModelConfig } from './types';
 
 /**
@@ -71,9 +71,9 @@ export const WhisperCppTranscriptionServiceLive = {
 	async transcribe(
 		audioBlob: Blob,
 		options: {
-			outputLanguage: Settings['transcription.outputLanguage'];
+			outputLanguage: string;
 			modelPath: string;
-			prompt: Settings['transcription.prompt'];
+			prompt: string;
 		},
 	): Promise<Result<string, WhisperingError>> {
 		// Pre-validation

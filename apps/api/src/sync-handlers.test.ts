@@ -29,13 +29,11 @@ import {
 	encodeSyncStep2,
 	encodeSyncUpdate,
 	MESSAGE_TYPE,
-	SYNC_MESSAGE_TYPE,
 } from '@epicenter/sync';
 import { Awareness, encodeAwarenessUpdate } from 'y-protocols/awareness';
 import * as Y from 'yjs';
 import {
 	applyMessage,
-	type Connection,
 	computeInitialMessages,
 	type RoomContext,
 	registerConnection,
@@ -132,6 +130,7 @@ describe('computeInitialMessages', () => {
 		const { initialMessages } = setup();
 
 		expect(initialMessages.length).toBeGreaterThanOrEqual(1);
+		// biome-ignore lint/style/noNonNullAssertion: length asserted above
 		const decoded = decodeSyncMessage(initialMessages[0]!);
 		expect(decoded.type).toBe('step1');
 	});
@@ -145,6 +144,7 @@ describe('computeInitialMessages', () => {
 		const initialMessages = computeInitialMessages({ doc, awareness });
 
 		expect(initialMessages).toHaveLength(1);
+		// biome-ignore lint/style/noNonNullAssertion: length asserted above
 		expect(decodeMessageType(initialMessages[0]!)).toBe(MESSAGE_TYPE.SYNC);
 	});
 
@@ -156,7 +156,9 @@ describe('computeInitialMessages', () => {
 		const initialMessages = computeInitialMessages({ doc, awareness });
 
 		expect(initialMessages).toHaveLength(2);
+		// biome-ignore lint/style/noNonNullAssertion: length asserted above
 		expect(decodeMessageType(initialMessages[0]!)).toBe(MESSAGE_TYPE.SYNC);
+		// biome-ignore lint/style/noNonNullAssertion: length asserted above
 		expect(decodeMessageType(initialMessages[1]!)).toBe(MESSAGE_TYPE.AWARENESS);
 	});
 });
@@ -180,6 +182,7 @@ describe('registerConnection', () => {
 		);
 
 		expect(ws.sent.length).toBeGreaterThan(sentBefore);
+		// biome-ignore lint/style/noNonNullAssertion: length asserted above
 		expect(decodeMessageType(ws.sent[ws.sent.length - 1]!)).toBe(
 			MESSAGE_TYPE.SYNC,
 		);
@@ -226,10 +229,12 @@ describe('applyMessage — SYNC', () => {
 		const result = applyMessage({ data: step1Message, room, connection });
 
 		expect(result.error).toBeNull();
-		expect(result.data!.response).toBeDefined();
-
-		const decoded = decodeSyncMessage(result.data!.response!);
-		expect(decoded.type).toBe('step2');
+		expect(result.data).not.toBeNull();
+		expect(result.data!.action).toBe('reply');
+		if (result.data?.action === 'reply') {
+			const decoded = decodeSyncMessage(result.data.data);
+			expect(decoded.type).toBe('step2');
+		}
 	});
 
 	test('SyncStep2 from client applies update to server doc', () => {
@@ -244,7 +249,7 @@ describe('applyMessage — SYNC', () => {
 		const result = applyMessage({ data: step2Message, room, connection });
 
 		expect(result.error).toBeNull();
-		expect(result.data!.response).toBeUndefined();
+		expect(result.data).toBeNull();
 		expect(doc.getMap('data').get('client-key')).toBe('client-value');
 	});
 
@@ -259,11 +264,12 @@ describe('applyMessage — SYNC', () => {
 		});
 		sourceDoc.getMap('data').set('incremental', 'update-value');
 
+		// biome-ignore lint/style/noNonNullAssertion: updateV2 handler fires synchronously from .set() above
 		const updateMessage = encodeSyncUpdate({ update: capturedUpdate! });
 		const result = applyMessage({ data: updateMessage, room, connection });
 
 		expect(result.error).toBeNull();
-		expect(result.data!.response).toBeUndefined();
+		expect(result.data).toBeNull();
 		expect(doc.getMap('data').get('incremental')).toBe('update-value');
 	});
 });
@@ -274,7 +280,7 @@ describe('applyMessage — SYNC', () => {
 
 describe('applyMessage — AWARENESS', () => {
 	test('awareness update returns broadcast and persistAttachment effects', () => {
-		const { room, connection, awareness } = setup();
+		const { room, connection } = setup();
 
 		// Create a separate awareness to generate an update
 		const clientDoc = new Y.Doc();
@@ -292,11 +298,12 @@ describe('applyMessage — AWARENESS', () => {
 		const result = applyMessage({ data: message, room, connection });
 
 		expect(result.error).toBeNull();
-		expect(result.data!.broadcast).toBeDefined();
-		expect(decodeMessageType(result.data!.broadcast!)).toBe(
-			MESSAGE_TYPE.AWARENESS,
-		);
-		expect(result.data!.persistAttachment).toBe(true);
+		expect(result.data).not.toBeNull();
+		expect(result.data!.action).toBe('broadcast');
+		if (result.data?.action === 'broadcast') {
+			expect(decodeMessageType(result.data.data)).toBe(MESSAGE_TYPE.AWARENESS);
+			expect(result.data.shouldPersistAttachment).toBe(true);
+		}
 	});
 
 	test('awareness update is applied to the shared awareness instance', () => {
@@ -332,10 +339,11 @@ describe('applyMessage — QUERY_AWARENESS', () => {
 		const result = applyMessage({ data: message, room, connection });
 
 		expect(result.error).toBeNull();
-		expect(result.data?.response).toBeDefined();
-		expect(decodeMessageType(result.data?.response!)).toBe(
-			MESSAGE_TYPE.AWARENESS,
-		);
+		expect(result.data).not.toBeNull();
+		expect(result.data!.action).toBe('reply');
+		if (result.data?.action === 'reply') {
+			expect(decodeMessageType(result.data.data)).toBe(MESSAGE_TYPE.AWARENESS);
+		}
 	});
 
 	test('returns empty result when no awareness states exist', () => {
@@ -355,7 +363,7 @@ describe('applyMessage — QUERY_AWARENESS', () => {
 		const result = applyMessage({ data: message, room, connection });
 
 		expect(result.error).toBeNull();
-		expect(result.data!.response).toBeUndefined();
+		expect(result.data).toBeNull();
 	});
 });
 
@@ -372,6 +380,7 @@ describe('applyMessage — error handling', () => {
 		const result = applyMessage({ data: malformed, room, connection });
 
 		expect(result.error).not.toBeNull();
+		// biome-ignore lint/style/noNonNullAssertion: error is non-null (asserted above)
 		expect(result.error!.message).toContain(
 			'Failed to decode WebSocket message',
 		);
@@ -386,7 +395,7 @@ describe('applyMessage — error handling', () => {
 
 		// Unknown types return empty effects array with no error
 		expect(result.error).toBeNull();
-		expect(result.data!.response).toBeUndefined();
+		expect(result.data).toBeNull();
 	});
 });
 
@@ -455,7 +464,7 @@ describe('teardownConnection', () => {
 
 describe('multi-client broadcast', () => {
 	test('update from client A reaches client B via updateV2 handler', () => {
-		const { doc, room, ws1, connection1, ws2 } = setupTwoClients();
+		const { room, ws1, connection1, ws2 } = setupTwoClients();
 
 		// Clear initial messages from ws2.sent
 		const ws2SentBefore = ws2.sent.length;
@@ -469,6 +478,7 @@ describe('multi-client broadcast', () => {
 		});
 		sourceDoc.getMap('data').set('from-client-a', 'hello');
 
+		// biome-ignore lint/style/noNonNullAssertion: updateV2 handler fires synchronously from .set() above
 		const updateMessage = encodeSyncUpdate({ update: capturedUpdate! });
 		applyMessage({ data: updateMessage, room, connection: connection1 });
 
@@ -476,16 +486,17 @@ describe('multi-client broadcast', () => {
 		expect(ws2.sent.length).toBeGreaterThan(ws2SentBefore);
 
 		// The forwarded message should be a SYNC message
-		const lastSent = ws2.sent[ws2.sent.length - 1]!;
-		expect(decodeMessageType(lastSent)).toBe(MESSAGE_TYPE.SYNC);
+		// biome-ignore lint/style/noNonNullAssertion: length asserted above
+		expect(decodeMessageType(ws2.sent[ws2.sent.length - 1]!)).toBe(
+			MESSAGE_TYPE.SYNC,
+		);
 
 		// Client A's ws should NOT have received it (echo prevention)
 		expect(ws1.sent.length).toBe(ws1SentBefore);
 	});
 
 	test('awareness broadcast reaches other clients', () => {
-		const { room, ws1, connection1, ws2, connection2, awareness } =
-			setupTwoClients();
+		const { room, connection1, awareness } = setupTwoClients();
 
 		// Client A sends awareness update
 		const clientDoc = new Y.Doc();
@@ -504,7 +515,8 @@ describe('multi-client broadcast', () => {
 		});
 
 		// The broadcast field should be set for the DO to distribute
-		expect(result.data!.broadcast).toBeDefined();
+		expect(result.data).not.toBeNull();
+		expect(result.data!.action).toBe('broadcast');
 
 		// The awareness state should be applied to the shared instance
 		expect(awareness.getStates().has(clientAwareness.clientID)).toBe(true);
@@ -518,12 +530,7 @@ describe('multi-client broadcast', () => {
 describe('full handshake convergence', () => {
 	test('server content syncs to client via SyncStep1 → SyncStep2 exchange', () => {
 		// Server has content
-		const {
-			doc: serverDoc,
-			room,
-			connection,
-			initialMessages,
-		} = setup((d) => {
+		const { room, connection, initialMessages } = setup((d) => {
 			d.getMap('notes').set('note1', 'Hello from server');
 			d.getArray('items').push(['item-a', 'item-b']);
 		});
@@ -532,6 +539,7 @@ describe('full handshake convergence', () => {
 		const clientDoc = new Y.Doc();
 
 		// Step 1: Client receives server's SyncStep1 (from initialMessages)
+		// biome-ignore lint/style/noNonNullAssertion: setup() always returns at least one message
 		const serverStep1 = initialMessages[0]!;
 		const decoded = decodeSyncMessage(serverStep1);
 		expect(decoded.type).toBe('step1');
@@ -541,13 +549,16 @@ describe('full handshake convergence', () => {
 		const result = applyMessage({ data: clientStep1, room, connection });
 
 		expect(result.error).toBeNull();
-		expect(result.data!.response).toBeDefined();
+		expect(result.data).not.toBeNull();
+		expect(result.data!.action).toBe('reply');
 
 		// Step 3: Client applies server's SyncStep2 response
-		const decodedStep2 = decodeSyncMessage(result.data!.response!);
-		expect(decodedStep2.type).toBe('step2');
-		if (decodedStep2.type === 'step2') {
-			Y.applyUpdateV2(clientDoc, decodedStep2.update, 'server');
+		if (result.data?.action === 'reply') {
+			const decodedStep2 = decodeSyncMessage(result.data.data);
+			expect(decodedStep2.type).toBe('step2');
+			if (decodedStep2.type === 'step2') {
+				Y.applyUpdateV2(clientDoc, decodedStep2.update, 'server');
+			}
 		}
 
 		// Step 4: Client sends its SyncStep2 to server (client has nothing server needs)
@@ -578,12 +589,15 @@ describe('full handshake convergence', () => {
 		// Client sends SyncStep1 to server → gets SyncStep2 back
 		const clientStep1 = encodeSyncStep1({ doc: clientDoc });
 		const result1 = applyMessage({ data: clientStep1, room, connection });
-		expect(result1.data!.response).toBeDefined();
+		expect(result1.data).not.toBeNull();
+		expect(result1.data!.action).toBe('reply');
 
 		// Client applies server's diff
-		const serverDiff = decodeSyncMessage(result1.data!.response!);
-		if (serverDiff.type === 'step2') {
-			Y.applyUpdateV2(clientDoc, serverDiff.update, 'server');
+		if (result1.data?.action === 'reply') {
+			const serverDiff = decodeSyncMessage(result1.data.data);
+			if (serverDiff.type === 'step2') {
+				Y.applyUpdateV2(clientDoc, serverDiff.update, 'server');
+			}
 		}
 
 		// Client sends its full state to server (SyncStep2)

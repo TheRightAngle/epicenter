@@ -7,13 +7,13 @@ import { vadRecorder } from '$lib/state/vad-recorder.svelte';
 export function syncWindowAlwaysOnTopWithRecorderState() {
 	const getRecorderStateQuery = createQuery(() => ({
 		...rpc.recorder.getRecorderState.options,
-		enabled: settings.value['recording.mode'] === 'manual',
+		enabled: settings.get('recording.mode') === 'manual',
 	}));
 
 	$effect(() => {
 		const setAlwaysOnTop = (value: boolean) =>
 			getCurrentWindow().setAlwaysOnTop(value);
-		switch (settings.value['system.alwaysOnTop']) {
+		switch (settings.get('ui.alwaysOnTop')) {
 			case 'Always':
 				setAlwaysOnTop(true);
 				break;

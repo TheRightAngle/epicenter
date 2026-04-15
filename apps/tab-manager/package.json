@@ -1,13 +1,16 @@
 {
 	"name": "@epicenter/tab-manager",
+	"description": "Browser extension for managing tabs with workspace sync and AI chat",
 	"version": "0.0.1",
 	"type": "module",
 	"private": true,
 	"exports": {
-		"./workspace": "./src/lib/workspace.ts"
+		"./workspace": "./src/lib/workspace/index.ts"
 	},
 	"scripts": {
-		"dev": "wxt",
+		"dev": "bun run dev:local",
+		"dev:local": "wxt",
+		"dev:remote": "wxt --mode production",
 		"dev:firefox": "wxt -b firefox",
 		"build": "wxt build",
 		"build:firefox": "wxt build -b firefox",
@@ -17,33 +20,36 @@
 		"postinstall": "wxt prepare"
 	},
 	"dependencies": {
-		"@epicenter/ai": "workspace:*",
 		"@epicenter/constants": "workspace:*",
-		"@epicenter/sync-client": "workspace:*",
-		"@epicenter/workspace": "workspace:*",
+		"@epicenter/svelte": "workspace:*",
 		"@epicenter/ui": "workspace:*",
-		"better-auth": "catalog:",
+		"@epicenter/workspace": "workspace:*",
 		"@lucide/svelte": "catalog:",
 		"@tanstack/ai": "catalog:",
 		"@tanstack/ai-anthropic": "catalog:",
-		"@tanstack/ai-client": "^0.4.5",
-		"@tanstack/ai-gemini": "^0.5.0",
-		"@tanstack/ai-grok": "^0.5.0",
+		"@tanstack/ai-client": "^0.7.2",
+		"@tanstack/ai-gemini": "catalog:",
+		"@tanstack/ai-grok": "catalog:",
 		"@tanstack/ai-openai": "catalog:",
-		"@tanstack/ai-svelte": "^0.5.4",
+		"@tanstack/ai-svelte": "^0.6.7",
 		"@wxt-dev/storage": "^1.2.6",
 		"arktype": "catalog:",
-		"typebox": "catalog:",
+		"better-auth": "catalog:",
 		"clsx": "catalog:",
+		"dompurify": "^3.3.3",
 		"marked": "catalog:",
+		"mode-watcher": "^1.1.0",
+		"svelte-sonner": "^1.1.0",
 		"tailwind-merge": "catalog:",
-		"virtua": "^0.48.5",
+		"typebox": "catalog:",
+		"virtua": "catalog:",
 		"wellcrafted": "catalog:",
 		"y-indexeddb": "catalog:",
 		"yjs": "catalog:"
 	},
 	"devDependencies": {
 		"@standard-schema/spec": "catalog:",
+		"@epicenter/api": "workspace:*",
 		"@tailwindcss/vite": "catalog:",
 		"@types/node": "catalog:",
 		"@wxt-dev/module-svelte": "^2.0.3",
@@ -53,5 +59,6 @@
 		"typescript": "catalog:",
 		"vite": "catalog:",
 		"wxt": "^0.20.8"
-	}
+	},
+	"license": "MIT"
 }

@@ -14,14 +14,14 @@ import { describe, expect, test } from 'bun:test';
 import { createWorkspace } from '@epicenter/workspace';
 import type { FileId } from '../ids.js';
 import { filesTable } from '../table.js';
-import { FileTree } from './tree.js';
+import { createFileTree } from './tree.js';
 
 function setup() {
 	const ws = createWorkspace({ id: 'test', tables: { files: filesTable } });
-	return new FileTree(ws.tables.files);
+	return createFileTree(ws.tables.files);
 }
 
-describe('FileTree', () => {
+describe('createFileTree', () => {
 	describe('resolveId', () => {
 		test('root returns null', () => {
 			const tree = setup();
@@ -479,42 +479,10 @@ describe('FileTree', () => {
 		});
 	});
 
-	describe('childIds', () => {
-		test('returns child IDs from index', () => {
-			const tree = setup();
-			const id1 = tree.create({
-				name: 'a.txt',
-				parentId: null,
-				type: 'file',
-				size: 0,
-			});
-			const id2 = tree.create({
-				name: 'b.txt',
-				parentId: null,
-				type: 'file',
-				size: 0,
-			});
-			const ids = tree.childIds(null);
-			expect(ids).toContain(id1);
-			expect(ids).toContain(id2);
-		});
-
-		test('returns empty for parent with no children', () => {
-			const tree = setup();
-			const dirId = tree.create({
-				name: 'empty',
-				parentId: null,
-				type: 'folder',
-				size: 0,
-			});
-			expect(tree.childIds(dirId)).toEqual([]);
-		});
-	});
-
-	describe('destroy', () => {
+	describe('dispose', () => {
 		test('can be called without error', () => {
 			const tree = setup();
-			expect(() => tree.destroy()).not.toThrow();
+			expect(() => tree.dispose()).not.toThrow();
 		});
 	});
 });

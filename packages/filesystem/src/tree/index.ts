@@ -7,4 +7,4 @@ export {
 	createFileSystemIndex,
 	type FileSystemIndex,
 } from './path-index.js';
-export { FileTree } from './tree.js';
+export { createFileTree, type FileTree } from './tree.js';

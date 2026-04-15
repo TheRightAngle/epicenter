@@ -3,6 +3,10 @@ import mime from 'mime';
 /**
  * Gets the file extension for an audio MIME type, falling back to 'mp3' for unknown types.
  *
+ * The `mime` library's `getExtension()` already strips parameters (e.g.,
+ * `'audio/webm;codecs=opus'` → looks up `'audio/webm'`) and normalizes to lowercase,
+ * so no manual pre-processing is needed.
+ *
  * The 'mp3' fallback is intentional: transcription APIs (OpenAI, Groq, Mistral, etc.)
  * require a recognized audio extension to properly decode the file. MP3 is universally
  * supported and most APIs can auto-detect the actual format from the file contents.

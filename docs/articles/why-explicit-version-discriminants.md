@@ -9,9 +9,10 @@ We started with three ways to version table schemas. All worked. All had trade-o
 **Field presence** was the simplest. Check whether a field exists:
 
 ```typescript
-const posts = defineTable()
-	.version(type({ id: 'string', title: 'string' }))
-	.version(type({ id: 'string', title: 'string', views: 'number' }))
+const posts = defineTable(
+	type({ id: 'string', title: 'string' }),
+	type({ id: 'string', title: 'string', views: 'number' }),
+)
 	.migrate((row) => {
 		if (!('views' in row)) return { ...row, views: 0 };
 		return row;
@@ -23,9 +24,10 @@ This works for two versions. It breaks down at three: what if you add a field in
 **Asymmetric \_v** was the recommended default. Start without `_v`, add it when you need a second version:
 
 ```typescript
-const posts = defineTable()
-	.version(type({ id: 'string', title: 'string' }))
-	.version(type({ id: 'string', title: 'string', views: 'number', _v: '2' }))
+const posts = defineTable(
+	type({ id: 'string', title: 'string' }),
+	type({ id: 'string', title: 'string', views: 'number', _v: '2' }),
+)
 	.migrate((row) => {
 		if (!('_v' in row)) return { ...row, views: 0, _v: 2 };
 		return row;
@@ -37,9 +39,10 @@ Less ceremony upfront, which felt like a win. But it introduced a trap: v1 data 
 **Symmetric \_v** was the clean option. Include `_v` from the start:
 
 ```typescript
-const posts = defineTable()
-	.version(type({ id: 'string', title: 'string', _v: '1' }))
-	.version(type({ id: 'string', title: 'string', views: 'number', _v: '2' }))
+const posts = defineTable(
+	type({ id: 'string', title: 'string', _v: '1' }),
+	type({ id: 'string', title: 'string', views: 'number', _v: '2' }),
+)
 	.migrate((row) => {
 		switch (row._v) {
 			case 1:
@@ -83,7 +86,7 @@ It creates asymmetry. Tables would get auto-injected `_v`, but KV stores wouldn'
 
 We dropped three approaches down to one: symmetric `_v` from v1. If your table has versions, every version includes `_v`. Every write includes `_v`. Every migration uses `switch (row._v)`.
 
-The "start simple" argument for asymmetric `_v` lost out to a simpler observation: most tables never need versioning at all. The shorthand `defineTable(schema)` handles single-version tables with zero ceremony. The moment you need two versions, you're already opting into the builder pattern with `.version().migrate()`. Adding `_v` at that point is one field per schema, not a burden.
+The "start simple" argument for asymmetric `_v` lost out to a simpler observation: most tables never need versioning at all. The shorthand `defineTable(schema)` handles single-version tables with zero ceremony. The moment you need two versions, you're already opting into the variadic pattern with `defineTable(v1, v2).migrate()`. Adding `_v` at that point is one field per schema, not a burden.
 
 ## The DX Reframe
 

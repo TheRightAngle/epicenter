@@ -139,7 +139,7 @@ Phone has no local server, so it connects directly to all available sync nodes:
 ```typescript
 // phone/src/workspace.ts
 import { defineWorkspace } from '@epicenter/workspace/dynamic';
-import { createSyncExtension } from '@epicenter/workspace/extensions/sync';
+import { createSyncExtension } from '@epicenter/workspace/extensions/sync/websocket';
 import { SYNC_NODES } from './config/sync-nodes';
 
 export const blogWorkspace = defineWorkspace({
@@ -166,7 +166,7 @@ Browser connects to its own local server (localhost). The server handles cross-d
 ```typescript
 // desktop/browser/src/workspace.ts
 import { defineWorkspace } from '@epicenter/workspace/dynamic';
-import { createSyncExtension } from '@epicenter/workspace/extensions/sync';
+import { createSyncExtension } from '@epicenter/workspace/extensions/sync/websocket';
 import { SYNC_NODES } from './config/sync-nodes';
 
 export const blogWorkspace = defineWorkspace({
@@ -195,7 +195,7 @@ The server acts as BOTH:
 ```typescript
 // desktop/server/src/workspace.ts
 import { defineWorkspace } from '@epicenter/workspace/dynamic';
-import { createSyncExtension } from '@epicenter/workspace/extensions/sync';
+import { createSyncExtension } from '@epicenter/workspace/extensions/sync/websocket';
 import { SYNC_NODES } from './config/sync-nodes';
 
 export const blogWorkspace = defineWorkspace({
@@ -220,7 +220,7 @@ export const blogWorkspace = defineWorkspace({
 ```typescript
 // laptop/server/src/workspace.ts
 import { defineWorkspace } from '@epicenter/workspace/dynamic';
-import { createSyncExtension } from '@epicenter/workspace/extensions/sync';
+import { createSyncExtension } from '@epicenter/workspace/extensions/sync/websocket';
 import { SYNC_NODES } from './config/sync-nodes';
 
 export const blogWorkspace = defineWorkspace({
@@ -307,7 +307,7 @@ Each device should also use local persistence:
 
 ```typescript
 import { persistence } from '@epicenter/workspace/extensions/persistence';
-import { createSyncExtension } from '@epicenter/workspace/extensions/sync';
+import { createSyncExtension } from '@epicenter/workspace/extensions/sync/websocket';
 
 const workspace = defineWorkspace({
 	id: 'blog',

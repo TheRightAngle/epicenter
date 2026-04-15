@@ -1,3 +1,5 @@
+> **Status: Superseded** by `20260313T063000-workspace-architecture-decisions.md`. The Elysia sidecar was rewritten to Hono, then removed. The Bun app server in the main spec replaces this.
+
 # Bun Sidecar + Dynamic Workspace Modules
 
 **Date:** 2026-02-25

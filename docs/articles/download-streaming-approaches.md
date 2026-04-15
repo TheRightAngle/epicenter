@@ -210,4 +210,4 @@ The next time you're downloading large files in a Tauri (or Electron) app, remem
 
 ## Code Reference
 
-The implementation lives in [`LocalModelDownloadCard.svelte:140-177`](/Users/braden/Code/whispering/apps/whispering/src/lib/components/settings/LocalModelDownloadCard.svelte) if you want to see it in action.
+The implementation lives in [`LocalModelDownloadCard.svelte:140-177`](../../apps/whispering/src/lib/components/settings/LocalModelDownloadCard.svelte) if you want to see it in action.

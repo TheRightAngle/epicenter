@@ -8,7 +8,7 @@
 	let { id }: { id: string } = $props();
 
 	const audioUrlQuery = createQuery(
-		() => rpc.db.recordings.getAudioPlaybackUrl(() => id).options,
+		() => rpc.audio.getPlaybackUrl(() => id).options,
 	);
 
 	onDestroy(() => {

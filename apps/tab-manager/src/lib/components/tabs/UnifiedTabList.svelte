@@ -3,6 +3,7 @@
 	import { Button } from '@epicenter/ui/button';
 	import * as Empty from '@epicenter/ui/empty';
 	import * as Item from '@epicenter/ui/item';
+	import { toastOnError } from '@epicenter/ui/sonner';
 	import { cn } from '@epicenter/ui/utils';
 	import AppWindowIcon from '@lucide/svelte/icons/app-window';
 	import ChevronRightIcon from '@lucide/svelte/icons/chevron-right';
@@ -10,7 +11,6 @@
 	import FolderOpenIcon from '@lucide/svelte/icons/folder-open';
 	import RotateCcwIcon from '@lucide/svelte/icons/rotate-ccw';
 	import SearchIcon from '@lucide/svelte/icons/search';
-	import StarIcon from '@lucide/svelte/icons/star';
 	import Trash2Icon from '@lucide/svelte/icons/trash-2';
 	import { VList } from 'virtua/svelte';
 	import { bookmarkState } from '$lib/state/bookmark-state.svelte';
@@ -34,7 +34,11 @@
 		{#if unifiedViewState.isFiltering}
 			<Empty.Title>No matching tabs</Empty.Title>
 			<Empty.Description>
-				No tabs match "{unifiedViewState.searchQuery}"
+				{#if unifiedViewState.isRegex && unifiedViewState.isRegexInvalid}
+					Check your regular expression syntax
+				{:else}
+					No tabs match "{unifiedViewState.searchQuery}"
+				{/if}
 			</Empty.Description>
 		{:else}
 			<Empty.Title>No tabs found</Empty.Title>
@@ -95,7 +99,7 @@
 								variant="ghost"
 								size="icon-xs"
 								tooltip="Restore All"
-								onclick={() => savedTabState.actions.restoreAll()}
+								onclick={() => savedTabState.restoreAll().then(toastOnError)}
 							>
 								<RotateCcwIcon />
 							</Button>
@@ -104,7 +108,7 @@
 								size="icon-xs"
 								class="text-destructive"
 								tooltip="Delete All"
-								onclick={() => savedTabState.actions.removeAll()}
+								onclick={() => savedTabState.removeAll().then(toastOnError)}
 							>
 								<Trash2Icon />
 							</Button>
@@ -122,7 +126,7 @@
 					type="button"
 					onclick={() => {
 						if (!unifiedViewState.isFiltering) {
-							unifiedViewState.toggleWindow(item.window.id);
+						unifiedViewState.toggleWindow(item.window.id);
 						}
 					}}
 					class="sticky top-0 z-10 flex w-full cursor-pointer items-center gap-2 border-b bg-muted/50 px-4 py-2 text-sm text-muted-foreground backdrop-blur transition hover:bg-muted/80"
@@ -171,7 +175,7 @@
 								size="icon-xs"
 								tooltip="Restore"
 								onclick={() =>
-									savedTabState.actions.restore(tab)}
+								savedTabState.restore(tab).then(toastOnError)}
 							>
 								<RotateCcwIcon />
 							</Button>
@@ -181,7 +185,7 @@
 								class="text-destructive"
 								tooltip="Delete"
 								onclick={() =>
-									savedTabState.actions.remove(tab.id)}
+								savedTabState.remove(tab.id).then(toastOnError)}
 							>
 								<Trash2Icon />
 							</Button>
@@ -192,9 +196,7 @@
 				{@const bookmark = item.bookmark}
 				<div class="border-b border-border">
 					<Item.Root size="sm" class="hover:bg-accent/50">
-						<Item.Media>
-							<StarIcon class="size-4 text-amber-500" />
-						</Item.Media>
+						<Item.Media> <TabFavicon src={bookmark.favIconUrl} /> </Item.Media>
 
 						<Item.Content>
 							<Item.Title>
@@ -216,7 +218,7 @@
 								variant="ghost"
 								size="icon-xs"
 								tooltip="Open"
-								onclick={() => bookmarkState.actions.open(bookmark)}
+								onclick={() => bookmarkState.open(bookmark).then(toastOnError)}
 							>
 								<ExternalLinkIcon />
 							</Button>
@@ -225,7 +227,7 @@
 								size="icon-xs"
 								class="text-destructive"
 								tooltip="Delete"
-								onclick={() => bookmarkState.actions.remove(bookmark.id)}
+								onclick={() => bookmarkState.remove(bookmark.id).then(toastOnError)}
 							>
 								<Trash2Icon />
 							</Button>

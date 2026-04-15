@@ -2,7 +2,6 @@ import { Mistral } from '@mistralai/mistralai';
 import { Err, Ok, type Result, tryAsync, trySync } from 'wellcrafted/result';
 import { WhisperingErr, type WhisperingError } from '$lib/result';
 import { getAudioExtension } from '$lib/services/transcription/utils';
-import type { Settings } from '$lib/settings';
 
 const MAX_FILE_SIZE_MB = 25 as const;
 
@@ -12,7 +11,7 @@ export const MistralTranscriptionServiceLive = {
 		options: {
 			prompt: string;
 			temperature: string;
-			outputLanguage: Settings['transcription.outputLanguage'];
+			outputLanguage: string;
 			apiKey: string;
 			modelName: string;
 		},

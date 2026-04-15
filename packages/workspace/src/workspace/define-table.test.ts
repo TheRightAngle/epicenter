@@ -246,8 +246,6 @@ describe('defineTable', () => {
 	});
 
 	describe('withDocument', () => {
-		const noopUpdate = () => ({});
-
 		test('shorthand path adds documents to definition', () => {
 			const files = defineTable(
 				type({ id: 'string', name: 'string', updatedAt: 'number', _v: '1' }),
@@ -258,7 +256,6 @@ describe('defineTable', () => {
 
 			expect(files.documents.content.guid).toBe('id');
 			expect(typeof files.documents.content.onUpdate).toBe('function');
-			expect(files.documents.content.tags).toEqual([]);
 		});
 
 		test('builder path adds documents to definition', () => {
@@ -276,7 +273,6 @@ describe('defineTable', () => {
 
 			expect(notes.documents.content.guid).toBe('docId');
 			expect(typeof notes.documents.content.onUpdate).toBe('function');
-			expect(notes.documents.content.tags).toEqual([]);
 		});
 
 		test('multiple withDocument chains accumulate documents', () => {
@@ -310,45 +306,6 @@ describe('defineTable', () => {
 			);
 
 			expect(Object.keys(tags.documents)).toHaveLength(0);
-		});
-
-		test('withDocument accepts a single-element tag array', () => {
-			const files = defineTable(
-				type({ id: 'string', name: 'string', updatedAt: 'number', _v: '1' }),
-			).withDocument('content', {
-				guid: 'id',
-				onUpdate: () => ({ updatedAt: Date.now() }),
-				tags: ['persistent'],
-			});
-
-			expect(files.documents.content.guid).toBe('id');
-			expect(typeof files.documents.content.onUpdate).toBe('function');
-			expect(files.documents.content.tags).toEqual(['persistent']);
-		});
-
-		test('withDocument accepts an array of tags', () => {
-			const files = defineTable(
-				type({ id: 'string', name: 'string', updatedAt: 'number', _v: '1' }),
-			).withDocument('content', {
-				guid: 'id',
-				onUpdate: () => ({ updatedAt: Date.now() }),
-				tags: ['persistent', 'synced'] as const,
-			});
-
-			expect(files.documents.content.guid).toBe('id');
-			expect(typeof files.documents.content.onUpdate).toBe('function');
-			expect(files.documents.content.tags).toEqual(['persistent', 'synced']);
-		});
-
-		test('withDocument without tags defaults to empty array', () => {
-			const files = defineTable(
-				type({ id: 'string', name: 'string', updatedAt: 'number', _v: '1' }),
-			).withDocument('content', {
-				guid: 'id',
-				onUpdate: noopUpdate,
-			});
-
-			expect(files.documents.content.tags).toEqual([]);
 		});
 
 		test('withDocument preserves schema validation and migrate behavior', () => {

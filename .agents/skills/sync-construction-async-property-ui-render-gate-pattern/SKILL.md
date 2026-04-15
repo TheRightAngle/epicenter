@@ -1,6 +1,6 @@
 ---
 name: sync-construction-async-property-ui-render-gate-pattern
-description: Sync construction with async property pattern. Use when creating clients that need async initialization but must be exportable from modules and usable synchronously in UI components.
+description: Sync construction with async property pattern for module-exportable clients. Use when the user says "async init", "module-level async", or when creating clients that need async initialization but must be exportable from modules and usable synchronously in UI components.
 metadata:
   author: epicenter
   version: '1.0'
@@ -73,22 +73,41 @@ Construction returns immediately. The async initialization (loading from disk, c
 
 ## The UI Render Gate
 
-In Svelte, await once at the root:
+In Svelte, gate once at the root using `@epicenter/ui/spinner` for the loading state and `@epicenter/ui/empty` for error recovery:
 
 ```svelte
 <!-- +layout.svelte -->
 <script>
+	import * as Empty from '@epicenter/ui/empty';
+	import { Spinner } from '@epicenter/ui/spinner';
+	import TriangleAlertIcon from '@lucide/svelte/icons/triangle-alert';
 	import { client } from '$lib/client';
 </script>
 
 {#await client.whenSynced}
-	<LoadingSpinner />
+	<Empty.Root class="flex-1">
+		<Empty.Media>
+			<Spinner class="size-5 text-muted-foreground" />
+		</Empty.Media>
+		<Empty.Title>Loading…</Empty.Title>
+	</Empty.Root>
 {:then}
 	{@render children?.()}
-{/await}
+{:catch}
+	<Empty.Root class="flex-1">
+		<Empty.Media>
+			<TriangleAlertIcon class="size-8 text-muted-foreground" />
+		</Empty.Media>
+		<Empty.Title>Failed to load</Empty.Title>
+		<Empty.Description>
+			Something went wrong during initialization. Try reloading.
+		</Empty.Description>
+	</Empty.Root>
 ```
 
 The gate guarantees: by the time any child component's script runs, the async work is complete. Children use sync access without checking readiness.
+
+**Always include `{:catch}`** — if the async seed fails (e.g. `browser.windows.getAll` throws), the user sees an actionable error instead of an infinite spinner.
 
 ## Implementation
 

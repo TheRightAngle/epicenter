@@ -4,8 +4,6 @@
 	import { CopyButton } from '@epicenter/ui/copy-button';
 	import { Skeleton } from '@epicenter/ui/skeleton';
 	import { Spinner } from '@epicenter/ui/spinner';
-	import * as Tooltip from '@epicenter/ui/tooltip';
-	import AlertCircleIcon from '@lucide/svelte/icons/alert-circle';
 	import DownloadIcon from '@lucide/svelte/icons/download';
 	import EllipsisIcon from '@lucide/svelte/icons/ellipsis';
 	import FileStackIcon from '@lucide/svelte/icons/file-stack';
@@ -13,9 +11,11 @@
 	import RepeatIcon from '@lucide/svelte/icons/repeat';
 	import RotateCcwIcon from '@lucide/svelte/icons/rotate-ccw';
 	import TrashIcon from '@lucide/svelte/icons/trash-2';
-	import { createMutation, createQuery } from '@tanstack/svelte-query';
+	import { createMutation } from '@tanstack/svelte-query';
 	import { nanoid } from 'nanoid/non-secure';
 	import { rpc } from '$lib/query';
+	import { recordings } from '$lib/state/recordings.svelte';
+	import { transformationRuns } from '$lib/state/transformation-runs.svelte';
 	import { createCopyFn } from '$lib/utils/createCopyFn';
 	import { recordingActions } from '$lib/utils/recording-actions';
 	import { viewTransition } from '$lib/utils/viewTransitions';
@@ -33,15 +33,11 @@
 
 	let { recordingId }: { recordingId: string } = $props();
 
-	const latestTransformationRunByRecordingIdQuery = createQuery(
-		() => rpc.db.runs.getLatestByRecordingId(() => recordingId).options,
+	const latestRun = $derived(
+		transformationRuns.getLatestByRecordingId(recordingId),
 	);
 
-	const recordingQuery = createQuery(
-		() => rpc.db.recordings.getById(() => recordingId).options,
-	);
-
-	const recording = $derived(recordingQuery.data);
+	const recording = $derived(recordings.get(recordingId));
 </script>
 
 <div class="flex items-center gap-1">
@@ -115,29 +111,9 @@
 				.transcript}"
 		/>
 
-		{#if latestTransformationRunByRecordingIdQuery.isPending}
-			<Spinner />
-		{:else if latestTransformationRunByRecordingIdQuery.isError}
-			<Tooltip.Root>
-				<Tooltip.Trigger>
-					{#snippet child({ props })}
-						<AlertCircleIcon
-							class="text-red-500"
-							{...props}
-							id={viewTransition.recording(recordingId).transformationOutput}
-						/>
-					{/snippet}
-				</Tooltip.Trigger>
-				<Tooltip.Content class="max-w-xs text-center">
-					Error fetching latest transformation run output
-				</Tooltip.Content>
-			</Tooltip.Root>
-		{:else}
+		{#if latestRun?.status === 'completed'}
 			<CopyButton
-				text={latestTransformationRunByRecordingIdQuery.data?.status ===
-				'completed'
-					? latestTransformationRunByRecordingIdQuery.data.output
-					: ''}
+				text={latestRun.output}
 				copyFn={createCopyFn('latest transformation run output')}
 				style="view-transition-name: {viewTransition.recording(recordingId)
 					.transformationOutput}"

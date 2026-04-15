@@ -1,11 +1,24 @@
 ---
 name: writing-voice
-description: Voice and tone rules for all written content—prose, UI text, tooltips, error messages. Use when writing any user-facing text.
+description: Voice and tone rules for all written content—prose, UI text, tooltips, error messages. Use when the user says "fix the tone", "rewrite this", "sounds like AI", "sounds corporate", or when writing any user-facing text, landing pages, product copy, or open-source documentation.
+metadata:
+  author: epicenter
+  version: '1.0'
 ---
 
 # Writing Voice
 
 **Core principle**: Write for the ear, not just the eyes. Prose should be suitable to read out loud.
+
+## When to Apply This Skill
+
+Use this pattern when you need to:
+
+- Write user-facing text like UI copy, tooltips, error messages, or prose.
+- Rewrite text that sounds corporate, stilted, or AI-generated.
+- Explain technical concepts with concrete mechanisms instead of abstract claims.
+- Match the user's tone and pacing in responses.
+- Draft product/open-source writing with honest trade-offs and specifics.
 
 ## The Test
 
@@ -195,3 +208,48 @@ When the user provides example text or tone guidance, match it:
 - If they give 5 sentences, don't write 5 paragraphs
 - If they use direct statements, don't add narrative fluff
 - Match their energy, not a template
+
+## Financial Language
+
+Epicenter's primary goal is not to make money. Vision and mission come first. Financial sustainability exists to fund more open-source development and sponsor contributors—it's a means, not the point.
+
+When writing about how the project sustains itself, be cautious with language that sounds like a pitch deck. Avoid "revenue," "monetization," "ARR," dollar-figure valuations, and other tech bro jargon. Say "financial sustainability" or "sustaining the project" instead. Name companies like Grafana or Bitwarden as references, but drop the dollar figures—otherwise it reads as if we're chasing their numbers rather than explaining our approach.
+
+## Empathy for the Reader
+
+Technical writing works when the reader feels understood, not lectured. This means:
+
+- Acknowledge the reader's frustration before offering the fix. If a warning is confusing, say so. "This warning is confusing" costs nothing and builds trust.
+- Show the path they likely walked. If you found the answer after hitting the same wall, trace that path briefly. "You probably tried X, then Y, and ended up here"—this signals you understand their situation.
+- Respect their time by leading with the answer. Don't make them wade through context to find the fix. Give them the fix, then explain why it works.
+- Assume competence. Don't over-explain fundamentals. If someone is reading about `$derived` vs `$state`, they already know what reactivity is.
+- Present trade-offs honestly. Every solution has costs. Saying "this is perfect" when it has caveats will lose the reader's trust the moment they hit those caveats.
+- Write from beside them, not above them. "Here's what worked" reads differently than "The correct approach is". Both convey the same information; the first treats the reader as a peer.
+
+## Braden's Personal Voice
+
+These patterns come from actual HN posts and community interactions. They define how Epicenter sounds when Braden is writing.
+
+### Lead with your story, not the product
+
+Don't describe what the tool does in the abstract. Tell the reader why you built it. "I was paying $30/month for a transcription app. Then I did the math" is more compelling than "Epicenter reduces transcription costs." The product emerges from the story; the story doesn't serve the product.
+
+### Vulnerability builds trust
+
+"I just finished college and was about to move back with my parents" earns more credibility than any feature list. Admitting uncertainty ("It's not there yet regarding memory, but it's getting there") signals honesty. Don't perform confidence—show real progress and real gaps.
+
+### First person over generalized claims
+
+Write "I have a phone and a laptop" not "Most users have multiple devices." Write "I'm the kind of person who ends up back in a folder of markdown files" not "Many developers prefer plain text." Your experience is the evidence; generalizations are filler.
+
+### End with an invitation, not a summary
+
+Don't restate the thesis. End with a door: "Fork it, break it, ship your own version, copy whatever you want!" or "If you want to look at the code: [link]." The reader should feel invited to participate, not lectured at.
+
+### Specificity over superlatives
+
+"I use it for several hours a day, from coding to thinking out loud while carrying pizza boxes back from the office" is better than "I use it every day for everything." Specific details are memorable; superlatives are forgettable.
+
+### Casual honesty about competitors
+
+"There are plenty of transcription apps out there" and "one of my other OSS favorites is Handy" — acknowledge the ecosystem without trash-talking. Recommend alternatives genuinely. The confidence to name competitors signals you're not insecure about your position.

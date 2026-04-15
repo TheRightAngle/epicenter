@@ -5,194 +5,194 @@ import { generateFileId } from '../ids.js';
 import { posixResolve } from '../path.js';
 import type { FileRow } from '../table.js';
 import { assertUniqueName, validateName } from './naming.js';
-import { createFileSystemIndex, type FileSystemIndex } from './path-index.js';
+import { createFileSystemIndex } from './path-index.js';
 
 /**
- * Metadata tree operations for a POSIX-like virtual filesystem.
+ * Create metadata tree operations for a POSIX-like virtual filesystem.
  *
  * Owns the files table and the derived path/children indexes.
  * All methods work with absolute paths (never sees `cwd`).
  * Has no knowledge of file content — only structure and metadata.
  */
-export class FileTree {
-	readonly index: FileSystemIndex;
+export function createFileTree(filesTable: TableHelper<FileRow>) {
+	const index = createFileSystemIndex(filesTable);
 
-	constructor(private filesTable: TableHelper<FileRow>) {
-		this.index = createFileSystemIndex(filesTable);
-	}
+	return {
+		/** Reactive file-system indexes for path lookups and parent-child queries. */
+		index,
 
-	// ═══════════════════════════════════════════════════════════════════════
-	// LOOKUPS
-	// ═══════════════════════════════════════════════════════════════════════
+		// ═════════════════════════════════════════════════════════════════
+		// LOOKUPS
+		// ═════════════════════════════════════════════════════════════════
 
-	/**
-	 * Look up the `FileId` for a resolved absolute path.
-	 * Returns `null` for the root path `/` (which has no table row).
-	 * @throws ENOENT if the path doesn't exist in the index.
-	 */
-	resolveId(path: string): FileId | null {
-		if (path === '/') return null;
-		const id = this.index.getIdByPath(path);
-		if (!id) throw FS_ERRORS.ENOENT(path);
-		return id;
-	}
+		/**
+		 * Look up the `FileId` for a resolved absolute path.
+		 * Returns `null` for the root path `/` (which has no table row).
+		 *
+		 * @throws ENOENT if the path doesn't exist in the index.
+		 */
+		resolveId(path: string): FileId | null {
+			if (path === '/') return null;
+			const id = index.getIdByPath(path);
+			if (!id) throw FS_ERRORS.ENOENT(path);
+			return id;
+		},
 
-	/**
-	 * Look up the `FileId` for a path without throwing.
-	 * Returns `undefined` if the path doesn't exist.
-	 */
-	lookupId(path: string): FileId | undefined {
-		return this.index.getIdByPath(path);
-	}
+		/**
+		 * Look up the `FileId` for a path without throwing.
+		 * Returns `undefined` if the path doesn't exist.
+		 */
+		lookupId(path: string): FileId | undefined {
+			return index.getIdByPath(path);
+		},
 
-	/**
-	 * Fetch the `FileRow` for a given ID, throwing ENOENT if it's been
-	 * deleted or is otherwise invalid.
-	 */
-	getRow(id: FileId, path: string): FileRow {
-		const result = this.filesTable.get(id);
-		if (result.status !== 'valid') throw FS_ERRORS.ENOENT(path);
-		return result.row;
-	}
+		/**
+		 * Fetch the `FileRow` for a given ID, throwing ENOENT if it's been
+		 * deleted or is otherwise invalid.
+		 */
+		getRow(id: FileId, path: string): FileRow {
+			const result = filesTable.get(id);
+			if (result.status !== 'valid') throw FS_ERRORS.ENOENT(path);
+			return result.row;
+		},
 
-	/**
-	 * Split an absolute path into its parent ID and base name.
-	 * @throws ENOENT if the parent directory doesn't exist.
-	 */
-	parsePath(path: string): { parentId: FileId | null; name: string } {
-		const normalized = posixResolve('/', path);
-		const lastSlash = normalized.lastIndexOf('/');
-		const name = normalized.substring(lastSlash + 1);
-		const parentPath = normalized.substring(0, lastSlash) || '/';
-		if (parentPath === '/') return { parentId: null, name };
-		const parentId = this.index.getIdByPath(parentPath);
-		if (!parentId) throw FS_ERRORS.ENOENT(parentPath);
-		return { parentId, name };
-	}
+		/**
+		 * Split an absolute path into its parent ID and base name.
+		 *
+		 * @throws ENOENT if the parent directory doesn't exist.
+		 */
+		parsePath(path: string): { parentId: FileId | null; name: string } {
+			const normalized = posixResolve('/', path);
+			const lastSlash = normalized.lastIndexOf('/');
+			const name = normalized.substring(lastSlash + 1);
+			const parentPath = normalized.substring(0, lastSlash) || '/';
+			if (parentPath === '/') return { parentId: null, name };
+			const parentId = index.getIdByPath(parentPath);
+			if (!parentId) throw FS_ERRORS.ENOENT(parentPath);
+			return { parentId, name };
+		},
 
-	/** Assert that a resolved ID points to a directory (root `/` always passes). */
-	assertDirectory(id: FileId | null, path: string): void {
-		if (id === null) return;
-		const row = this.getRow(id, path);
-		if (row.type !== 'folder') throw FS_ERRORS.ENOTDIR(path);
-	}
+		/** Assert that a resolved ID points to a directory (root `/` always passes). */
+		assertDirectory(id: FileId | null, path: string): void {
+			if (id === null) return;
+			const row = this.getRow(id, path);
+			if (row.type !== 'folder') throw FS_ERRORS.ENOTDIR(path);
+		},
 
-	// ═══════════════════════════════════════════════════════════════════════
-	// QUERIES
-	// ═══════════════════════════════════════════════════════════════════════
+		// ═════════════════════════════════════════════════════════════════
+		// QUERIES
+		// ═════════════════════════════════════════════════════════════════
 
-	/** Get the child IDs of a parent (null = root). */
-	childIds(parentId: FileId | null): FileId[] {
-		return this.index.getChildIds(parentId);
-	}
-
-	/** Filter child IDs down to non-trashed, valid rows. */
-	activeChildren(parentId: FileId | null): FileRow[] {
-		const ids = this.index.getChildIds(parentId);
-		const rows: FileRow[] = [];
-		for (const cid of ids) {
-			const result = this.filesTable.get(cid);
-			if (result.status === 'valid' && result.row.trashedAt === null) {
-				rows.push(result.row);
+		/**
+		 * Get valid child rows of a parent (null = root).
+		 *
+		 * The index only contains active (non-trashed) child IDs, so the
+		 * only check needed is row validity (structural integrity).
+		 */
+		activeChildren(parentId: FileId | null): FileRow[] {
+			const ids = index.getChildIds(parentId);
+			const rows: FileRow[] = [];
+			for (const cid of ids) {
+				const result = filesTable.get(cid);
+				if (result.status === 'valid') {
+					rows.push(result.row);
+				}
 			}
-		}
-		return rows;
-	}
+			return rows;
+		},
 
-	/**
-	 * Collect all active descendant IDs of a folder (recursive).
-	 * Returns a flat array of IDs — the caller decides what to do with them.
-	 */
-	descendantIds(parentId: FileId): FileId[] {
-		const result: FileId[] = [];
-		const children = this.index.getChildIds(parentId);
-		for (const cid of children) {
-			const row = this.filesTable.get(cid);
-			if (row.status !== 'valid' || row.row.trashedAt !== null) continue;
-			result.push(cid);
-			if (row.row.type === 'folder') {
-				result.push(...this.descendantIds(cid));
+		/**
+		 * Collect all active descendant IDs of a folder (recursive).
+		 * Returns a flat array of IDs — the caller decides what to do with them.
+		 */
+		descendantIds(parentId: FileId): FileId[] {
+			const result: FileId[] = [];
+			const children = index.getChildIds(parentId);
+			for (const cid of children) {
+				const row = filesTable.get(cid);
+				if (row.status !== 'valid') continue;
+				result.push(cid);
+				if (row.row.type === 'folder') {
+					result.push(...this.descendantIds(cid));
+				}
 			}
-		}
-		return result;
-	}
+			return result;
+		},
 
-	exists(path: string): boolean {
-		return path === '/' || this.index.hasPath(path);
-	}
+		/** Check whether a path exists in the index (root `/` always exists). */
+		exists(path: string): boolean {
+			return path === '/' || index.hasPath(path);
+		},
 
-	allPaths(): string[] {
-		return this.index.allPaths();
-	}
+		/** Get all indexed paths. */
+		allPaths(): string[] {
+			return index.allPaths();
+		},
 
-	// ═══════════════════════════════════════════════════════════════════════
-	// MUTATIONS
-	// ═══════════════════════════════════════════════════════════════════════
+		// ═════════════════════════════════════════════════════════════════
+		// MUTATIONS
+		// ═════════════════════════════════════════════════════════════════
 
-	/** Create a new file or folder. Validates name and uniqueness. Returns the new FileId. */
-	create(opts: {
-		name: string;
-		parentId: FileId | null;
-		type: 'file' | 'folder';
-		size: number;
-	}): FileId {
-		validateName(opts.name);
-		assertUniqueName(
-			this.filesTable,
-			this.index.getChildIds(opts.parentId),
-			opts.name,
-		);
-		const id = generateFileId();
-		this.filesTable.set({
-			id,
-			name: opts.name,
-			parentId: opts.parentId,
-			type: opts.type,
-			size: opts.size,
-			createdAt: Date.now(),
-			updatedAt: Date.now(),
-			trashedAt: null,
-			_v: 1,
-		});
-		return id;
-	}
+		/**
+		 * Create a new file or folder. Validates name and uniqueness.
+		 *
+		 * @returns The new FileId.
+		 */
+		create(opts: {
+			name: string;
+			parentId: FileId | null;
+			type: 'file' | 'folder';
+			size: number;
+		}): FileId {
+			validateName(opts.name);
+			assertUniqueName(filesTable, index.getChildIds(opts.parentId), opts.name);
+			const id = generateFileId();
+			filesTable.set({
+				id,
+				name: opts.name,
+				parentId: opts.parentId,
+				type: opts.type,
+				size: opts.size,
+				createdAt: Date.now(),
+				updatedAt: Date.now(),
+				trashedAt: null,
+				_v: 1,
+			});
+			return id;
+		},
 
-	/** Soft-delete a file or folder by setting trashedAt. */
-	softDelete(id: FileId): void {
-		this.filesTable.update(id, { trashedAt: Date.now() });
-	}
+		/** Soft-delete a file or folder by setting `trashedAt`. */
+		softDelete(id: FileId): void {
+			filesTable.update(id, { trashedAt: Date.now() });
+		},
 
-	/** Move/rename a file or folder. Validates name and uniqueness. */
-	move(id: FileId, newParentId: FileId | null, newName: string): void {
-		validateName(newName);
-		assertUniqueName(
-			this.filesTable,
-			this.index.getChildIds(newParentId),
-			newName,
-			id,
-		);
-		this.filesTable.update(id, {
-			name: newName,
-			parentId: newParentId,
-			updatedAt: Date.now(),
-		});
-	}
+		/** Move/rename a file or folder. Validates name and uniqueness. */
+		move(id: FileId, newParentId: FileId | null, newName: string): void {
+			validateName(newName);
+			assertUniqueName(filesTable, index.getChildIds(newParentId), newName, id);
+			filesTable.update(id, {
+				name: newName,
+				parentId: newParentId,
+				updatedAt: Date.now(),
+			});
+		},
 
-	/** Update size and updatedAt after a content write. */
-	touch(id: FileId, size: number): void {
-		this.filesTable.update(id, { size, updatedAt: Date.now() });
-	}
+		/** Update size and `updatedAt` after a content write. */
+		touch(id: FileId, size: number): void {
+			filesTable.update(id, { size, updatedAt: Date.now() });
+		},
 
-	/** Update updatedAt only (for utimes). */
-	setMtime(id: FileId, mtime: Date): void {
-		this.filesTable.update(id, { updatedAt: mtime.getTime() });
-	}
+		/** Update `updatedAt` only (for utimes). */
+		setMtime(id: FileId, mtime: Date): void {
+			filesTable.update(id, { updatedAt: mtime.getTime() });
+		},
 
-	// ═══════════════════════════════════════════════════════════════════════
-	// LIFECYCLE
-	// ═══════════════════════════════════════════════════════════════════════
-
-	destroy(): void {
-		this.index.destroy();
-	}
+		/** Tear down reactive indexes. */
+		dispose(): void {
+			index.dispose();
+		},
+	};
 }
+
+/** Inferred type of the file tree returned by {@link createFileTree}. */
+export type FileTree = ReturnType<typeof createFileTree>;

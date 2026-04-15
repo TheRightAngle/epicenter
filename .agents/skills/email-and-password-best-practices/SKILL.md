@@ -1,9 +1,26 @@
 ---
 name: email-and-password-best-practices
 description: Configure email verification, implement password reset flows, set password policies, and customise hashing algorithms for Better Auth email/password authentication. Use when users need to set up login, sign-in, sign-up, credential authentication, or password security with Better Auth.
+metadata:
+  author: epicenter
+  version: '1.0'
 ---
 
+## When to Apply This Skill
+
+Use this pattern when you need to:
+
+- Set up Better Auth email/password sign-up and sign-in flows.
+- Implement email verification requirements and delivery hooks.
+- Build password reset request and reset-token handling.
+- Configure password policies, reset token expiry, and session revocation.
+- Customize password hashing/verification algorithms for credential auth.
+
 ## Quick Start
+
+## Reference Repositories
+
+- [Better Auth](https://github.com/better-auth/better-auth) — TypeScript authentication framework with plugins
 
 1. Enable email/password: `emailAndPassword: { enabled: true }`
 2. Configure `emailVerification.sendVerificationEmail`

@@ -1,35 +1,167 @@
 # Epicenter: YJS-First Collaborative Workspace System
 
-A unified workspace architecture built on YJS for real-time collaboration with optional persistence and query layers.
+The hard problem with local-first apps is synchronization. If each device has its own SQLite file, how do you keep them in sync? If each device has its own markdown folder, same question.
+
+`@epicenter/workspace` solves that by making Yjs the source of truth. Tables, KV entries, document content, and awareness all live in a `Y.Doc`; persistence, sync, and materializers hang off that core through the extension builder. Write to the workspace, and everything else reacts.
+
+If you're coming from the old README, the API really did change. Older docs showed a different client/bootstrap surface than the one this package exports today. The public path now is `defineWorkspace(...)` or `createWorkspace(...)`, direct property access like `client.tables.posts`, `table.set(...)`, and extension subpaths such as `@epicenter/workspace/extensions/persistence/indexeddb`.
+
+## Quick Start
+
+```bash
+bun add @epicenter/workspace
+```
+
+```typescript
+import { type } from 'arktype';
+import Type from 'typebox';
+import {
+	createWorkspace,
+	defineMutation,
+	defineQuery,
+	defineTable,
+	defineWorkspace,
+	generateId,
+} from '@epicenter/workspace';
+import { indexeddbPersistence } from '@epicenter/workspace/extensions/persistence/indexeddb';
+import { createSyncExtension } from '@epicenter/workspace/extensions/sync/websocket';
+
+const posts = defineTable(
+	type({
+		id: 'string',
+		title: 'string',
+		body: 'string',
+		published: 'boolean',
+		_v: '1',
+	}),
+);
+
+const blogDefinition = defineWorkspace({
+	id: 'epicenter.blog',
+	tables: { posts },
+});
+
+export const blogWorkspace = createWorkspace(blogDefinition)
+	.withExtension('persistence', indexeddbPersistence)
+	.withExtension(
+		'sync',
+		createSyncExtension({
+			url: (docId) => `ws://localhost:3913/rooms/${docId}`,
+		}),
+	)
+	.withActions(({ tables }) => ({
+		posts: {
+			list: defineQuery({
+				title: 'List Posts',
+				description: 'List all posts in the workspace.',
+				handler: () => tables.posts.getAllValid(),
+			}),
+
+			create: defineMutation({
+				title: 'Create Post',
+				description: 'Create a new post row.',
+				input: Type.Object({
+					title: Type.String(),
+					body: Type.String(),
+				}),
+				handler: ({ title, body }) => {
+					const id = generateId();
+					tables.posts.set({
+						id,
+						title,
+						body,
+						published: false,
+						_v: 1,
+					});
+
+					return { id };
+				},
+			}),
+		},
+	}));
+
+async function quickStart() {
+	await blogWorkspace.whenReady;
+
+	blogWorkspace.tables.posts.set({
+		id: 'welcome',
+		title: 'Hello World',
+		body: 'This row lives in the Y.Doc.',
+		published: false,
+		_v: 1,
+	});
+
+	const result = blogWorkspace.tables.posts.get('welcome');
+	if (result.status === 'valid') {
+		blogWorkspace.tables.posts.update(result.row.id, { published: true });
+	}
+
+	const unsubscribe = blogWorkspace.tables.posts.observe((changedIds) => {
+		for (const id of changedIds) {
+			console.log('changed:', id);
+		}
+	});
+
+	const allPosts = blogWorkspace.tables.posts.getAllValid();
+	console.log(allPosts.length);
+
+	blogWorkspace.tables.posts.delete('welcome');
+	unsubscribe();
+
+	const created = await blogWorkspace.actions.posts.create({
+		title: 'Created through an action',
+		body: 'Actions close over the client via closure.',
+	});
+	console.log(created.id);
+}
+
+void quickStart;
+```
+
+That example uses the current public API end to end:
+
+- `defineTable(...)` with a real schema
+- `defineWorkspace(...)` for a reusable definition
+- `createWorkspace(...)` for the client
+- `.withExtension(...)` for persistence and sync
+- direct property access via `client.tables.posts`
+- `set`, `get`, `update`, `delete`, `getAllValid`, and `observe`
+- `.withActions(...)` plus `defineQuery(...)` and `defineMutation(...)`
 
 ## Core Philosophy
 
-**YJS Document as Source of Truth**
+### Yjs is the source of truth
 
-Epicenter uses YJS documents as the single source of truth for all data. YJS provides:
+Epicenter keeps the write path brutally simple: the `Y.Doc` is authoritative. Tables and KV are just typed helpers over Yjs collections, and document content is a Yjs timeline. Sync providers, SQLite mirrors, and markdown files are all derived from that core.
 
-- CRDT-based conflict-free merging
-- Real-time collaborative editing
-- Built-in undo/redo
-- Efficient binary encoding
+That matters because conflict resolution only has to happen once. Yjs handles merge semantics; extensions react to the merged state.
 
-**Unified Providers for Querying and Persistence**
+### Definitions are pure; clients are live
 
-Providers are a unified map of capabilities that can mirror YJS data:
+`defineTable`, `defineKv`, and `defineWorkspace` are pure. They do not create a `Y.Doc`, open a socket, or touch IndexedDB. `createWorkspace` is the boundary where the live client appears.
 
-- **SQLite Provider**: Enables SQL queries via Drizzle ORM
-- **Markdown Provider**: Persists data as human-readable markdown files
-- **Custom Providers**: Build your own (vector search, full-text search, etc.)
+That split is not cosmetic. It lets you share definitions across modules, infer types once, and instantiate different clients in different runtimes without rewriting the schema layer.
 
-Providers auto-sync bidirectionally with YJS. They're completely optional—you can use just YJS, just SQLite, both, or build custom providers.
+### The builder is the extension system
 
-**Pure JSON Column Schemas**
+The old provider map is gone. The current model is a builder:
 
-Column definitions are plain JSON objects, not builder functions. This enables:
+- `.withExtension(...)` registers an extension for the workspace doc and all document docs
+- `.withWorkspaceExtension(...)` registers a workspace-only extension
+- `.withDocumentExtension(...)` registers a document-only extension
+- `.withActions(...)` attaches callable action functions to the live client
 
-- Serialization for MCP/OpenAPI
-- Runtime introspection
-- Type-safe conversions to validation schemas
+Extensions compose progressively. Each later extension sees the exports from earlier extensions through typed `client.extensions` access.
+
+### Read-time validation beats write-time ceremony
+
+Tables validate and migrate on read, not on write. `set(...)` writes the row shape TypeScript already approved. `get(...)` is where invalid old data shows up as `{ status: 'invalid' }` and old versions are migrated to the latest schema.
+
+That trade-off is deliberate. It keeps the write path cheap and pushes schema evolution into one place—the table definition.
+
+### Storage scales with active data, not edit history
+
+With Yjs garbage collection enabled, storage tracks the live document much more closely than the number of operations that happened over time. Deleted rows, overwritten values, and old content states collapse down to compact metadata. The workspace grows because you keep more data—not because you clicked save a thousand times.
 
 ## Architecture Overview
 
@@ -52,8 +184,8 @@ Every piece of data lives in a `Y.Doc`, which provides conflict-free merging, re
 │  └───────────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────┘
 
-Note: Schema definitions are stored in static JSON files, NOT in Y.Doc.
-This keeps Y.Docs lean and focused on data only.
+Note: Schema definitions are stored in static TypeScript modules, not in the Y.Doc.
+The Y.Doc carries data. Your definition files carry meaning.
 ```
 
 ### Three-Layer Data Flow
@@ -62,19 +194,20 @@ This keeps Y.Docs lean and focused on data only.
 ┌────────────────────────────────────────────────────────────────────┐
 │  WRITE FLOW                                                         │
 │                                                                     │
-│  Action Called → Y.Doc Updated → Auto-sync to Providers             │
+│  App code / action → Y.Doc updated → Extensions react              │
 │                       │                                             │
 │              ┌────────┼────────┐                                    │
 │              ▼        ▼        ▼                                    │
-│         IndexedDB  SQLite   Markdown                                │
-│         (or .yjs)   (.db)   (files)                                 │
+│         IndexedDB  WebSocket  Markdown                              │
+│         or SQLite   sync      materializer                          │
 └────────────────────────────────────────────────────────────────────┘
 
 ┌────────────────────────────────────────────────────────────────────┐
 │  READ FLOW                                                          │
 │                                                                     │
-│  Query Called → Read from Provider (SQLite for complex queries)     │
-│                 or directly from Y.Doc (simple lookups)             │
+│  Simple reads → table / kv helpers over Y.Doc                       │
+│  Rich text  → document handles over timeline Y.Docs                 │
+│  Derived reads → extension exports built on the same core           │
 └────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -98,1735 +231,1410 @@ Epicenter supports distributed sync where Y.Doc instances replicate across devic
                            Connect to multiple nodes
 ```
 
-Yjs supports multiple providers simultaneously. Phone can connect to desktop, laptop, AND cloud—changes merge automatically via CRDTs.
+Yjs supports multiple providers simultaneously. A phone can connect to desktop, laptop, and cloud at the same time; CRDT merge semantics do the rest.
 
 ### How It All Fits Together
 
-1. **Define workspace** with `defineWorkspace({ id, tables, kv })`
-2. **Create client builder** with `createClient(workspace.id)`
-3. **Chain definition** with `.withDefinition(workspace)`
-4. **Attach extensions** with `.withExtension('persistence', setupPersistence).withExtension('sqlite', sqliteProvider)`
-5. **Y.Doc created** with workspace ID + epoch as GUID
-6. **Extensions initialize** in parallel (persistence, SQLite, markdown, sync)
-7. **Tables API** wraps Y.Doc with type-safe CRUD
-8. **Server** exposes REST/MCP/WebSocket endpoints for actions and tables
-9. **Multi-device sync** via y-websocket to any number of nodes
-10. **CRDTs ensure** eventual consistency across all clients
+1. Define tables, KV entries, and awareness with `defineTable`, `defineKv`, and `defineWorkspace`.
+2. Create a live client with `createWorkspace(definition)`.
+3. Chain extensions with `.withExtension(...)`, `.withWorkspaceExtension(...)`, and `.withDocumentExtension(...)`.
+4. Attach actions with `.withActions(...)`.
+5. Wait for `client.whenReady` if your extensions load persisted state or open connections.
+6. Read and write through `client.tables`, `client.kv`, `client.documents`, and `client.awareness`.
+7. Use `iterateActions(...)`, `describeWorkspace(...)`, and action metadata if you want to build adapters such as HTTP, CLI, or MCP.
+8. Dispose the client with `await client.dispose()` when you're done.
 
-The architecture is **local-first**: everything works offline, syncs opportunistically, and your data lives in plain files (`.yjs`, SQLite, markdown) that you fully control.
+The architecture stays local-first: the workspace works offline, synchronizes opportunistically, and treats external systems as helpers around the document—not the other way around.
 
 ## Shared Workspace ID Convention
 
 Epicenter uses stable, shared workspace IDs so multiple apps can collaborate on the same data.
 
-- **Format**: `epicenter.<app>` (for example, `epicenter.whispering`)
-- **Purpose**: Ensures the same workspace is discovered, synced, and shared across Epicenter apps
-- **Stability**: IDs must be globally unique and never change once published
-- **Usage**: The workspace ID is used for routing, persistence paths, Y.Doc IDs, and sharing
+- Format: `epicenter.<app>`
+- Purpose: stable routing, persistence keys, sync room names, and workspace discovery
+- Stability: once published, an ID should not change
+- Scope: two apps with the same ID are intentionally pointing at the same workspace
 
-When two apps declare the same workspace ID, they intentionally point to the same shared workspace and data.
-
-## Quick Start
-
-### Installation
-
-```bash
-bun add @epicenter/workspace
-```
-
-### Basic Example
-
-```typescript
-import {
-	defineWorkspace,
-	createClient,
-	id,
-	text,
-	integer,
-	boolean,
-	date,
-	select,
-	sqliteProvider,
-	markdownProvider,
-} from '@epicenter/workspace';
-import { setupPersistence } from '@epicenter/workspace/providers';
-import { type } from 'arktype';
-
-// 1. Define your workspace
-const blogWorkspace = defineWorkspace({
-	id: 'blog',
-
-	tables: {
-		posts: {
-			id: id(),
-			title: text(),
-			content: text({ nullable: true }),
-			category: select({ options: ['tech', 'personal'] }),
-			published: boolean({ default: false }),
-			views: integer({ default: 0 }),
-			publishedAt: date({ nullable: true }),
-		},
-	},
-
-	kv: {},
-});
-
-// 2. Initialize the workspace client
-const client = createClient(blogWorkspace.id)
-	.withDefinition(blogWorkspace)
-	.withExtension('persistence', setupPersistence)
-	.withExtension('sqlite', (c) => sqliteProvider(c))
-	.withExtension('markdown', (c) => markdownProvider(c));
-
-// 3. Define actions (exposed via REST/MCP)
-const blogActions = {
-	createPost: defineMutation({
-		input: type({
-			title: 'string',
-			'category?': '"tech" | "personal"',
-		}),
-		handler: async ({ title, category }) => {
-			const id = generateId();
-			client.tables.get('posts').upsert({
-				id,
-				title,
-				content: null,
-				category: category ?? 'tech',
-				published: false,
-				views: 0,
-				publishedAt: null,
-			});
-
-			return Ok({ id });
-		},
-	}),
-
-	getPublishedPosts: defineQuery({
-		handler: async () => {
-			// Query the SQLite extension with Drizzle
-			const { posts } = client.extensions.sqlite;
-			return await posts
-				.select()
-				.where(eq(posts.published, true))
-				.orderBy(desc(posts.publishedAt));
-		},
-	}),
-};
-
-// 4. Use the actions or tables directly
-const result = await blogActions.createPost.handler({ title: 'Hello World' });
-if (result.error) {
-	console.error('Failed to create post:', result.error);
-} else {
-	console.log('Created post:', result.data.id);
-}
-
-// 5. Query via table operations
-const allPosts = client.tables.get('posts').getAll();
-console.log('All posts:', allPosts);
-
-// 6. Query published posts (uses SQLite extension)
-const published = await blogActions.getPublishedPosts.handler();
-console.log('Published:', published);
-
-// 7. Cleanup when done
-await client.destroy();
-```
+The ID becomes `ydoc.guid` for the workspace doc, so it is not a throwaway string. Pick one and keep it.
 
 ## Core Concepts
 
 ### Workspaces
 
-A workspace is a self-contained module with:
+A workspace definition is plain data:
 
-- **Tables**: Table definitions with column types
-- **KV Store**: Simple key-value store for settings and metadata
-- **Extensions**: Capabilities including persistence, sync, and materializers (SQLite, markdown, custom)
+- `id`
+- `tables`
+- `kv`
+- `awareness`
 
-Workspaces can be defined once and used to create multiple clients at different epochs.
+A workspace client is that definition plus a live `Y.Doc`, typed helpers, optional documents, optional extensions, and optional actions.
 
-### YJS Document
+### Yjs document
 
-Every workspace has a YJS document that stores all table data. The YJS document:
-
-- Is the source of truth for all data
-- Supports real-time collaboration
-- Provides CRDT-based conflict resolution
-- Enables undo/redo
-- Can be persisted to disk or IndexedDB
+The raw `Y.Doc` is still available at `client.ydoc`. That is the escape hatch, not the primary API. Most consumers should stay at the workspace layer unless they are building a new extension or debugging storage internals.
 
 ### Tables
 
-Tables are defined as column schemas (pure JSON):
+Tables are versioned row collections. Each row must include:
 
-```typescript
-tables: {
-  posts: {
-    id: id(),                           // Auto-generated ID (always required)
-    title: text(),                      // NOT NULL by default
-    content: text({ nullable: true }), // Explicitly nullable
-    views: integer({ default: 0 }),    // NOT NULL with default
-  }
-}
-```
+- `id: string`
+- `_v: number`
 
-At runtime, tables become YJS-backed collections with CRUD operations:
+At runtime, each table becomes a `TableHelper` exposed as a direct property:
 
-```typescript
-tables.get('posts').upsert({ id: '1', title: 'Hello', ... })
-tables.get('posts').get({ id: '1' })
-tables.get('posts').update({ id: '1', views: 100 })
-tables.get('posts').delete({ id: '1' })
-```
+- `client.tables.posts.set(row)`
+- `client.tables.posts.get(id)`
+- `client.tables.posts.update(id, partial)`
+- `client.tables.posts.delete(id)`
+
+Table access is direct property access in the current API.
+
+### KV
+
+KV entries are for settings and scalar preferences. They are keyed by string and always return a valid value because invalid or missing data falls back to the definition's default.
+
+- `client.kv.get('theme.mode')`
+- `client.kv.set('theme.mode', 'dark')`
+- `client.kv.observe('theme.mode', ...)`
 
 ### Extensions
 
-Extensions add capabilities to your workspace, such as persistence, sync, and materializers (SQLite, markdown). They are attached to the client during initialization:
+Extensions are opt-in capabilities layered onto the workspace builder.
 
-```typescript
-const client = createClient(definition.id)
-	.withDefinition(definition)
-	.withExtension('persistence', setupPersistence) // YJS persistence
-	.withExtension('sqlite', (c) => sqliteProvider(c)) // SQL queries via Drizzle ORM
-	.withExtension('markdown', (c) => markdownProvider(c)); // File-based persistence
-```
-
-Materializer extensions (sqlite, markdown) automatically sync with YJS:
-
-- **Write to YJS** → Extensions auto-update
-- **Pull from extension** → Replaces YJS data
-- **Push to extension** → Replaces extension data
-
-Access extension exports in your actions:
-
-```typescript
-const queryPosts = defineQuery({
-  handler: async () => {
-    // Access SQLite extension via client.extensions
-    const { sqlite } = client.extensions;
-    return await sqlite.posts.select().where(...);
-  }
-});
-```
-
-Extension factory functions receive a context object with `{ id, ydoc, tables, kv, extensions }` (the "client-so-far") and can return exports. Each factory receives typed access to all previously added extensions. For example, sync extensions:
-
-```typescript
-const client = createClient(definition.id)
-	.withDefinition(definition)
-	.withExtension('persistence', setupPersistence)
-	.withExtension('sqlite', (c) => sqliteProvider(c))
-	.withExtension(
-		'sync',
-		createSyncExtension({
-			url: 'ws://localhost:3913/rooms/{id}',
-		}),
-	);
-```
+- Use `.withExtension(...)` when the same factory should apply to the workspace doc and every document doc.
+- Use `.withWorkspaceExtension(...)` when the factory needs `tables`, `kv`, `definitions`, or other workspace-only fields.
+- Use `.withDocumentExtension(...)` when the factory needs `timeline`, `tableName`, or `documentName`.
 
 ### Actions
 
-Actions are workspace operations defined with `defineQuery` (read) or `defineMutation` (write). They are lightweight objects that can be exposed via REST, MCP, or CLI:
+Actions are callable functions with metadata.
 
-```typescript
-const blogActions = {
-  getPost: defineQuery({
-    input: type({ id: 'string' }),
-    handler: ({ id }) => {
-      return client.tables.get('posts').get({ id });
-    }
-  }),
+- `defineQuery(...)` creates a read action
+- `defineMutation(...)` creates a write action
+- `.withActions(...)` attaches them to `client.actions`
 
-  createPost: defineMutation({
-    input: type({ title: 'string' }),
-    handler: ({ title }) => {
-      const id = generateId();
-      client.tables.get('posts').upsert({ id, title, ... });
-      return { id };
-    }
-  })
-};
-```
+Handlers close over the client through normal JavaScript closure. They do not receive a framework context object.
 
-Actions can be exposed via MCP servers or HTTP APIs by passing them to `createServer()`.
+### Documents
+
+Tables can declare document-backed content via `.withDocument(...)`. That creates typed document managers under `client.documents`.
+
+If you define a `files` table with `.withDocument('content', ...)`, you get this shape at runtime:
+
+- `client.documents.files.content.open(rowOrGuid)`
+- `client.documents.files.content.close(rowOrGuid)`
+- `client.documents.files.content.closeAll()`
+
+An open handle is a timeline API with methods such as `read()`, `write(...)`, `asText()`, `asRichText()`, and `asSheet()`.
 
 ## Column Types
 
-All columns support `nullable` (default: `false`) and `default` options.
+The old column builder API is gone. There is no `id()`, `text()`, `boolean()`, `date()`, `select()`, `tags()`, or `json()` in the current package surface.
 
-### `id()`
+Today, tables and KV entries are defined with schemas directly.
 
-Auto-generated primary key. Always required, always NOT NULL.
+### Required table fields
 
-```typescript
-id: id();
-```
+Every table row schema must include:
 
-### `text(options?)`
+- `id`
+- `_v`
 
-Text column.
+In arktype, `_v: '1'` means the numeric literal `1`, not the string `'1'` at runtime.
 
-```typescript
-name: text(); // NOT NULL
-bio: text({ nullable: true }); // Nullable
-role: text({ default: 'user' }); // NOT NULL with default
-```
-
-### `ytext(options?)`
-
-Collaborative text editor column using Y.Text. Supports inline formatting and is ideal for code editors (Monaco, CodeMirror) or simple rich text (Quill).
+### Single-version tables
 
 ```typescript
-code: ytext(); // Collaborative code editor
-notes: ytext({ nullable: true }); // Optional collaborative text
-```
-
-### `integer(options?)`, `real(options?)`
-
-Numeric columns.
-
-```typescript
-age: integer();
-price: real({ default: 0.0 });
-score: integer({ nullable: true });
-```
-
-### `boolean(options?)`
-
-Boolean column.
-
-```typescript
-published: boolean({ default: false });
-verified: boolean({ nullable: true });
-```
-
-### `date(options?)`
-
-Date with timezone support using `DateTimeString` (branded string with lazy Temporal parsing).
-
-```typescript
-createdAt: date();
-publishedAt: date({ nullable: true });
-```
-
-Working with dates:
-
-```typescript
-import { DateTimeString } from '@epicenter/workspace';
-
-// Create current timestamp
-const now = DateTimeString.now(); // Uses system timezone
-const nowNY = DateTimeString.now('America/New_York');
-
-// Storage format: "2024-01-01T20:00:00.000Z|America/New_York"
-
-// Parse to Temporal.ZonedDateTime when you need date math
-const live = DateTimeString.parse(now);
-const nextMonth = live.add({ months: 1 });
-
-// Stringify back for storage
-const stored = DateTimeString.stringify(nextMonth);
-```
-
-### `select(options)`
-
-Single choice from predefined options.
-
-```typescript
-status: select({
-	options: ['draft', 'published', 'archived'],
-});
-
-priority: select({
-	options: ['low', 'medium', 'high'],
-	default: 'medium',
-});
-
-visibility: select({
-	options: ['public', 'private'],
-	nullable: true,
-});
-```
-
-### `tags(options?)`
-
-Array of strings with optional validation.
-
-```typescript
-// Unconstrained (any string array)
-tags: tags();
-freeTags: tags({ nullable: true });
-
-// Constrained (validated against options)
-categories: tags({
-	options: ['tech', 'personal', 'work'],
-});
-```
-
-### `json(options)`
-
-JSON column with arktype schema validation.
-
-**Important**: When used in action inputs, schemas are converted to JSON Schema for MCP/OpenAPI. Avoid:
-
-- Transforms: `.pipe()` (arktype), `.transform()` (Zod)
-- Custom validation: `.filter()` (arktype), `.refine()` (Zod)
-- Use `.matching(regex)` for patterns
-
-```typescript
-import { json } from '@epicenter/workspace';
 import { type } from 'arktype';
+import { defineTable } from '@epicenter/workspace';
 
-metadata: json({
-	schema: type({
-		key: 'string',
-		value: 'string',
+const users = defineTable(
+	type({
+		id: 'string',
+		email: 'string',
+		name: 'string',
+		_v: '1',
 	}),
+);
+
+void users;
+```
+
+Use the single-schema form when the table has only one version today.
+
+### Versioned tables
+
+```typescript
+import { type } from 'arktype';
+import { defineTable } from '@epicenter/workspace';
+
+const posts = defineTable(
+	type({
+		id: 'string',
+		title: 'string',
+		_v: '1',
+	}),
+	type({
+		id: 'string',
+		title: 'string',
+		slug: 'string',
+		_v: '2',
+	}),
+).migrate((row) => {
+		switch (row._v) {
+			case 1:
+				return {
+					...row,
+					slug: row.title.toLowerCase().replaceAll(' ', '-'),
+					_v: 2,
+				};
+
+			case 2:
+				return row;
+		}
+	});
+
+void posts;
+```
+
+Migration runs on read. Old rows stay old in storage until you rewrite them.
+
+### KV entries
+
+```typescript
+import { type } from 'arktype';
+import { defineKv } from '@epicenter/workspace';
+
+const themeMode = defineKv(type("'light' | 'dark' | 'system'"), 'light');
+const sidebarWidth = defineKv(type('number'), 280);
+const sidebarCollapsed = defineKv(type('boolean'), false);
+
+void themeMode;
+void sidebarWidth;
+void sidebarCollapsed;
+```
+
+KV is validate-or-default. There is no migration function.
+
+### Awareness definitions
+
+```typescript
+import { type } from 'arktype';
+import { createWorkspace, defineTable, defineWorkspace } from '@epicenter/workspace';
+
+const notes = defineTable(
+	type({
+		id: 'string',
+		title: 'string',
+		_v: '1',
+	}),
+);
+
+const definition = defineWorkspace({
+	id: 'epicenter.notes',
+	tables: { notes },
+	awareness: {
+		name: type('string'),
+		color: type('string'),
+		cursor: type({ line: 'number', column: 'number' }),
+	},
 });
 
-preferences: json({
-	schema: type({
-		theme: 'string',
-		notifications: 'boolean',
+const workspace = createWorkspace(definition);
+
+workspace.awareness.setLocal({ name: 'Braden', color: '#ff4d4f' });
+workspace.awareness.setLocalField('cursor', { line: 12, column: 3 });
+
+void workspace;
+```
+
+### Document-backed tables
+
+```typescript
+import { type } from 'arktype';
+import { createWorkspace, defineTable, defineWorkspace } from '@epicenter/workspace';
+
+const files = defineTable(
+	type({
+		id: 'string',
+		name: 'string',
+		contentGuid: 'string',
+		updatedAt: 'number',
+		_v: '1',
 	}),
-	nullable: true,
-	default: { theme: 'dark', notifications: true },
+).withDocument('content', {
+	guid: 'contentGuid',
+	onUpdate: () => ({ updatedAt: Date.now() }),
 });
+
+const definition = defineWorkspace({
+	id: 'epicenter.files',
+	tables: { files },
+});
+
+const workspace = createWorkspace(definition);
+
+async function documentExample() {
+	workspace.tables.files.set({
+		id: 'file-1',
+		name: 'hello.md',
+		contentGuid: 'doc-1',
+		updatedAt: 0,
+		_v: 1,
+	});
+
+	const handle = await workspace.documents.files.content.open('doc-1');
+	handle.write('# Hello from a document');
+	console.log(handle.read());
+	console.log(handle.currentType);
+	await workspace.documents.files.content.close('doc-1');
+	await workspace.dispose();
+	return handle;
+}
+
+void documentExample;
 ```
 
 ## Table Operations
 
-All table operations are accessed via `tables.get('{tableName}')`.
+All table operations live on direct properties such as `client.tables.posts`.
 
-### Upsert Operations
+### Write operations
 
-**`upsert(row)`**
-
-Insert or update a row. Never fails. This is the primary way to write data.
-
-For Y.js columns (ytext, tags), provide plain values:
-
-- ytext: provide strings
-- tags: provide arrays
-
-```typescript
-tables.get('posts').upsert({
-	id: generateId(),
-	title: 'Hello World',
-	content: 'Post content here', // For ytext column, pass string
-	tags: ['tech', 'blog'], // For tags column, pass array
-	published: false,
-});
-```
-
-**`upsertMany(rows)`**
-
-Insert or update multiple rows. Never fails.
-
-### Update Operations
-
-**`update(partialRow)`**
-
-Update specific fields of an existing row. **If the row doesn't exist locally, this is a no-op.**
-
-This is intentional: Y.js uses Last-Writer-Wins at the key level when setting a Y.Map. Creating a new Y.Map for a missing row could overwrite an existing row from another peer, causing data loss.
-
-For Y.js columns, pass plain values and they'll be synced to existing Y.Text/Y.Array.
-
-```typescript
-tables.get('posts').update({
-	id: '1',
-	title: 'New Title',
-	tags: ['updated', 'tags'], // Syncs to existing Y.Array
-});
-```
-
-**`updateMany(partialRows)`**
-
-Update multiple rows. Rows that don't exist locally are skipped (see `update` for rationale).
-
-### Read Operations
-
-**`get({ id })`**
-
-Get a row by ID. Returns a discriminated union with status:
-
-- `{ status: 'valid', row }` - Row exists and passes validation
-- `{ status: 'invalid', id, error }` - Row exists but fails validation
-- `{ status: 'not_found', id }` - Row doesn't exist
-
-Returns Y.js objects for collaborative editing:
-
-- ytext columns: Y.Text instances
-- tags columns: Y.Array instances
-
-```typescript
-const result = tables.get('posts').get({ id: '1' });
-switch (result.status) {
-	case 'valid':
-		console.log('Row:', result.row);
-		const ytext = result.row.content; // Y.Text instance
-		break;
-	case 'invalid':
-		console.error('Validation error:', result.error.context.summary);
-		break;
-	case 'not_found':
-		console.log('Not found:', result.id);
-		break;
-}
-```
-
-**`getAll()`**
-
-Get all rows with their validation status. Returns `RowResult<Row>[]`.
-
-```typescript
-const results = tables.get('posts').getAll();
-for (const result of results) {
-	if (result.status === 'valid') {
-		console.log(result.row.title);
-	} else {
-		console.log('Invalid row:', result.id);
-	}
-}
-```
-
-**`getAllValid()`**
-
-Get all valid rows. Skips invalid rows that fail validation.
-
-```typescript
-const posts = tables.get('posts').getAllValid(); // Row[]
-```
-
-**`getAllInvalid()`**
-
-Get validation errors for all invalid rows.
-
-```typescript
-const errors = tables.get('posts').getAllInvalid(); // RowValidationError[]
-```
-
-**`has({ id })`**
-
-Check if a row exists.
-
-```typescript
-const exists = tables.get('posts').has({ id: '1' }); // boolean
-```
-
-**`count()`**
-
-Get total row count.
-
-```typescript
-const total = tables.get('posts').count(); // number
-```
-
-**`filter(predicate)`**
-
-Filter valid rows by predicate. Invalid rows are skipped.
-
-```typescript
-const published = tables.get('posts').filter((row) => row.published);
-```
-
-**`find(predicate)`**
-
-Find first valid row matching predicate. Returns `Row | null`.
-
-```typescript
-const first = tables.get('posts').find((row) => row.published);
-```
-
-### Delete Operations
-
-**`delete({ id })`**
-
-Delete a row.
-
-```typescript
-tables.get('posts').delete({ id: '1' });
-```
-
-**`deleteMany({ ids })`**
-
-Delete multiple rows.
-
-```typescript
-tables.get('posts').deleteMany({ ids: ['1', '2', '3'] });
-```
-
-**`clear()`**
-
-Delete all rows.
-
-```typescript
-tables.get('posts').clear();
-```
-
-### Reactive Updates
-
-**`observe(callback)`**
-
-Watch for real-time changes. Returns unsubscribe function.
-
-The callback receives a `Map<id, action>` where action is `'add' | 'update' | 'delete'`. To get row data, call `table.get(id)`; the observer intentionally does not include row data to avoid unnecessary reconstruction.
-
-```typescript
-const unsubscribe = tables.posts.observe((changes, transaction) => {
-	for (const [id, action] of changes) {
-		if (action === 'delete') {
-			console.log('Post deleted:', id);
-			removeFromCache(id);
-		} else {
-			// Fetch row data only when needed
-			const result = tables.posts.get(id);
-			if (result.status === 'valid') {
-				console.log(`Post ${action}:`, result.row);
-				updateCache(id, result.row);
-			}
-		}
-	}
-});
-
-// Stop watching
-unsubscribe();
-```
-
-**How it works:**
-
-- Changes are batched per Y.Transaction; bulk operations fire one callback
-- The `transaction` object enables origin checks (local vs remote changes)
-- `'add'`: Fires when a new row Y.Map is added to the table
-- `'update'`: Fires when any field changes within an existing row
-- `'delete'`: Fires when a row Y.Map is removed from the table
-
-## Provider System
-
-Providers are a unified map of capabilities. All workspace capabilities (persistence, sync, materializers like SQLite/markdown) are defined in a single `providers` map.
-
-### SQLite Extension
-
-The SQLite extension provides SQL query capabilities via Drizzle ORM.
-
-**Setup:**
-
-```typescript
-import { createClient, sqliteProvider } from '@epicenter/workspace';
-
-const client = createClient(definition.id)
-	.withDefinition(definition)
-	.withExtension('sqlite', (c) => sqliteProvider(c));
-```
-
-**Storage:**
-
-- Database: `.epicenter/providers/sqlite/{workspaceId}.db`
-- Logs: `.epicenter/providers/sqlite/logs/{workspaceId}.log`
-
-**Exports:**
-
-```typescript
-{
-  pullToSqlite: Query,              // Sync YJS → SQLite (replace all)
-  pushFromSqlite: Query,            // Sync SQLite → YJS (replace all)
-  db: BetterSQLite3Database,       // Drizzle database instance
-  posts: DrizzleTable,              // Each table as Drizzle table reference
-  users: DrizzleTable,
-  // ... all tables
-}
-```
-
-**Usage:**
-
-```typescript
-const blogActions = {
-	getPublishedPosts: defineQuery({
-		handler: async () => {
-			// Query with full Drizzle power via client.extensions
-			const { sqlite } = client.extensions;
-			return await sqlite.posts
-				.select()
-				.where(eq(sqlite.posts.published, true))
-				.orderBy(desc(sqlite.posts.publishedAt))
-				.limit(10);
-		},
-	}),
-
-	getPostStats: defineQuery({
-		handler: async () => {
-			const { sqlite } = client.extensions;
-			return await sqlite.posts
-				.select({
-					category: sqlite.posts.category,
-					total: count(),
-					avgViews: avg(sqlite.posts.views),
-				})
-				.groupBy(sqlite.posts.category);
-		},
-	}),
-
-	// Manual sync operations
-	syncToSqlite: defineMutation({
-		handler: () => client.extensions.sqlite.pullToSqlite(),
-	}),
-};
-```
-
-**How it works:**
-
-- Observes YJS changes and updates SQLite automatically
-- Uses WAL mode for concurrent access
-- Prevents infinite loops with sync coordination flags
-- Logs validation errors without blocking sync
-- Performs full initial sync on startup
-
-### Markdown Extension
-
-The markdown extension persists data as human-readable markdown files.
-
-**Setup:**
-
-```typescript
-import { createClient, markdownProvider } from '@epicenter/workspace';
-
-const client = createClient(definition.id)
-	.withDefinition(definition)
-	.withExtension('markdown', (c) =>
-		markdownProvider(c, {
-			directory: './data', // Optional: workspace-level directory
-			tableConfigs: {
-				posts: {
-					directory: './posts', // Optional: per-table directory
-					serialize: ({ row }) => ({
-						frontmatter: { title: row.title, published: row.published },
-						body: row.content,
-						filename: `${row.id}.md`,
-					}),
-					deserialize: ({ frontmatter, body, filename }) => {
-						const id = basename(filename, '.md');
-						return Ok({ id, content: body, ...frontmatter });
-					},
-				},
-			},
-		}),
-	);
-```
-
-**Storage:**
-
-- Markdown files: `./{workspaceId}/{tableName}/*.md` (configurable)
-- Logs: `.epicenter/providers/markdown/logs/{workspaceId}.log`
-- Diagnostics: `.epicenter/providers/markdown/diagnostics/{workspaceId}.json`
-
-**Exports:**
-
-```typescript
-{
-  pullToMarkdown: Query,            // Sync YJS → Markdown files (replace all)
-  pushFromMarkdown: Query,          // Sync Markdown files → YJS (replace all)
-  scanForErrors: Query,             // Validate all files, rebuild diagnostics
-}
-```
-
-**Usage:**
-
-```typescript
-const blogActions = {
-	// Export markdown sync operations
-	syncToMarkdown: defineMutation({
-		handler: () => client.extensions.markdown.pullToMarkdown(),
-	}),
-	syncFromMarkdown: defineMutation({
-		handler: () => client.extensions.markdown.pushFromMarkdown(),
-	}),
-	validateFiles: defineQuery({
-		handler: () => client.extensions.markdown.scanForErrors(),
-	}),
-};
-```
-
-**How it works:**
-
-- Watches markdown directories for file changes
-- Syncs changes bidirectionally with YJS
-- Maintains rowId ↔ filename mapping (handles renames/deletions)
-- Validates all files on startup
-- Tracks errors in diagnostics (JSON) and error log (append-only)
-- Prevents infinite loops with sync coordination
-
-**Default serialization:**
-
-- Frontmatter: All columns except content
-- Body: `content` column (if exists)
-- Filename: `{id}.md`
-
-**Custom serialization:**
-
-```typescript
-serialize: ({ row, table }) => {
-  // Custom logic
-  return {
-    frontmatter: { /* YAML frontmatter */ },
-    body: 'markdown body',
-    filename: 'custom-name.md'
-  };
-},
-deserialize: ({ frontmatter, body, filename, table }) => {
-  // Custom parsing
-  const row = { id: '...', ... };
-  return Ok(row); // or Err(MarkdownProviderErr({ ... }))
-}
-```
-
-### Sync Extension
-
-The sync extension enables real-time Y.Doc synchronization using the y-websocket protocol with `@epicenter/sync` as the underlying provider. This is the recommended sync solution for Epicenter.
-
-**Setup:**
-
-````typescript
-import { createClient } from '@epicenter/workspace';
-import { createSyncExtension } from '@epicenter/workspace/extensions/sync';
-
-const client = createClient(definition.id)
-	.withDefinition(definition)
-	.withExtension(
-		'sync',
-		createSyncExtension({
-			url: 'ws://localhost:3913/rooms/{id}',
-		}),
-	);
-
-The `{id}` placeholder is replaced with the workspace ID automatically.
-
-The `{id}` placeholder is replaced with the workspace ID automatically. Point the URL at any y-websocket compatible server (e.g., `apps/api`).
-
-**How it works:**
-
-1. Client opens WebSocket to `/rooms/{workspaceId}`
-2. Server sends initial sync state (sync step 1)
-3. Client and server exchange updates bidirectionally
-4. Server broadcasts updates to all connected clients
-5. All Y.Docs converge via Yjs CRDTs
-
-**Key properties:**
-
-- Standard protocol: Compatible with any y-websocket client
-- Text ping/pong liveness detection via Cloudflare auto-response
-- Built-in awareness: User presence/cursors work out of the box
-- Two auth modes: open (no auth) and authenticated (dynamic token refresh)
-- No native modules: Pure JS, works with Bun
-
-See `@epicenter/sync` for the client-side provider API.
-
-### Multi-Device Sync Architecture
-
-Epicenter supports a distributed sync architecture where Y.Doc instances can be replicated across multiple devices and servers.
-
-**Define your sync nodes:**
-
-```typescript
-// src/config/sync-nodes.ts
-export const SYNC_NODES = {
-	// Local devices via Tailscale
-	desktop: 'ws://desktop.my-tailnet.ts.net:3913/rooms/{id}',
-	laptop: 'ws://laptop.my-tailnet.ts.net:3913/rooms/{id}',
-
-	// Cloud server (optional, always-on)
-	cloud: 'wss://sync.myapp.com/rooms/{id}',
-
-	// Localhost (for browser connecting to local server)
-	localhost: 'ws://localhost:3913/rooms/{id}',
-} as const;
-```
-
-**Provider strategy per device:**
-
-| Device          | Role          | Connects To                  |
-| --------------- | ------------- | ---------------------------- |
-| Phone browser   | Client only   | `desktop`, `laptop`, `cloud` |
-| Laptop browser  | Client        | `localhost`                  |
-| Desktop browser | Client        | `localhost`                  |
-| Laptop server   | Node + Client | `desktop`, `cloud`           |
-| Desktop server  | Node + Client | `laptop`, `cloud`            |
-
-**Multi-extension example (phone):**
-
-```typescript
-// Phone connects to ALL available sync nodes
-const client = createClient(definition.id)
-	.withDefinition(definition)
-	.withExtension(
-		'syncDesktop',
-		createSyncExtension({ url: SYNC_NODES.desktop }),
-	)
-	.withExtension('syncLaptop', createSyncExtension({ url: SYNC_NODES.laptop }))
-	.withExtension('syncCloud', createSyncExtension({ url: SYNC_NODES.cloud }));
-```
-
-**Server-to-server sync:**
-
-```typescript
-// Desktop server connects to OTHER servers (not itself!)
-const client = createClient(definition.id)
-	.withDefinition(definition)
-	.withExtension(
-		'syncToLaptop',
-		createSyncExtension({ url: SYNC_NODES.laptop }),
-	)
-	.withExtension('syncToCloud', createSyncExtension({ url: SYNC_NODES.cloud }));
-```
-
-Yjs supports multiple providers simultaneously. Changes merge automatically via CRDTs regardless of which provider delivers them first.
-
-See [SYNC_ARCHITECTURE.md](./SYNC_ARCHITECTURE.md) for complete multi-device sync documentation.
-
-## Workspace Dependencies
-
-Workspaces can depend on other workspaces, enabling modular architecture. For cross-workspace communication, simply import the initialized client of the dependency.
-
-**Access pattern (regular imports):**
-
-```typescript
-import { authClient } from './auth-client';
-import { storageClient } from './storage-client';
-
-// blog-actions.ts
-export const createPost = defineMutation({
-	input: type({ title: 'string', authorId: 'string' }),
-	handler: async ({ title, authorId }) => {
-		// Access dependency workspace actions via imported client
-		const user = await authClient.getUserById({ id: authorId });
-		if (!user) {
-			return Err({ message: 'User not found' });
-		}
-
-		// Access dependency workspace tables
-		const allUsers = authClient.tables.get('users').getAll();
-
-		// Create post in local workspace
-		const id = generateId();
-		blogClient.tables.get('posts').upsert({
-			id,
-			title,
-			authorId,
-			published: false,
-		});
-		return Ok({ id });
-	},
-});
-```
-
-## Actions
-
-Actions are workspace operations defined with `defineQuery` or `defineMutation`.
-
-### Query Actions
-
-Read operations with no side effects. Use HTTP GET when exposed via API/MCP.
-
-**Variants:**
-
-```typescript
-// With input, returns Result<T, E>
-defineQuery({
-	input: type({ id: 'string' }),
-	handler: ({ id }) => {
-		const post = db.tables.get('posts').get({ id });
-		if (!post) {
-			return Err({ message: 'Not found' });
-		}
-		return Ok(post.data);
-	},
-});
-
-// With input, returns T (can't fail)
-defineQuery({
-	input: type({ limit: 'number' }),
-	handler: ({ limit }) => {
-		return db.tables.get('posts').getAll().slice(0, limit);
-	},
-});
-
-// No input, returns Result<T, E>
-defineQuery({
-	handler: () => {
-		const result = someOperationThatCanFail();
-		if (result.error) {
-			return Err(result.error);
-		}
-		return Ok(result.data);
-	},
-});
-
-// No input, returns T (can't fail)
-defineQuery({
-	handler: () => {
-		return db.tables.get('posts').count();
-	},
-});
-```
-
-All variants support async handlers:
-
-```typescript
-defineQuery({
-	input: type({ id: 'string' }),
-	handler: async ({ id }) => {
-		const data = await fetchExternal(id);
-		return Ok(data);
-	},
-});
-```
-
-### Mutation Actions
-
-Write operations that modify state. Use HTTP POST when exposed via API/MCP.
-
-**Variants:** Same as queries (8 overloads: with/without input, sync/async, Result/raw).
-
-```typescript
-// With input, returns Result<T, E>
-defineMutation({
-	input: type({ title: 'string' }),
-	handler: ({ title }) => {
-		const id = generateId();
-		db.tables.get('posts').upsert({
-			id,
-			title,
-			published: false,
-		});
-		return Ok({ id });
-	},
-});
-
-// With input, returns void (can't fail)
-defineMutation({
-	input: type({ id: 'string' }),
-	handler: ({ id }) => {
-		db.tables.get('posts').delete({ id });
-	},
-});
-```
-
-### Input Validation
-
-Actions support Standard Schema validation (ArkType, Zod, Valibot, Effect):
+`set(row)` inserts or replaces a whole row.
 
 ```typescript
 import { type } from 'arktype';
-import { z } from 'zod';
+import { createWorkspace, defineTable } from '@epicenter/workspace';
 
-// ArkType (recommended)
-defineQuery({
-  input: type({
-    email: 'string.email',
-    age: 'number>0',
-  }),
-  handler: (input) => { ... }
-})
+const posts = defineTable(
+	type({
+		id: 'string',
+		title: 'string',
+		published: 'boolean',
+		_v: '1',
+	}),
+);
 
-// Zod
-defineQuery({
-  input: z.object({
-    email: z.string().email(),
-    age: z.number().positive(),
-  }),
-  handler: (input) => { ... }
-})
+const workspace = createWorkspace({
+	id: 'epicenter.examples.tables',
+	tables: { posts },
+});
+
+workspace.tables.posts.set({
+	id: 'post-1',
+	title: 'First post',
+	published: false,
+	_v: 1,
+});
+
+workspace.tables.posts.set({
+	id: 'post-1',
+	title: 'First post, replaced',
+	published: true,
+	_v: 1,
+});
+
+void workspace;
 ```
 
-**JSON Schema Limitations:**
+`set(...)` is the insert-or-replace API.
 
-Input schemas are converted to JSON Schema for MCP/CLI/OpenAPI. Avoid:
+### Update operations
 
-- Transforms: `.pipe()` (ArkType), `.transform()` (Zod)
-- Custom validation: `.filter()` (ArkType), `.refine()` (Zod)
-- Non-JSON types: `bigint`, `symbol`, `undefined`, `Date`, `Map`, `Set`
+`update(id, partial)` reads the row, merges the partial fields, validates the merged result, and writes it back.
 
-Use basic types and `.matching(regex)` for patterns. For complex validation, validate in the handler.
+Possible return values:
 
-### Action Properties
-
-Actions have metadata properties:
+- `{ status: 'updated', row }`
+- `{ status: 'not_found', id, row: undefined }`
+- `{ status: 'invalid', id, errors, row }`
 
 ```typescript
-const action = defineQuery({ ... });
+import { type } from 'arktype';
+import { createWorkspace, defineTable } from '@epicenter/workspace';
 
-action.type         // 'query' | 'mutation'
-action.input        // StandardSchemaV1 | undefined
-action.description  // string | undefined
+const posts = defineTable(
+	type({
+		id: 'string',
+		title: 'string',
+		published: 'boolean',
+		views: 'number',
+		_v: '1',
+	}),
+);
+
+const workspace = createWorkspace({
+	id: 'epicenter.examples.update',
+	tables: { posts },
+});
+
+workspace.tables.posts.set({
+	id: 'post-1',
+	title: 'Draft',
+	published: false,
+	views: 0,
+	_v: 1,
+});
+
+const updateResult = workspace.tables.posts.update('post-1', {
+	published: true,
+	views: 1,
+});
+
+if (updateResult.status === 'updated') {
+	console.log(updateResult.row.views);
+}
+
+void workspace;
 ```
 
-### Type Guards
+### Read operations
+
+The table helper has two styles of read:
+
+| Method | Return type | Notes |
+| --- | --- | --- |
+| `get(id)` | `GetResult<TRow>` | Returns `valid`, `invalid`, or `not_found` |
+| `getAll()` | `RowResult<TRow>[]` | Includes invalid rows |
+| `getAllValid()` | `TRow[]` | Skips invalid rows |
+| `getAllInvalid()` | `InvalidRowResult[]` | Debug schema drift or corrupt data |
+| `filter(predicate)` | `TRow[]` | Runs only on valid rows |
+| `find(predicate)` | `TRow | undefined` | First valid match |
+| `has(id)` | `boolean` | Existence only |
+| `count()` | `number` | Counts valid and invalid rows |
 
 ```typescript
-import { isAction, isQuery, isMutation } from '@epicenter/workspace';
+import { type } from 'arktype';
+import { createWorkspace, defineTable } from '@epicenter/workspace';
 
-isAction(value); // value is Query | Mutation
-isQuery(value); // value is Query
-isMutation(value); // value is Mutation
+const posts = defineTable(
+	type({
+		id: 'string',
+		title: 'string',
+		published: 'boolean',
+		_v: '1',
+	}),
+);
+
+const workspace = createWorkspace({
+	id: 'epicenter.examples.reads',
+	tables: { posts },
+});
+
+workspace.tables.posts.set({ id: '1', title: 'One', published: false, _v: 1 });
+workspace.tables.posts.set({ id: '2', title: 'Two', published: true, _v: 1 });
+
+const one = workspace.tables.posts.get('1');
+if (one.status === 'valid') {
+	console.log(one.row.title);
+}
+
+const all = workspace.tables.posts.getAll();
+const valid = workspace.tables.posts.getAllValid();
+const published = workspace.tables.posts.filter((row) => row.published);
+const firstPublished = workspace.tables.posts.find((row) => row.published);
+const hasPostTwo = workspace.tables.posts.has('2');
+const count = workspace.tables.posts.count();
+
+console.log(all.length, valid.length, published.length, firstPublished?.id, hasPostTwo, count);
+
+void workspace;
+```
+
+### Delete operations
+
+| Method | Behavior |
+| --- | --- |
+| `delete(id)` | Deletes one row; missing IDs are a silent no-op |
+| `clear()` | Deletes all rows in the table |
+
+```typescript
+import { type } from 'arktype';
+import { createWorkspace, defineTable } from '@epicenter/workspace';
+
+const tags = defineTable(
+	type({
+		id: 'string',
+		name: 'string',
+		_v: '1',
+	}),
+);
+
+const workspace = createWorkspace({
+	id: 'epicenter.examples.deletes',
+	tables: { tags },
+});
+
+workspace.tables.tags.set({ id: 'tag-1', name: 'important', _v: 1 });
+workspace.tables.tags.delete('tag-1');
+workspace.tables.tags.clear();
+
+void workspace;
+```
+
+### Reactive updates
+
+`observe(...)` reports a set of changed IDs and the optional Yjs transaction origin.
+
+Use `table.get(id)` inside the callback to see whether the row now exists.
+
+```typescript
+import { type } from 'arktype';
+import { createWorkspace, defineTable } from '@epicenter/workspace';
+import { DOCUMENTS_ORIGIN } from '@epicenter/workspace';
+
+const files = defineTable(
+	type({
+		id: 'string',
+		name: 'string',
+		_v: '1',
+	}),
+);
+
+const workspace = createWorkspace({
+	id: 'epicenter.examples.observe',
+	tables: { files },
+});
+
+const unsubscribe = workspace.tables.files.observe((changedIds, origin) => {
+	if (origin === DOCUMENTS_ORIGIN) {
+		return;
+	}
+
+	for (const id of changedIds) {
+		const result = workspace.tables.files.get(id);
+		if (result.status === 'not_found') {
+			console.log('deleted:', id);
+			continue;
+		}
+
+		if (result.status === 'valid') {
+			console.log('present:', result.row.name);
+		}
+	}
+});
+
+workspace.tables.files.set({ id: 'file-1', name: 'notes.md', _v: 1 });
+workspace.tables.files.delete('file-1');
+unsubscribe();
+
+void workspace;
+```
+
+## Provider System
+
+The old provider map is gone. The current public API is the extension chain.
+
+That means this:
+
+```text
+createWorkspace(definition)
+	.withExtension('persistence', indexeddbPersistence)
+	.withExtension('sync', createSyncExtension({ ... }))
+	.withWorkspaceExtension('markdown', markdownMaterializer({ ... }));
+```
+
+Not this:
+
+```text
+// This API does not exist anymore.
+// providers: { persistence: ..., sync: ... }
+```
+
+### Builder methods
+
+| Method | Scope | Use when |
+| --- | --- | --- |
+| `.withExtension(key, factory)` | Workspace doc + all document docs | Same factory should run everywhere |
+| `.withWorkspaceExtension(key, factory)` | Workspace doc only | Factory needs `tables`, `kv`, or `definitions` |
+| `.withDocumentExtension(key, factory)` | Document docs only | Factory needs `timeline`, `tableName`, or `documentName` |
+| `.withActions(factory)` | Live client only | Attach callable queries and mutations |
+
+### Persistence extensions
+
+The current public persistence subpaths are:
+
+- `@epicenter/workspace/extensions/persistence/indexeddb`
+- `@epicenter/workspace/extensions/persistence/sqlite`
+
+The first exports `indexeddbPersistence`. The second exports `filesystemPersistence({ filePath })`, which returns an extension factory.
+
+```typescript
+import { type } from 'arktype';
+import { createWorkspace, defineTable } from '@epicenter/workspace';
+import { filesystemPersistence } from '@epicenter/workspace/extensions/persistence/sqlite';
+
+const notes = defineTable(
+	type({
+		id: 'string',
+		title: 'string',
+		_v: '1',
+	}),
+);
+
+const workspace = createWorkspace({
+	id: 'epicenter.notes.desktop',
+	tables: { notes },
+}).withExtension(
+	'persistence',
+	filesystemPersistence({
+		filePath: '/tmp/epicenter/notes.db',
+	}),
+);
+
+void workspace;
+```
+
+### Sync extension
+
+The public sync subpaths are:
+
+- `@epicenter/workspace/extensions/sync/websocket`
+- `@epicenter/workspace/extensions/sync/broadcast-channel`
+
+In practice, `createSyncExtension(...)` is the main entry point. It already includes BroadcastChannel cross-tab sync.
+
+```typescript
+import { type } from 'arktype';
+import { createWorkspace, defineTable } from '@epicenter/workspace';
+import { indexeddbPersistence } from '@epicenter/workspace/extensions/persistence/indexeddb';
+import {
+	createSyncExtension,
+	toWsUrl,
+} from '@epicenter/workspace/extensions/sync/websocket';
+
+const tabs = defineTable(
+	type({
+		id: 'string',
+		url: 'string',
+		_v: '1',
+	}),
+);
+
+const workspace = createWorkspace({
+	id: 'epicenter.tabs',
+	tables: { tabs },
+})
+	.withExtension('persistence', indexeddbPersistence)
+	.withExtension(
+		'sync',
+		createSyncExtension({
+			url: (docId) => toWsUrl(`https://sync.epicenter.so/rooms/${docId}`),
+		}),
+	);
+
+void workspace;
+```
+
+### Markdown materializer
+
+The markdown materializer is exported at `@epicenter/workspace/extensions/materializer/markdown`. It is a workspace-only extension because it needs access to `tables`.
+
+```typescript
+import { type } from 'arktype';
+import { createWorkspace, defineTable } from '@epicenter/workspace';
+import { filesystemPersistence } from '@epicenter/workspace/extensions/persistence/sqlite';
+import {
+	markdownMaterializer,
+	titleFilenameSerializer,
+} from '@epicenter/workspace/extensions/materializer/markdown';
+
+const notes = defineTable(
+	type({
+		id: 'string',
+		title: 'string',
+		body: 'string',
+		_v: '1',
+	}),
+);
+
+const workspace = createWorkspace({
+	id: 'epicenter.notes',
+	tables: { notes },
+})
+	.withExtension(
+		'persistence',
+		filesystemPersistence({
+			filePath: '/tmp/epicenter/notes-workspace.db',
+		}),
+	)
+	.withWorkspaceExtension('markdown', (context) =>
+		markdownMaterializer({
+			directory: '/tmp/epicenter/markdown',
+			tables: {
+				notes: {
+					serializer: titleFilenameSerializer('title'),
+				},
+			},
+		})(context),
+	);
+
+void workspace;
+```
+
+### Honest note about SQLite materialization
+
+There is SQLite mirror code in `src/extensions/materializer/sqlite`, but it is not in the current `package.json` exports map for `@epicenter/workspace`. This README sticks to public APIs you can actually import today. If that export changes later, the README should change with it—not before.
+
+## Workspace Dependencies
+
+Workspaces depend on each other the normal way: regular imports.
+
+There is no special dependency graph inside the workspace package. If one action needs another workspace, import the other workspace client or factory and call it directly.
+
+```typescript
+import Type from 'typebox';
+import { defineMutation } from '@epicenter/workspace';
+
+declare const authWorkspace: {
+	actions: {
+		users: {
+			getById: (input: { id: string }) => { id: string; name: string } | null;
+		};
+	};
+};
+
+declare const blogWorkspace: {
+	tables: {
+		posts: {
+			set: (row: {
+				id: string;
+				title: string;
+				authorId: string;
+				_v: 1;
+			}) => void;
+		};
+	};
+};
+
+const createPost = defineMutation({
+	title: 'Create Post',
+	description: 'Create a post for an existing author.',
+	input: Type.Object({
+		id: Type.String(),
+		title: Type.String(),
+		authorId: Type.String(),
+	}),
+	handler: ({ id, title, authorId }) => {
+		const author = authWorkspace.actions.users.getById({ id: authorId });
+		if (!author) return null;
+
+		blogWorkspace.tables.posts.set({
+			id,
+			title,
+			authorId,
+			_v: 1,
+		});
+
+		return { id };
+	},
+});
+
+void createPost;
+```
+
+That example uses `declare` stubs so the snippet compiles on its own, but the real pattern is just plain module composition.
+
+## Actions
+
+Actions are the current abstraction for developer-facing operations.
+
+They have four important properties:
+
+1. They are callable functions.
+2. They carry metadata (`type`, `title`, `description`, `input`).
+3. They close over the client by normal JavaScript closure.
+4. They are attached to the workspace with `.withActions(...)`.
+
+### Query actions
+
+Use `defineQuery(...)` for reads.
+
+```typescript
+import { type } from 'arktype';
+import Type from 'typebox';
+import {
+	createWorkspace,
+	defineQuery,
+	defineTable,
+} from '@epicenter/workspace';
+
+const posts = defineTable(
+	type({
+		id: 'string',
+		title: 'string',
+		published: 'boolean',
+		_v: '1',
+	}),
+);
+
+const workspace = createWorkspace({
+	id: 'epicenter.actions.queries',
+	tables: { posts },
+}).withActions(({ tables }) => ({
+	posts: {
+		list: defineQuery({
+			title: 'List Posts',
+			description: 'List all posts.',
+			handler: () => tables.posts.getAllValid(),
+		}),
+
+		getById: defineQuery({
+			title: 'Get Post',
+			description: 'Get one post by ID.',
+			input: Type.Object({ id: Type.String() }),
+			handler: ({ id }) => tables.posts.get(id),
+		}),
+	},
+}));
+
+const actionType = workspace.actions.posts.list.type;
+void actionType;
+void workspace;
+```
+
+### Mutation actions
+
+Use `defineMutation(...)` for writes or side effects.
+
+```typescript
+import { type } from 'arktype';
+import Type from 'typebox';
+import {
+	createWorkspace,
+	defineMutation,
+	defineTable,
+	generateId,
+} from '@epicenter/workspace';
+
+const posts = defineTable(
+	type({
+		id: 'string',
+		title: 'string',
+		published: 'boolean',
+		_v: '1',
+	}),
+);
+
+const workspace = createWorkspace({
+	id: 'epicenter.actions.mutations',
+	tables: { posts },
+}).withActions(({ tables }) => ({
+	posts: {
+		create: defineMutation({
+			title: 'Create Post',
+			description: 'Create a new post row.',
+			input: Type.Object({ title: Type.String() }),
+			handler: ({ title }) => {
+				const id = generateId();
+				tables.posts.set({ id, title, published: false, _v: 1 });
+				return { id };
+			},
+		}),
+
+		publish: defineMutation({
+			title: 'Publish Post',
+			description: 'Mark a post as published.',
+			input: Type.Object({ id: Type.String() }),
+			handler: ({ id }) => tables.posts.update(id, { published: true }),
+		}),
+	},
+}));
+
+void workspace;
+```
+
+### Input validation
+
+Action inputs are TypeBox today.
+
+That point matters because older docs implied a wider schema surface than the current implementation. `defineQuery` and `defineMutation` are typed around `typebox` `TSchema` inputs, so the safe example is:
+
+```typescript
+import Type from 'typebox';
+import { defineQuery } from '@epicenter/workspace';
+
+const searchPosts = defineQuery({
+	title: 'Search Posts',
+	description: 'Search posts by query string.',
+	input: Type.Object({ query: Type.String(), limit: Type.Optional(Type.Number()) }),
+	handler: ({ query, limit }) => ({ query, limit: limit ?? 10 }),
+});
+
+void searchPosts;
+```
+
+No-input actions are just as valid:
+
+```typescript
+import { defineMutation } from '@epicenter/workspace';
+
+const clearCache = defineMutation({
+	title: 'Clear Cache',
+	description: 'Clear a local cache.',
+	handler: () => {
+		return { cleared: true };
+	},
+});
+
+void clearCache;
+```
+
+### Action properties
+
+Every action exposes:
+
+- `action.type` — `'query'` or `'mutation'`
+- `action.title` — optional UI-facing label
+- `action.description` — optional adapter-facing description
+- `action.input` — optional TypeBox schema
+
+And the action itself is callable. There is no separate `.handler` property on the returned object.
+
+### Type guards and iteration
+
+```typescript
+import Type from 'typebox';
+import {
+	defineMutation,
+	defineQuery,
+	isAction,
+	isMutation,
+	isQuery,
+	iterateActions,
+	type Actions,
+} from '@epicenter/workspace';
+
+const actions = {
+	posts: {
+		list: defineQuery({ handler: () => [] as string[] }),
+		create: defineMutation({
+			input: Type.Object({ title: Type.String() }),
+			handler: ({ title }) => ({ title }),
+		}),
+	},
+} satisfies Actions;
+
+for (const [action, path] of iterateActions(actions)) {
+	if (isAction(action)) {
+		console.log(path.join('.'), action.type);
+	}
+}
+
+const listAction = actions.posts.list;
+if (isQuery(listAction)) {
+	console.log(listAction.type);
+}
+
+const createAction = actions.posts.create;
+if (isMutation(createAction)) {
+	console.log(createAction.type);
+}
 ```
 
 ## Providers
 
-Providers are defined as a map and can attach capabilities to YJS documents. They run in parallel during workspace initialization.
+Historically, Epicenter called many of these things “providers.” In the current package surface, the better mental model is “extensions.” This section lists the public extension entry points the package actually exports.
 
-**Type:**
+| Import path | What it exports | Public today |
+| --- | --- | --- |
+| `@epicenter/workspace` | Core workspace API, actions, ids, dates, types | Yes |
+| `@epicenter/workspace/extensions/persistence/indexeddb` | `indexeddbPersistence` | Yes |
+| `@epicenter/workspace/extensions/persistence/sqlite` | `filesystemPersistence` | Yes |
+| `@epicenter/workspace/extensions/sync/websocket` | `createSyncExtension`, `toWsUrl`, sync types | Yes |
+| `@epicenter/workspace/extensions/sync/broadcast-channel` | BroadcastChannel sync extension | Yes |
+| `@epicenter/workspace/extensions/materializer/markdown` | `markdownMaterializer`, serializers | Yes |
+| `src/extensions/materializer/sqlite/*` | SQLite mirror internals | Not exported from package.json |
 
-```typescript
-type Provider<TExports> = (
-	context: ProviderContext,
-) => TExports | void | Promise<TExports | void>;
+### Create workspace
 
-type ProviderContext = {
-	id: string; // Workspace ID
-	providerId: string; // Provider key (e.g., 'sqlite', 'persistence')
-	ydoc: Y.Doc; // YJS document
-	schema: TSchema; // Workspace schema (table definitions)
-	tables: Tables<TSchema>; // Access to workspace tables
-	paths: ProviderPaths | undefined; // Filesystem paths (undefined in browser)
-};
-
-type ProviderPaths = {
-	project: ProjectDir; // Project root for user content
-	epicenter: EpicenterDir; // .epicenter directory
-	provider: ProviderDir; // .epicenter/providers/{providerId}/
-};
-```
-
-**Common providers:**
+The builder is usable immediately. You do not need a separate “finalize” step.
 
 ```typescript
-import { setupPersistence } from '@epicenter/workspace/providers';
-import { sqliteProvider, markdownProvider } from '@epicenter/workspace';
-import { createSyncExtension } from '@epicenter/workspace/extensions/sync';
+import { type } from 'arktype';
+import { createWorkspace, defineTable } from '@epicenter/workspace';
 
-providers: {
-  // Filesystem persistence (Node.js) or IndexedDB (browser)
-  persistence: setupPersistence,
+const notes = defineTable(
+	type({
+		id: 'string',
+		title: 'string',
+		_v: '1',
+	}),
+);
 
-  // SQLite materializer
-  sqlite: (c) => sqliteProvider(c),
+const workspace = createWorkspace({
+	id: 'epicenter.examples.builder',
+	tables: { notes },
+});
 
-  // Markdown materializer
-  markdown: (c) => markdownProvider(c),
+workspace.tables.notes.set({ id: '1', title: 'Ready immediately', _v: 1 });
 
-  // WebSocket sync extension (y-websocket protocol via @epicenter/sync)
-  sync: createSyncExtension({
-    url: 'ws://localhost:3913/rooms/{id}',
-  }),
-
-  // Custom provider
-  custom: ({ id, ydoc, paths }) => {
-    console.log(`Setting up workspace: ${id}`);
-    // Attach custom capabilities
-  },
-}
+void workspace;
 ```
 
-**Execution:**
-
-Providers run in parallel during initialization. Providers that return exports make those exports available in the `providers` object passed to handlers.
-
-### Create Client
-
-Create a workspace client using the builder pattern:
-
-```typescript
-// Create a client with extensions
-const blogClient = createClient(blogWorkspace.id)
-	.withDefinition(blogWorkspace)
-	.withExtension('sqlite', sqliteProvider);
-
-// Direct table access
-const posts = blogClient.tables.get('posts').getAllValid();
-
-// Cleanup when done
-await blogClient.destroy();
-
-// Or use with `await using` for automatic cleanup
-{
-	await using client = createClient(blogWorkspace.id)
-		.withDefinition(blogWorkspace)
-		.withExtension('sqlite', sqliteProvider);
-
-	client.tables.get('posts').upsert({ id: '1', title: 'Hello' });
-}
-```
-
-**projectDir**: Defaults to `process.cwd()` in Node.js, `undefined` in browser.
+If you add extensions, use `whenReady` as the async boundary.
 
 ## Architecture & Lifecycle
 
-### Client Initialization Lifecycle
+### Client initialization lifecycle
 
-When you call `.withExtension()`, here's what happens:
+When you call `createWorkspace(...)`, here is the actual lifecycle:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│ 1. CREATE Y.Doc (CRDT data structure)                       │
-│    • Unique document ID = workspace ID                      │
-│    • In-memory collaborative data structure                 │
+│ 1. CREATE Y.Doc                                            │
+│    • guid = workspace id                                   │
+│    • tables, kv, and awareness helpers are created         │
 └─────────────────────────────────────────────────────────────┘
                            │
                            ▼
 ┌─────────────────────────────────────────────────────────────┐
-│ 2. INITIALIZE TABLES                                        │
-│    • Create YJS-backed table operations                     │
-│    • Set up runtime validators from schema                  │
+│ 2. CREATE DOCUMENT MANAGERS                                │
+│    • Only for tables that called .withDocument()           │
+│    • Managers are eager; document Y.Docs open lazily       │
 └─────────────────────────────────────────────────────────────┘
                            │
                            ▼
 ┌─────────────────────────────────────────────────────────────┐
-│ 3. INITIALIZE PROVIDERS                                     │
-│    • Run provider factories (SQLite, markdown, etc.)        │
-│    • Providers receive YDoc, tables, paths, validators      │
-│    • Loads existing state, starts auto-sync                 │
+│ 3. APPLY BUILDER CHAIN                                     │
+│    • withExtension / withWorkspaceExtension /              │
+│      withDocumentExtension / withActions                   │
+│    • each step returns a fresh builder                     │
 └─────────────────────────────────────────────────────────────┘
                            │
                            ▼
 ┌─────────────────────────────────────────────────────────────┐
-│ 4. BIND ACTION HANDLERS                                     │
-│    • Connect handlers to contracts                          │
-│    • Inject handler context (tables, providers, etc.)       │
+│ 4. RESOLVE whenReady                                       │
+│    • composite promise across all registered extensions    │
+│    • persistence loads first, sync can wait on it          │
 └─────────────────────────────────────────────────────────────┘
                            │
                            ▼
 ┌─────────────────────────────────────────────────────────────┐
-│ 5. RETURN BOUND CLIENT                                      │
-│    • client.id - workspace ID                               │
-│    • client.tables - YJS table operations                   │
-│    • client.actions - bound action methods                  │
-│    • client.contracts - action schemas (for introspection)  │
-│    • client.destroy() - cleanup resources                   │
+│ 5. LIVE CLIENT                                             │
+│    • tables / kv / documents / awareness / extensions      │
+│    • actions callable directly through client.actions      │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-### Storage Context
+### `batch(fn)`
 
-Each client instance writes to a **storage context** determined by:
+`client.batch(fn)` groups workspace mutations into a single Yjs transaction.
 
-- **Directory**: Where the script runs (affects `.epicenter/` path)
-- **Environment**: Browser (IndexedDB) vs Node (filesystem)
-- **Workspace ID**: The specific workspace being accessed
+```typescript
+import { type } from 'arktype';
+import { createWorkspace, defineTable } from '@epicenter/workspace';
 
-```
-Storage Context = Directory + Environment + Workspace ID
+const posts = defineTable(
+	type({
+		id: 'string',
+		title: 'string',
+		_v: '1',
+	}),
+);
 
-Examples:
-  /project-a + Node + pages → /project-a/.epicenter/providers/persistence/pages.yjs
-  /project-b + Node + pages → /project-b/.epicenter/providers/persistence/pages.yjs (different!)
-  Browser + pages → IndexedDB:pages (different!)
-```
+const tags = defineTable(
+	type({
+		id: 'string',
+		name: 'string',
+		_v: '1',
+	}),
+);
 
-### `.epicenter/` Folder Structure
+const workspace = createWorkspace({
+	id: 'epicenter.examples.batch',
+	tables: { posts, tags },
+});
 
-The `.epicenter` folder contains all internal data, organized by provider:
+workspace.batch(() => {
+	workspace.tables.posts.set({ id: 'p1', title: 'One transaction', _v: 1 });
+	workspace.tables.tags.set({ id: 't1', name: 'docs', _v: 1 });
+});
 
-```
-.epicenter/
-└── providers/                        # GITIGNORED
-    ├── persistence/                  # YJS persistence provider
-    │   ├── blog.yjs
-    │   └── auth.yjs
-    ├── sqlite/                       # SQLite provider
-    │   ├── blog.db
-    │   ├── auth.db
-    │   └── logs/
-    │       ├── blog.log
-    │       └── auth.log
-    ├── markdown/                     # Markdown provider
-    │   ├── logs/
-    │   │   └── blog.log
-    │   └── diagnostics/
-    │       └── blog.json
-    └── gmailAuth/                    # Custom auth provider example
-        └── token.json
+void workspace;
 ```
 
-**Key design decisions:**
+Yjs transactions do not roll back on throw. They batch notifications; they are not SQL transactions.
 
-- Each provider gets isolated storage at `.epicenter/providers/{providerId}/`
-- Provider artifacts are gitignored (add `.epicenter/providers/` to `.gitignore`)
-- Simple naming within providers: `{workspaceId}.{ext}` for data, `logs/{workspaceId}.log` for logs
-- **Rule**: Only one client can access the same storage context at a time.
+### `whenReady`, `clearLocalData`, and `dispose`
 
-### Cleanup Lifecycle
+| API | What it means |
+| --- | --- |
+| `whenReady` | Composite readiness promise across all installed extensions |
+| `clearLocalData()` | Calls extension `clearLocalData` hooks in LIFO order |
+| `dispose()` | Tears down observers, connections, and extension resources |
 
-When you dispose a client (automatically with `await using` or manually with `await client.destroy()`):
+`dispose()` preserves data. It cleans up resources. If you want to wipe persisted local state, that is what `clearLocalData()` is for.
+
+### Cleanup lifecycle
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│ destroy() or Symbol.asyncDispose Called                      │
+│ dispose() called                                           │
 └─────────────────────────────────────────────────────────────┘
                            │
                            ▼
 ┌─────────────────────────────────────────────────────────────┐
-│ For Each Workspace:                                          │
-│                                                              │
-│    1. Destroy Providers                                      │
-│       • Close SQLite connections                             │
-│       • Unsubscribe observers                                │
-│       • Disconnect persistence                               │
-│                                                              │
-│    2. Destroy Y.Doc                                          │
-│       • Clean up observers                                   │
-│       • Free memory                                          │
+│ 1. Close open document handles                             │
+│    • document providers disconnect                         │
+│    • document observers stop                               │
+└─────────────────────────────────────────────────────────────┘
+                           │
+                           ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 2. Dispose extensions in LIFO order                        │
+│    • sockets close                                         │
+│    • persistence adapters flush / detach                   │
+│    • status emitters stop                                  │
+└─────────────────────────────────────────────────────────────┘
+                           │
+                           ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 3. Destroy awareness + Y.Doc                               │
 └─────────────────────────────────────────────────────────────┘
 ```
 
 ## Client vs Server
 
-Epicenter can be used in two primary ways:
+`@epicenter/workspace` is the core client/workspace library.
 
-### 1. As a Client (Scripts, Migrations, CLI Tools)
+The public root export does not currently ship a built-in server helper. Older docs implied otherwise; that is stale.
 
-Create a client directly for standalone scripts. Use `await using` for automatic cleanup:
+What the package does give you is the raw material a server adapter needs:
 
-```typescript
-// Script or migration
-{
-	await using client = createClient(blogWorkspace.id)
-		.withDefinition(blogWorkspace)
-		.withExtension('sqlite', sqliteProvider);
+- `client.actions`
+- `iterateActions(...)`
+- `describeWorkspace(...)`
+- action metadata (`type`, `input`, `description`)
+- direct access to workspace tables, KV, documents, and awareness
 
-	client.tables.get('posts').upsert({ id: '1', title: 'Hello' });
-	// Automatic cleanup when block exits
-}
-```
-
-**Important**: When running scripts, **ensure no server is running** in the same directory. Multiple clients accessing the same storage context simultaneously will conflict.
-
-### 2. As a Server (Web APIs, Long-Running Processes)
-
-The server is a wrapper around the client that maps REST, MCP, and WebSocket Sync endpoints to workspace actions and tables.
-
-```typescript
-import { createClient, createServer } from '@epicenter/workspace';
-
-const client = createClient(blogWorkspace.id)
-  .withDefinition(blogWorkspace)
-  .withExtension('sqlite', sqliteProvider);
-
-// Expose the client and custom actions via HTTP
-const server = createServer(client, {
-  port: 3913,
-  actions: blogActions
-});
-
-server.start();
-
-// Other processes can now use the HTTP API
-await fetch('http://localhost:3913/actions/createPost', {
-  method: 'POST',
-  body: JSON.stringify({ title: 'New Post', ... }),
-});
-```
+If you want HTTP, CLI, or MCP on top, build or import an adapter around those primitives.
 
 ## API Reference
 
-### Workspace Definition
-
-```typescript
-import { defineWorkspace, defineMutation, defineQuery } from '@epicenter/workspace';
-```
-
-**`defineWorkspace({ id, tables, kv })`**
-
-Define a workspace contract with tables and key-value store.
-
-```typescript
-const blogWorkspace = defineWorkspace({
-	id: 'blog',
-	tables: {
-		posts: {
-			name: 'Posts',
-			fields: { id: id(), title: text() },
-		},
-	},
-	kv: {},
-});
-```
-
-### Client Creation
-
-```typescript
-// Create client with extensions
-const client = createClient(blogWorkspace.id)
-	.withDefinition(blogWorkspace)
-	.withExtension('sqlite', sqliteProvider);
-
-// Use tables directly
-const id = generateId();
-client.tables.get('posts').upsert({ id, title: 'Hello' });
-```
-
-### Client Properties
-
-```typescript
-client.id; // Workspace ID ('blog')
-client.tables; // YJS-backed table operations
-client.kv; // Key-value store
-client.extensions; // Extension exports
-client.ydoc; // Underlying Y.Doc
-client.whenReady; // Promise for async initialization
-
-await client.destroy(); // Cleanup resources
-```
-
-### Column Schemas
+### Workspace definition
 
 ```typescript
 import {
-	id,
-	text,
-	ytext,
-	integer,
-	real,
-	boolean,
-	date,
-	select,
-	tags,
-	json,
-	type ColumnSchema,
-	type TableSchema,
-	type WorkspaceSchema,
+	defineKv,
+	defineTable,
+	defineWorkspace,
+	type WorkspaceDefinition,
 } from '@epicenter/workspace';
 ```
 
-**Column factory functions:**
+Core definition helpers:
 
-- `id()`: Auto-generated ID
-- `text(options?)`: Text column
-- `ytext(options?)`: Collaborative text (Y.Text)
-- `integer(options?)`, `real(options?)`: Numeric columns
-- `boolean(options?)`: Boolean column
-- `date(options?)`: Date with timezone
-- `select<TOptions>(options)`: Single choice enum
-- `tags<TOptions>(options?)`: String array
-- `json<TSchema>(options)`: JSON with arktype validation
+- `defineTable(schema)`
+- `defineTable(v1, v2, ...).migrate(fn)`
+- `defineKv(schema, defaultValue)`
+- `defineWorkspace({ id, tables, kv, awareness })`
 
-**Common options:**
+### Client creation
 
-- `nullable?: boolean` (default: `false`)
-- `default?: T | (() => T)`
+```typescript
+import {
+	createWorkspace,
+	type WorkspaceClient,
+	type WorkspaceClientBuilder,
+} from '@epicenter/workspace';
+```
+
+The builder returned by `createWorkspace(...)` is already a usable client.
+
+### Client properties
+
+The important runtime properties are:
+
+- `client.id`
+- `client.ydoc`
+- `client.definitions`
+- `client.tables`
+- `client.documents`
+- `client.kv`
+- `client.awareness`
+- `client.extensions`
+- `client.actions` when attached through `.withActions(...)`
+- `client.whenReady`
+
+Lifecycle and utility methods:
+
+- `client.batch(fn)`
+- `client.loadSnapshot(update)`
+- `client.applyEncryptionKeys(keys)`
+- `client.clearLocalData()`
+- `client.dispose()`
+
+### Document content model
+
+Open document handles are timeline APIs.
+
+Important methods and properties:
+
+- `handle.read()`
+- `handle.write(text)`
+- `handle.appendText(text)`
+- `handle.asText()`
+- `handle.asRichText()`
+- `handle.asSheet()`
+- `handle.currentType`
+- `handle.observe(...)`
+- `handle.restoreFromSnapshot(binary)`
+
+Document managers live at `client.documents.{tableName}.{documentName}` and expose:
+
+- `open(rowOrGuid)`
+- `close(rowOrGuid)`
+- `closeAll()`
 
 ### Actions
 
 ```typescript
 import {
-	defineQuery,
 	defineMutation,
+	defineQuery,
 	isAction,
-	isQuery,
 	isMutation,
-	defineActions,
-	type Query,
-	type Mutation,
+	isQuery,
+	iterateActions,
 	type Action,
 	type Actions,
+	type Mutation,
+	type Query,
 } from '@epicenter/workspace';
 ```
 
-**`defineQuery(config)`**
-
-Define a query action (read operation).
-
-**`defineMutation(config)`**
-
-Define a mutation action (write operation).
-
-**Type guards:**
-
-- `isAction(value)`: Check if value is Query or Mutation
-- `isQuery(value)`: Check if value is Query
-- `isMutation(value)`: Check if value is Mutation
-
-**`defineActions<T>(exports)`**
-
-Identity function for type inference.
-
-### Table Operations
+### Table operations
 
 ```typescript
-import { type Tables, type TableHelper } from '@epicenter/workspace';
-```
-
-**`TableHelper<TSchema>`** methods:
-
-- `upsert(row)`, `upsertMany(rows)`: Create or replace entire row (never fails)
-- `update(partial)`, `updateMany(partials)`: Merge fields into existing row (no-op if not found)
-- `get({ id })`, `getAll()`, `getAllInvalid()`
-- `has({ id })`, `count()`
-- `delete({ id })`, `deleteMany({ ids })`, `clear()`
-- `filter(predicate)`, `find(predicate)`
-- `observe(callback)`: Watch for changes (receives `Map<id, 'add'|'update'|'delete'>`)
-
-### Providers
-
-```typescript
-import { sqliteProvider } from '@epicenter/workspace';
-import { markdownProvider, type MarkdownProviderConfig } from '@epicenter/workspace';
 import {
-	type Provider,
-	type ProviderContext,
-	type Providers,
-	type WorkspaceProviderMap,
+	type GetResult,
+	type InvalidRowResult,
+	type RowResult,
+	type TableHelper,
+	type UpdateResult,
+	type ValidRowResult,
 } from '@epicenter/workspace';
 ```
 
-**`sqliteProvider(context)`**
+Public table helper methods:
 
-Create SQLite provider with Drizzle ORM.
+- `parse(id, input)`
+- `set(row)`
+- `update(id, partial)`
+- `get(id)`
+- `getAll()`
+- `getAllValid()`
+- `getAllInvalid()`
+- `filter(predicate)`
+- `find(predicate)`
+- `delete(id)`
+- `clear()`
+- `observe(callback)`
+- `count()`
+- `has(id)`
 
-**`markdownProvider(context, config?)`**
-
-Create markdown file provider.
-
-### Persistence Provider
+### KV operations
 
 ```typescript
-import { setupPersistence } from '@epicenter/workspace/providers';
+import { type KvChange, type KvHelper } from '@epicenter/workspace';
 ```
 
-**`setupPersistence`**
+Public KV helper methods:
 
-Built-in persistence provider (IndexedDB in browser, filesystem in Node.js).
+- `get(key)`
+- `set(key, value)`
+- `delete(key)`
+- `observe(key, callback)`
+- `observeAll(callback)`
 
-### Date Utilities
+### Awareness
+
+```typescript
+import {
+	type AwarenessDefinitions,
+	type AwarenessHelper,
+	type AwarenessState,
+	type InferAwarenessValue,
+} from '@epicenter/workspace';
+```
+
+Public awareness helper methods:
+
+- `setLocal(state)`
+- `setLocalField(key, value)`
+- `getLocal()`
+- `getLocalField(key)`
+- `getAll()`
+- `peers()`
+- `observe(callback)`
+- `raw`
+
+### Introspection
+
+```typescript
+import {
+	describeWorkspace,
+	standardSchemaToJsonSchema,
+	type ActionDescriptor,
+	type SchemaDescriptor,
+	type WorkspaceDescriptor,
+} from '@epicenter/workspace';
+```
+
+`describeWorkspace(client)` gives you a serializable description of tables, KV, awareness, and actions. `standardSchemaToJsonSchema(...)` converts compatible standard schemas to JSON Schema.
+
+### IDs and dates
 
 ```typescript
 import {
 	DateTimeString,
+	dateTimeStringNow,
+	generateGuid,
+	generateId,
 	type DateIsoString,
+	type Guid,
+	type Id,
 	type TimezoneId,
 } from '@epicenter/workspace';
 ```
 
-**`DateTimeString.now(timezone?)`**
-
-Create a DateTimeString for the current moment. Uses system timezone if not specified.
-
-**`DateTimeString.parse(str)`**
-
-Parse storage string to `Temporal.ZonedDateTime` for date math and manipulation.
-
-**`DateTimeString.stringify(dt)`**
-
-Convert `Temporal.ZonedDateTime` back to storage format.
-
-**`DateTimeString.is(value)`**
-
-Type guard to check if a value is a valid DateTimeString.
-
-### Validation
+### Storage keys
 
 ```typescript
 import {
-	createTableValidators,
-	createWorkspaceValidators,
-	type TableValidators,
-	type WorkspaceValidators,
+	KV_KEY,
+	TableKey,
+	type KvKey,
+	type TableKeyType,
 } from '@epicenter/workspace';
 ```
 
-**`createTableValidators<TSchema>(schema)`**
+These matter when you are writing low-level tooling against raw Yjs structures.
 
-Create validators for a table schema.
-
-**`createWorkspaceValidators<TSchema>(schema)`**
-
-Create validators for all tables in a workspace.
-
-### Error Types
+### Drizzle re-exports
 
 ```typescript
 import {
-	EpicenterOperationErr,
-	IndexErr,
-	ValidationErr,
-	type EpicenterOperationError,
-	type IndexError,
-	type ValidationError,
-} from '@epicenter/workspace';
-```
-
-**Error constructors:**
-
-- `EpicenterOperationErr({ message, context, cause })`: General operation errors
-- `IndexErr({ message, context, cause })`: Index sync errors
-- `ValidationErr({ message, context, cause })`: Schema validation errors
-
-### Drizzle Re-exports
-
-```typescript
-import {
+	and,
+	asc,
+	desc,
 	eq,
-	ne,
 	gt,
 	gte,
+	inArray,
+	isNotNull,
+	isNull,
+	like,
 	lt,
 	lte,
-	and,
-	or,
+	ne,
 	not,
-	like,
-	inArray,
-	isNull,
-	isNotNull,
+	or,
 	sql,
-	desc,
-	asc,
 } from '@epicenter/workspace';
 ```
 
-Commonly used Drizzle operators for querying SQLite provider.
-
-### Server
-
-```typescript
-import { createServer } from '@epicenter/workspace';
-
-// Single workspace
-const server = createServer(blogClient, { port: 3913 });
-
-// Multiple workspaces (IDs from workspace definitions)
-const server = createServer([blogClient, authClient], { port: 3913 });
-
-server.start();
-```
-
-**`createServer(client | clients, options?)`**
-
-Create an HTTP server from workspace clients. Exposes:
-
-- REST endpoints for actions: `/workspaces/{id}/actions/{action}`
-- Table CRUD: `/workspaces/{id}/tables/{table}`
-- WebSocket sync: `/rooms/{id}`
-- OpenAPI documentation: `/openapi`
+These are convenience re-exports for extension code and mirror/query packages that already depend on Drizzle.
 
 ## MCP Integration
 
-Epicenter workspaces can be exposed as MCP (Model Context Protocol) servers for AI assistant integration.
+The core package does not export an MCP server. What it does export is the metadata you need to build one.
 
-### HTTP Transport Only
+The current pieces are:
 
-Epicenter uses HTTP transport exclusively, not stdio. This is intentional:
+- actions with `type`, `title`, `description`, and `input`
+- `iterateActions(...)` to flatten a nested action tree
+- `describeWorkspace(...)` for schema introspection
+- `standardSchemaToJsonSchema(...)` for schema conversion where supported
 
-**Why not stdio?**
-
-stdio spawns a new process per AI session, which creates problems:
-
-- Expensive cold starts (initialize YJS, build providers, parse files)
-- File system conflicts (multiple watchers, SQLite locks)
-- No shared state (wasted memory, duplicate work)
-
-**Why HTTP?**
-
-A long-running HTTP server models Epicenter's folder-based architecture:
-
-- Initialize once, serve many sessions
-- Share state across all AI assistants
-- Handle file watching without conflicts
-- Efficient resource usage
-
-### Route Handling
-
-Workspace actions are exposed via REST endpoints under the `/workspaces` prefix:
-
-**Query Actions** (HTTP GET):
-
-- Path: `/workspaces/{workspaceId}/{actionName}`
-- Input: Query string parameters
-
-**Mutation Actions** (HTTP POST):
-
-- Path: `/workspaces/{workspaceId}/{actionName}`
-- Input: JSON request body
-
-**URL Hierarchy:**
-
-```
-/                                    - API root/discovery
-/openapi                             - OpenAPI spec (JSON)
-/scalar                              - Scalar UI documentation
-/mcp                                 - MCP endpoint
-/signaling                           - WebRTC signaling WebSocket
-/workspaces/{workspaceId}/{action}   - Workspace actions
-```
+That is enough to build adapters that expose workspace actions over HTTP, CLI, or MCP without coupling the core package to one transport.
 
 ### Setup
 
 ```typescript
-import { createClient, createServer } from '@epicenter/workspace';
+import Type from 'typebox';
+import {
+	defineMutation,
+	defineQuery,
+	iterateActions,
+	type Actions,
+} from '@epicenter/workspace';
 
-// Create clients with extensions
-const blogClient = createClient(blogWorkspace.id)
-	.withDefinition(blogWorkspace)
-	.withExtension('sqlite', sqliteProvider);
+const actions: Actions = {
+	posts: {
+		list: defineQuery({
+			title: 'List Posts',
+			description: 'List all posts.',
+			handler: () => [] as Array<{ id: string; title: string }>,
+		}),
 
-const authClient = createClient(authWorkspace.id)
-	.withDefinition(authWorkspace)
-	.withExtension('sqlite', sqliteProvider);
+		create: defineMutation({
+			title: 'Create Post',
+			description: 'Create a post.',
+			input: Type.Object({ title: Type.String() }),
+			handler: ({ title }) => ({ id: title.toLowerCase() }),
+		}),
+	},
+};
 
-// Create and start server
-const server = createServer([blogClient, authClient], { port: 3913 });
-server.start();
-console.log('Server running on http://localhost:3913');
+for (const [action, path] of iterateActions(actions)) {
+	console.log({
+		name: path.join('.'),
+		type: action.type,
+		title: action.title,
+		description: action.description,
+		hasInput: action.input !== undefined,
+	});
+}
 ```
 
-AI assistants connect via HTTP, with no cold start penalty.
+That is the public adapter surface today.
 
 ## Contributing
 
-### Local Development
+### Local development
 
-If you're working on the Epicenter package, test it locally using `bun link`:
+From the repo root:
 
 ```bash
-# Install dependencies (from repository root)
 bun install
-
-# One-time setup: Link the package globally
-cd packages/workspace
-bun link
-
-# Now use from any directory
-cd examples/content-hub
-epicenter --help
-epicenter blog createPost --title "Test"
-
-# When done testing
-cd packages/workspace
-bun unlink
 ```
 
-**Alternative:** Use local `cli.ts` in examples:
+Type-check the workspace package itself:
 
 ```bash
-cd examples/content-hub
-bun cli.ts --help
-bun cli.ts blog createPost --title "Test"
+bun run typecheck
 ```
 
-### Running Tests
+If you're working on the package from another local project, use Bun's normal workspace linking flow. Nothing about the current API requires a special README-only workflow.
+
+### Running tests
+
+From the repo root:
 
 ```bash
-# Run all tests
-bun test
-
-# Run specific workspace tests
-cd examples/content-hub
-bun test
+bun test packages/workspace
 ```
 
-### More Information
+Or run the package test suite directly from `packages/workspace` if you prefer the local context.
 
-See [CONTRIBUTING.md](../../CONTRIBUTING.md) for complete development setup and guidelines.
+### More information
+
+Useful internal docs live nearby:
+
+- `src/workspace/README.md` — mental model for the lower-level workspace layer
+- `docs/` — package-specific architecture notes
+- `specs/` — historical design docs and implementation specs
+
+## Related Packages
+
+If your app's data model is inherently files and folders—a code editor, a note vault with nested directories, anything where users expect `mkdir` and path resolution—[`@epicenter/filesystem`](../filesystem) builds that abstraction on top of this package. It imports `defineTable` to create a `filesTable`, wraps workspace tables and documents into POSIX-style operations (`writeFile`, `mv`, `rm`, `stat`), and plugs into the same extension system.
+
+Most apps won't need it. If you know the shape of every record upfront, workspace tables are the right default. See [Your Data Is Probably a Table, Not a File](../../docs/articles/your-data-is-probably-a-table-not-a-file.md) for the full decision matrix.
 
 ## License
 
-AGPL-3.0
+MIT

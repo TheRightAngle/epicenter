@@ -10,7 +10,7 @@
 	import AlertTriangle from '@lucide/svelte/icons/alert-triangle';
 	import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
 	import { createQuery } from '@tanstack/svelte-query';
-	import { desktopRpc } from '$lib/query';
+	import { desktopRpc } from '$lib/query/desktop';
 	import {
 		FFMPEG_DEFAULT_COMPRESSION_OPTIONS,
 		FFMPEG_SMALLEST_COMPRESSION_OPTIONS,
@@ -55,7 +55,7 @@
 	 */
 	function isPresetActive(presetKey: CompressionPresetKey): boolean {
 		return (
-			settings.value['transcription.compressionOptions'] ===
+			settings.get('transcription.compressionOptions') ===
 			COMPRESSION_PRESETS[presetKey].options
 		);
 	}
@@ -72,14 +72,14 @@
 	const showRecommendedBadge = $derived(isCompressionRecommended());
 </script>
 
-<div class="space-y-4">
+<Field.Group>
 	<!-- Enable/Disable Toggle -->
 	<Field.Field orientation="horizontal">
 		<Checkbox
 			id="compression-enabled"
-			checked={settings.value['transcription.compressionEnabled']}
+			checked={settings.get('transcription.compressionEnabled')}
 			onCheckedChange={(checked) =>
-				settings.updateKey(
+				settings.set(
 					'transcription.compressionEnabled',
 					checked === true,
 				)}
@@ -104,83 +104,86 @@
 		</Field.Content>
 	</Field.Field>
 
-	{#if settings.value['transcription.compressionEnabled']}
+	{#if settings.get('transcription.compressionEnabled')}
 		<!-- Preset Selection Badges -->
-		<div class="space-y-3">
-			<p class="text-base font-medium">Compression Presets</p>
-			<div class="flex flex-wrap gap-2">
-				{#each Object.entries(COMPRESSION_PRESETS) as [ presetKey, preset ]}
-					<Button
-						tooltip={preset.description}
-						variant={isPresetActive(presetKey as CompressionPresetKey)
+		<Field.Group>
+			<Field.Set>
+				<Field.Legend variant="label">Compression Presets</Field.Legend>
+				<div class="flex flex-wrap gap-2">
+					{#each Object.entries(COMPRESSION_PRESETS) as [ presetKey, preset ]}
+						<Button
+							tooltip={preset.description}
+							variant={isPresetActive(presetKey as CompressionPresetKey)
 							? 'default'
 							: 'outline'}
-						size="sm"
-						class={cn(
+							size="sm"
+							class={cn(
 							'cursor-pointer transition-colors h-auto px-2 py-1',
 							isPresetActive(presetKey as CompressionPresetKey)
 								? 'hover:bg-primary/90'
 								: 'hover:bg-accent hover:text-accent-foreground',
 						)}
-						onclick={() =>
-							settings.updateKey(
+							onclick={() =>
+							settings.set(
 								'transcription.compressionOptions',
 								preset.options,
 							)}
-					>
-						<span class="mr-1">{preset.icon}</span>
-						<span>{preset.label}</span>
-					</Button>
-				{/each}
-			</div>
-			<p class="text-muted-foreground text-xs">
-				Choose a preset or customize FFmpeg options below
-			</p>
-		</div>
+						>
+							<span class="mr-1">{preset.icon}</span>
+							<span>{preset.label}</span>
+						</Button>
+					{/each}
+				</div>
+				<Field.Description>
+					Choose a preset or customize FFmpeg options below
+				</Field.Description>
+			</Field.Set>
 
-		<!-- Custom Options Input -->
-		<Field.Field>
-			<Field.Label for="compression-options">Custom Options</Field.Label>
-			<div class="flex gap-2">
-				<Input
-					id="compression-options"
-					value={settings.value['transcription.compressionOptions']}
-					oninput={(e) =>
-						settings.updateKey(
+			<!-- Custom Options Input -->
+			<Field.Field>
+				<Field.Label for="compression-options">Custom Options</Field.Label>
+				<div class="flex gap-2">
+					<Input
+						id="compression-options"
+						value={settings.get('transcription.compressionOptions')}
+						oninput={(e) =>
+						settings.set(
 							'transcription.compressionOptions',
 							e.currentTarget.value,
 						)}
-					placeholder={FFMPEG_DEFAULT_COMPRESSION_OPTIONS}
-					class="flex-1"
-				/>
-				{#if settings.value['transcription.compressionOptions'] !== FFMPEG_DEFAULT_COMPRESSION_OPTIONS}
-					<Button
-						tooltip="Reset to default"
-						variant="ghost"
-						size="icon"
-						class="h-9 w-9"
-						onclick={() => {
-							settings.updateKey(
+						placeholder={FFMPEG_DEFAULT_COMPRESSION_OPTIONS}
+						class="flex-1"
+					/>
+					{#if settings.get('transcription.compressionOptions') !== FFMPEG_DEFAULT_COMPRESSION_OPTIONS}
+						<Button
+							tooltip="Reset to default"
+							variant="ghost"
+							size="icon"
+							class="h-9 w-9"
+							onclick={() => {
+							settings.set(
 								'transcription.compressionOptions',
 								FFMPEG_DEFAULT_COMPRESSION_OPTIONS,
 							);
 						}}
-					>
-						<RotateCcw class="h-3 w-3" />
-					</Button>
-				{/if}
-			</div>
-			<Field.Description>
-				FFmpeg compression options. Changes here will be reflected in real-time
-				during transcription.
-			</Field.Description>
-		</Field.Field>
+						>
+							<RotateCcw class="h-3 w-3" />
+						</Button>
+					{/if}
+				</div>
+				<Field.Description>
+					FFmpeg compression options. Changes here will be reflected in
+					real-time during transcription.
+				</Field.Description>
+			</Field.Field>
+		</Field.Group>
 
 		<!-- Command Preview -->
 		<div class="text-xs text-muted-foreground">
 			<p class="font-medium mb-1">Command Preview:</p>
 			<code class="bg-muted rounded px-2 py-1 text-xs break-all block">
-				ffmpeg -i input.wav {settings.value['transcription.compressionOptions']}
+				ffmpeg -i input.wav
+				{settings.get('transcription.compressionOptions')}
 				output.opus
 			</code>
 		</div>
@@ -200,4 +203,4 @@
 			</Alert.Description>
 		</Alert.Root>
 	{/if}
-</div>
+</Field.Group>

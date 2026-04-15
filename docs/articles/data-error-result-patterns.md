@@ -90,7 +90,7 @@ switch (result.status) {
 // UpdateResult - two states, different semantics
 export type UpdateResult =
 	| { status: 'applied' }
-	| { status: 'not_found_locally' };
+	| { status: 'not_found' };
 
 // UpdateManyResult - three states with varying metadata
 export type UpdateManyResult =

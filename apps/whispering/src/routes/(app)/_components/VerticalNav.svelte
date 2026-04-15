@@ -2,61 +2,23 @@
 	import * as Sidebar from '@epicenter/ui/sidebar';
 	import { useSidebar } from '@epicenter/ui/sidebar';
 	import Database from '@lucide/svelte/icons/database';
-	import HomeIcon from '@lucide/svelte/icons/house';
-	import LayersIcon from '@lucide/svelte/icons/layers';
-	import ListIcon from '@lucide/svelte/icons/list';
 	import Minimize2Icon from '@lucide/svelte/icons/minimize-2';
 	import MoonIcon from '@lucide/svelte/icons/moon';
 	import LogsIcon from '@lucide/svelte/icons/scroll-text';
-	import SettingsIcon from '@lucide/svelte/icons/settings';
 	import SunIcon from '@lucide/svelte/icons/sun';
-	import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
 	import { toggleMode } from 'mode-watcher';
 	import { page } from '$app/state';
 	import { GithubIcon } from '$lib/components/icons';
-	import MigrationDialog, {
-		migrationDialog,
-	} from '$lib/components/MigrationDialog.svelte';
 	import { notificationLog } from '$lib/components/NotificationLog.svelte';
+	import { NAV_ITEMS } from '$lib/constants/ui';
+	import MigrationDialog from '$lib/migration/MigrationDialog.svelte';
+	import { migrationDialog } from '$lib/migration/migration-dialog.svelte';
 
 	const shouldShowMigrationButton = $derived(
-		window.__TAURI_INTERNALS__ &&
-			(import.meta.env.DEV || migrationDialog.hasIndexedDBData),
+		import.meta.env.DEV || migrationDialog.isPending,
 	);
 
 	const sidebar = useSidebar();
-
-	// Navigation items
-	const navItems = [
-		{
-			label: 'Home',
-			href: '/',
-			icon: HomeIcon,
-			isActive: (pathname: string) => pathname === '/',
-		},
-		{
-			label: 'Recordings',
-			href: '/recordings',
-			icon: ListIcon,
-			isActive: (pathname: string) =>
-				pathname === '/recordings' || pathname.startsWith('/recordings/'),
-		},
-		{
-			label: 'Transformations',
-			href: '/transformations',
-			icon: LayersIcon,
-			isActive: (pathname: string) =>
-				pathname === '/transformations' ||
-				pathname.startsWith('/transformations/'),
-		},
-		{
-			label: 'Settings',
-			href: '/settings',
-			icon: SettingsIcon,
-			isActive: (pathname: string) =>
-				pathname === '/settings' || pathname.startsWith('/settings/'),
-		},
-	];
 </script>
 
 <Sidebar.Root collapsible="icon">
@@ -74,7 +36,9 @@
 							>
 								<span class="text-lg">🎙️</span>
 							</div>
-							<div class="grid flex-1 text-left text-sm leading-tight">
+							<div
+								class="grid flex-1 text-left text-sm leading-tight group-data-[collapsible=icon]:hidden"
+							>
 								<span class="truncate font-semibold">Whispering</span>
 								<span class="truncate text-xs text-muted-foreground"
 									>Speech to text</span
@@ -93,20 +57,12 @@
 			<Sidebar.GroupLabel>Navigation</Sidebar.GroupLabel>
 			<Sidebar.GroupContent>
 				<Sidebar.Menu>
-					{#each navItems as item}
+					{#each NAV_ITEMS as item}
 						<Sidebar.MenuItem>
 							<Sidebar.MenuButton isActive={item.isActive(page.url.pathname)}>
 								{#snippet child({ props })}
 									{@const Icon = item.icon}
-									<a
-										href={item.href}
-										{...props}
-										onclick={() => {
-											if (sidebar.isMobile) {
-												sidebar.setOpenMobile(false);
-											}
-										}}
-									>
+									<a href={item.href} {...props}>
 										<Icon />
 										<span>{item.label}</span>
 									</a>
@@ -170,20 +126,21 @@
 			<!-- Database Migration (desktop only, when data exists) -->
 			{#if shouldShowMigrationButton}
 				<Sidebar.MenuItem>
-					<MigrationDialog>
-						{#snippet trigger({ props })}
-							<button
-								{...props}
-								class="group/menu-button relative flex w-full items-center gap-2 overflow-hidden rounded-md p-2 text-left text-sm outline-none ring-sidebar-ring transition-[width,height,padding] hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 active:bg-sidebar-accent active:text-sidebar-accent-foreground disabled:pointer-events-none disabled:opacity-50 aria-disabled:pointer-events-none aria-disabled:opacity-50 data-[active=true]:bg-sidebar-accent data-[active=true]:font-medium data-[active=true]:text-sidebar-accent-foreground data-[state=open]:hover:bg-sidebar-accent data-[state=open]:hover:text-sidebar-accent-foreground group-data-[collapsible=icon]:!size-8 group-data-[collapsible=icon]:!p-2 [&>span:last-child]:truncate [&>svg]:size-4 [&>svg]:shrink-0"
-							>
-								<Database />
-								<span>Database Migration</span>
-								<span
-									class="absolute right-2 top-2 size-2 rounded-full bg-warning before:absolute before:left-0 before:top-0 before:h-full before:w-full before:rounded-full before:bg-warning/50 before:animate-ping"
-								></span>
-							</button>
+					<Sidebar.MenuButton class="relative">
+						{#snippet child({ props })}
+							<MigrationDialog>
+								{#snippet trigger({ props: dialogProps })}
+									<button {...props} {...dialogProps}>
+										<Database />
+										<span>Database Migration</span>
+										<span
+											class="absolute right-2 top-2 size-2 rounded-full bg-warning before:absolute before:left-0 before:top-0 before:h-full before:w-full before:rounded-full before:bg-warning/50 before:animate-ping"
+										></span>
+									</button>
+								{/snippet}
+							</MigrationDialog>
 						{/snippet}
-					</MigrationDialog>
+					</Sidebar.MenuButton>
 				</Sidebar.MenuItem>
 			{/if}
 
@@ -193,8 +150,10 @@
 					<Sidebar.MenuButton>
 						{#snippet child({ props })}
 							<button
-								onclick={() =>
-									getCurrentWindow().setSize(new LogicalSize(72, 84))}
+								onclick={async () => {
+								const { getCurrentWindow, LogicalSize } = await import('@tauri-apps/api/window');
+								getCurrentWindow().setSize(new LogicalSize(72, 84));
+							}}
 								{...props}
 							>
 								<Minimize2Icon />

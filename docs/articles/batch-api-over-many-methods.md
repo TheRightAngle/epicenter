@@ -16,7 +16,7 @@ table.deleteMany([id1, id2, id3]);
 
 This is what Prisma does. Clear, explicit, familiar. But it has problems:
 
-1. **Different return types**: `delete()` returns `DeleteResult`, but `deleteMany()` needs `DeleteManyResult` with arrays of what succeeded/failed. The types diverge.
+1. **Different return types**: `delete()` returns `void`, but `deleteMany()` might need a different return shape with arrays of what succeeded/failed. The types can diverge.
 
 2. **No composition**: What if you want to set two rows AND delete one atomically? You'd need a third method or accept non-atomic behavior.
 
@@ -38,7 +38,7 @@ Cleaner API surface. But the return type problem gets worse - you need condition
 ```typescript
 delete<T extends string | readonly string[]>(
   id: T
-): T extends string ? DeleteResult : DeleteManyResult;
+): T extends string ? void : void;
 ```
 
 TypeScript can handle this, but it's gnarly for consumers. And you still can't mix operations.

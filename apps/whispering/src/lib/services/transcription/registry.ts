@@ -18,7 +18,7 @@ import {
 	TRANSCRIPTION,
 	type TranscriptionServiceId,
 } from '$lib/constants/transcription';
-import type { Settings } from '$lib/settings';
+import type { DeviceConfigKey } from '$lib/state/device-config.svelte';
 
 // ── Service types ─────────────────────────────────────────────────────────────
 
@@ -39,17 +39,17 @@ type CloudTranscriptionService = BaseTranscriptionService & {
 	}[];
 	defaultModel: string;
 	modelSettingKey: string;
-	apiKeyField: keyof Settings;
+	apiKeyField: DeviceConfigKey;
 };
 
 type SelfHostedTranscriptionService = BaseTranscriptionService & {
 	location: 'self-hosted';
-	serverUrlField: keyof Settings;
+	serverUrlField: DeviceConfigKey;
 };
 
 type LocalTranscriptionService = BaseTranscriptionService & {
 	location: 'local';
-	modelPathField: keyof Settings;
+	modelPathField: DeviceConfigKey;
 };
 
 type SatisfiedTranscriptionService =

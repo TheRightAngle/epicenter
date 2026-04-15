@@ -42,8 +42,14 @@ yarn-error.log*
 # WXT (browser extension framework)
 .wxt
 .output
+.svelte-kit
 
+# Wrangler (Cloudflare Workers local state)
+.wrangler
 .conductor/
 
 # Reddit exports (personal data)
 reddit_export.zip
+
+# Temporary search clones (development only)
+tmp-search/

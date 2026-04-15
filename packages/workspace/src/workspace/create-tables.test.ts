@@ -111,19 +111,19 @@ describe('createTables', () => {
 		tables.posts.set({ id: '1', title: 'Hello', _v: 1 });
 		expect(tables.posts.has('1')).toBe(true);
 
-		const result = tables.posts.delete('1');
-		expect(result.status).toBe('deleted');
+		tables.posts.delete('1');
 		expect(tables.posts.has('1')).toBe(false);
 	});
 
-	test('delete returns not_found_locally for missing row', () => {
+	test('delete is a no-op for missing row', () => {
 		const ydoc = new Y.Doc();
 		const tables = createTables(ydoc, {
 			posts: defineTable(type({ id: 'string', title: 'string', _v: '1' })),
 		});
 
-		const result = tables.posts.delete('nonexistent');
-		expect(result.status).toBe('not_found_locally');
+		// Should not throw
+		tables.posts.delete('nonexistent');
+		expect(tables.posts.has('nonexistent')).toBe(false);
 	});
 
 	test('count reflects the current number of rows', () => {

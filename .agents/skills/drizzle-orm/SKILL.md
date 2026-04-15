@@ -1,9 +1,25 @@
 ---
 name: drizzle-orm
-description: Drizzle ORM patterns for type branding and custom types. Use when working with Drizzle column definitions, branded types, or custom type conversions.
+description: Drizzle ORM patterns for type branding, custom types, and SQLite column definitions. Use when the user mentions Drizzle, drizzle-orm, or when working with database schemas, branded column types, or custom type conversions in Drizzle.
+metadata:
+  author: epicenter
+  version: '1.0'
 ---
 
 # Drizzle ORM Guidelines
+## Reference Repositories
+
+- [Drizzle ORM](https://github.com/drizzle-team/drizzle-orm) — TypeScript ORM with SQL-like query builder
+- [Turso](https://github.com/tursodatabase/turso) — Edge-hosted LibSQL database (Epicenter's database)
+
+## When to Apply This Skill
+
+Use this pattern when you need to:
+
+- Define Drizzle columns that use branded TypeScript string types.
+- Choose between `$type<T>()` and `customType` for column definitions.
+- Remove identity `toDriver`/`fromDriver` conversions that add runtime overhead.
+- Keep data serialized through the storage layer and parse at UI edges.
 
 ## Use $type<T>() for Branded Strings, Not customType
 

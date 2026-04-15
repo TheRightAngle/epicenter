@@ -1,14 +1,13 @@
 /**
  * Reactive bookmark state for the side panel.
  *
- * Backed by a Y.Doc CRDT table, so bookmarks sync across devices and survive
- * browser restarts. Unlike saved tabs (which are consumed on restore),
- * bookmarks persist indefinitely—opening a bookmarked URL does NOT delete
- * the record.
+ * Read-only reactive layer backed by `fromTable()` — provides granular
+ * per-row reactivity via `SvelteMap`. All write operations are delegated
+ * to workspace actions defined in `client.ts`.
  *
- * Uses a plain `$state` array (not `SvelteMap`) because the access pattern is
- * always "render the full sorted list." The Y.Doc observer wholesale-replaces
- * the array on every change, identical to {@link savedTabState}.
+ * The public API exposes a `$derived` sorted array (access pattern is
+ * always "render the full sorted list") plus a URL lookup set for O(1)
+ * bookmark checks.
  *
  * @example
  * ```svelte
@@ -20,108 +19,140 @@
  *   <BookmarkItem {bookmark} />
  * {/each}
  *
- * <button onclick={() => bookmarkState.actions.add(tab)}>
- *   Bookmark
+ * <button onclick={() => bookmarkState.toggle(tab)}>
+ *   {bookmarkState.isUrlBookmarked(tab.url) ? 'Unbookmark' : 'Bookmark'}
  * </button>
  * ```
  */
 
-import { generateId } from '@epicenter/workspace';
-import { getDeviceId } from '$lib/device/device-id';
+import { fromTable } from '@epicenter/svelte';
+import { SvelteSet } from 'svelte/reactivity';
 import {
-	type Bookmark,
-	type BookmarkId,
-	type Tab,
-	workspaceClient,
-} from '$lib/workspace';
+	defineErrors,
+	extractErrorMessage,
+	type InferErrors,
+} from 'wellcrafted/error';
+import { tryAsync } from 'wellcrafted/result';
+import { workspace } from '$lib/client';
+import type { BrowserTab } from '$lib/state/browser-state.svelte';
+import type { Bookmark, BookmarkId } from '$lib/workspace';
+
+export const BookmarkError = defineErrors({
+	ToggleFailed: ({ url, cause }: { url: string; cause: unknown }) => ({
+		message: `Failed to toggle bookmark for '${url}': ${extractErrorMessage(cause)}`,
+		url,
+		cause,
+	}),
+	OpenFailed: ({ url, cause }: { url: string; cause: unknown }) => ({
+		message: `Failed to open bookmark '${url}': ${extractErrorMessage(cause)}`,
+		url,
+		cause,
+	}),
+	RemoveFailed: ({ id, cause }: { id: string; cause: unknown }) => ({
+		message: `Failed to remove bookmark '${id}': ${extractErrorMessage(cause)}`,
+		id,
+		cause,
+	}),
+	RemoveAllFailed: ({ cause }: { cause: unknown }) => ({
+		message: `Failed to remove all bookmarks: ${extractErrorMessage(cause)}`,
+		cause,
+	}),
+});
+export type BookmarkError = InferErrors<typeof BookmarkError>;
 
 function createBookmarkState() {
-	/** Read all valid bookmarks, most recently created first. */
-	const readAll = () =>
-		workspaceClient.tables.bookmarks
-			.getAllValid()
-			.sort((a, b) => b.createdAt - a.createdAt);
+	const bookmarksMap = fromTable(workspace.tables.bookmarks);
+
+	/** All bookmarks, sorted by most recently created first. Cached via $derived. */
+	const bookmarks = $derived(
+		bookmarksMap
+			.values()
+			.toArray()
+			.sort((a, b) => b.createdAt - a.createdAt),
+	);
 
 	/**
-	 * The full sorted list of bookmarks.
+	 * Reactive set of bookmarked URLs for O(1) lookup.
 	 *
-	 * Wholesale-replaced on every Y.Doc change rather than surgically mutated.
-	 * Same rationale as saved-tab-state: the observer doesn't tell us what
-	 * changed, so a full re-read is the simplest correct approach.
+	 * Uses `SvelteSet` so `.has()` is a tracked reactive read—Svelte 5
+	 * re-renders any component that calls `isUrlBookmarked` when the set changes.
 	 */
-	let bookmarks = $state<Bookmark[]>(readAll());
-
-	// Re-read on every Y.Doc change.
-	workspaceClient.tables.bookmarks.observe(() => {
-		bookmarks = readAll();
-	});
+	const bookmarkedUrls = $derived(
+		new SvelteSet(bookmarksMap.values().map((b) => b.url)),
+	);
 
 	return {
-		/** All bookmarks, sorted by most recently created first. */
 		get bookmarks() {
 			return bookmarks;
 		},
 
 		/**
-		 * Actions that mutate bookmark state.
+		 * Check whether a URL is currently bookmarked.
 		 *
-		 * All mutations go through the Y.Doc table. The observer re-reads
-		 * into `bookmarks` automatically—no direct array mutation.
+		 * O(1) lookup via `SvelteSet.has()`, which is a tracked reactive
+		 * read in Svelte 5—safe to call per-row in a list render.
 		 */
-		actions: {
-			/**
-			 * Bookmark a tab—snapshot its metadata to Y.Doc.
-			 *
-			 * Unlike "save for later," this does NOT close the browser tab.
-			 * The bookmark persists until explicitly deleted.
-			 *
-			 * Silently no-ops for tabs without a URL.
-			 */
-			async add(tab: Tab) {
-				if (!tab.url) return;
-				const deviceId = await getDeviceId();
-				workspaceClient.tables.bookmarks.set({
-					id: generateId() as string as BookmarkId,
-					url: tab.url,
-					title: tab.title || 'Untitled',
-					favIconUrl: tab.favIconUrl,
-					description: undefined,
-					sourceDeviceId: deviceId,
-					createdAt: Date.now(),
-					_v: 1,
-				});
-			},
+		isUrlBookmarked(url: string | undefined): boolean {
+			if (!url) return false;
+			return bookmarkedUrls.has(url);
+		},
 
-			/**
-			 * Open a bookmark in a new browser tab.
-			 *
-			 * Unlike saved tab restore, the bookmark record is NOT deleted.
-			 */
-			async open(bookmark: Bookmark) {
-				await browser.tabs.create({ url: bookmark.url });
-			},
+		/**
+		 * Toggle a bookmark for a tab—add if not bookmarked, remove if already bookmarked.
+		 *
+		 * Delegates to the `bookmarks.toggle` workspace action so the operation
+		 * is AI-callable and follows the same code path as programmatic toggles.
+		 * Silently no-ops for tabs without a URL.
+		 */
+		async toggle(tab: BrowserTab) {
+			if (!tab.url) return;
+			const url = tab.url;
+			return tryAsync({
+				try: () =>
+					workspace.actions.bookmarks.toggle({
+						url,
+						title: tab.title || 'Untitled',
+						favIconUrl: tab.favIconUrl,
+					}),
+				catch: (cause) => BookmarkError.ToggleFailed({ url, cause }),
+			});
+		},
 
-			/** Delete a bookmark. */
-			remove(id: BookmarkId) {
-				workspaceClient.tables.bookmarks.delete(id);
-			},
+		/**
+		 * Open a bookmark in a new browser tab without removing the bookmark.
+		 *
+		 * Delegates to the `bookmarks.open` workspace action.
+		 */
+		async open(bookmark: Bookmark) {
+			return tryAsync({
+				try: () => workspace.actions.bookmarks.open({ url: bookmark.url }),
+				catch: (cause) =>
+					BookmarkError.OpenFailed({ url: bookmark.url, cause }),
+			});
+		},
 
-			/** Delete all bookmarks. Wrapped in a Y.Doc transaction. */
-			removeAll() {
-				const all = workspaceClient.tables.bookmarks.getAllValid();
-				if (!all.length) return;
+		/**
+		 * Delete a bookmark by ID.
+		 *
+		 * Delegates to the `bookmarks.remove` workspace action.
+		 */
+		async remove(id: BookmarkId) {
+			return tryAsync({
+				try: () => workspace.actions.bookmarks.remove({ id }),
+				catch: (cause) => BookmarkError.RemoveFailed({ id, cause }),
+			});
+		},
 
-				workspaceClient.batch(() => {
-					for (const bookmark of all) {
-						workspaceClient.tables.bookmarks.delete(bookmark.id);
-					}
-				});
-			},
-
-			/** Update a bookmark's metadata in Y.Doc. */
-			update(bookmark: Bookmark) {
-				workspaceClient.tables.bookmarks.set(bookmark);
-			},
+		/**
+		 * Delete all bookmarks.
+		 *
+		 * Delegates to the `bookmarks.removeAll` workspace action.
+		 */
+		async removeAll() {
+			return tryAsync({
+				try: () => workspace.actions.bookmarks.removeAll({}),
+				catch: (cause) => BookmarkError.RemoveAllFailed({ cause }),
+			});
 		},
 	};
 }

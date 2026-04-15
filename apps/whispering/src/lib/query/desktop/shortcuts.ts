@@ -1,7 +1,7 @@
 import { type Command, commandCallbacks } from '$lib/commands';
 import { IS_MACOS } from '$lib/constants/platform';
 import { defineMutation } from '$lib/query/client';
-import { desktopServices } from '$lib/services';
+import { desktopServices } from '$lib/services/desktop';
 import type { Accelerator } from '$lib/services/desktop/global-shortcut-manager';
 
 /**

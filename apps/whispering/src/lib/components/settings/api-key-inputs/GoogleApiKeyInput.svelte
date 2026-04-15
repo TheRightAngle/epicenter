@@ -2,7 +2,7 @@
 	import * as Field from '@epicenter/ui/field';
 	import { Input } from '@epicenter/ui/input';
 	import { Link } from '@epicenter/ui/link';
-	import { settings } from '$lib/state/settings.svelte';
+	import { deviceConfig } from '$lib/state/device-config.svelte';
 </script>
 
 <Field.Field>
@@ -12,8 +12,8 @@
 		type="password"
 		placeholder="Your Google API Key"
 		autocomplete="off"
-		bind:value={() => settings.value['apiKeys.google'],
-			(value) => settings.updateKey('apiKeys.google', value)}
+		bind:value={() => deviceConfig.get('apiKeys.google'),
+			(value) => deviceConfig.set('apiKeys.google', value)}
 	/>
 	<Field.Description>
 		You can find your Google API key in your <Link

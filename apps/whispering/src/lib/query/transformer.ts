@@ -5,7 +5,7 @@ import {
 	type InferErrors,
 } from 'wellcrafted/error';
 import { Err, isErr, Ok, type Result } from 'wellcrafted/result';
-import { defineMutation, queryClient } from '$lib/query/client';
+import { defineMutation } from '$lib/query/client';
 import {
 	WhisperingErr,
 	type WhisperingError,
@@ -13,15 +13,63 @@ import {
 } from '$lib/result';
 import { services } from '$lib/services';
 import type {
-	Transformation,
 	TransformationRunCompleted,
 	TransformationRunFailed,
 	TransformationRunRunning,
-	TransformationStep,
 } from '$lib/services/db';
-import { settings } from '$lib/state/settings.svelte';
+import { deviceConfig } from '$lib/state/device-config.svelte';
+import { recordings } from '$lib/state/recordings.svelte';
+import type { TransformationStep } from '$lib/state/transformation-steps.svelte';
+import { transformationSteps } from '$lib/state/transformation-steps.svelte';
+import type { Transformation } from '$lib/state/transformations.svelte';
 import { asTemplateString, interpolateTemplate } from '$lib/utils/template';
-import { dbKeys } from './db';
+
+/**
+ * Config map for standard completion providers that share the same
+ * `{ apiKey, model, systemPrompt, userPrompt }` call signature.
+ * Custom is handled separately because it has per-step baseUrl logic.
+ */
+const STANDARD_PROVIDER_CONFIG = {
+	OpenAI: {
+		service: services.completions.openai,
+		apiKeyPath: 'apiKeys.openai',
+		modelKey: 'openaiModel',
+	},
+	Groq: {
+		service: services.completions.groq,
+		apiKeyPath: 'apiKeys.groq',
+		modelKey: 'groqModel',
+	},
+	Anthropic: {
+		service: services.completions.anthropic,
+		apiKeyPath: 'apiKeys.anthropic',
+		modelKey: 'anthropicModel',
+	},
+	Google: {
+		service: services.completions.google,
+		apiKeyPath: 'apiKeys.google',
+		modelKey: 'googleModel',
+	},
+	OpenRouter: {
+		service: services.completions.openrouter,
+		apiKeyPath: 'apiKeys.openrouter',
+		modelKey: 'openrouterModel',
+	},
+} as const satisfies Record<
+	string,
+	{
+		service: {
+			complete: (opts: {
+				apiKey: string;
+				model: string;
+				systemPrompt: string;
+				userPrompt: string;
+			}) => Promise<Result<string, { message: string }>>;
+		};
+		apiKeyPath: Parameters<typeof deviceConfig.get>[0];
+		modelKey: keyof TransformationStep;
+	}
+>;
 
 export const TransformError = defineErrors({
 	InvalidInput: ({ message }: { message: string }) => ({ message }),
@@ -45,9 +93,11 @@ export const transformer = {
 		mutationFn: async ({
 			input,
 			transformation,
+			steps,
 		}: {
 			input: string;
 			transformation: Transformation;
+			steps: TransformationStep[];
 		}): Promise<WhisperingResult<string>> => {
 			const getTransformationOutput = async (): Promise<
 				Result<string, WhisperingError>
@@ -56,6 +106,7 @@ export const transformer = {
 					await runTransformation({
 						input,
 						transformation,
+						steps,
 						recordingId: null,
 					});
 
@@ -85,13 +136,6 @@ export const transformer = {
 
 			const transformationOutputResult = await getTransformationOutput();
 
-			queryClient.invalidateQueries({
-				queryKey: dbKeys.runs.byTransformationId(transformation.id),
-			});
-			queryClient.invalidateQueries({
-				queryKey: dbKeys.transformations.byId(transformation.id),
-			});
-
 			return transformationOutputResult;
 		},
 	}),
@@ -110,21 +154,23 @@ export const transformer = {
 				WhisperingError
 			>
 		> => {
-			const { data: recording, error: getRecordingError } =
-				await services.db.recordings.getById(recordingId);
-			if (getRecordingError || !recording) {
+			const recording = recordings.get(recordingId);
+			if (!recording) {
 				return WhisperingErr({
 					title: '⚠️ Recording not found',
-					description:
-						getRecordingError?.message ??
-						'Could not find the selected recording.',
+					description: 'Could not find the selected recording.',
 				});
 			}
+
+			const steps = transformationSteps.getByTransformationId(
+				transformation.id,
+			);
 
 			const { data: transformationRun, error: transformationRunError } =
 				await runTransformation({
 					input: recording.transcribedText,
 					transformation,
+					steps,
 					recordingId,
 				});
 
@@ -133,16 +179,6 @@ export const transformer = {
 					title: '⚠️ Transformation failed',
 					serviceError: transformationRunError,
 				});
-
-			queryClient.invalidateQueries({
-				queryKey: dbKeys.runs.byRecordingId(recordingId),
-			});
-			queryClient.invalidateQueries({
-				queryKey: dbKeys.runs.byTransformationId(transformation.id),
-			});
-			queryClient.invalidateQueries({
-				queryKey: dbKeys.transformations.byId(transformation.id),
-			});
 
 			return Ok(transformationRun);
 		},
@@ -158,9 +194,7 @@ async function handleStep({
 }): Promise<Result<string, string>> {
 	switch (step.type) {
 		case 'find_replace': {
-			const findText = step['find_replace.findText'];
-			const replaceText = step['find_replace.replaceText'];
-			const useRegex = step['find_replace.useRegex'];
+			const { findText, replaceText, useRegex } = step;
 
 			if (useRegex) {
 				try {
@@ -175,134 +209,49 @@ async function handleStep({
 		}
 
 		case 'prompt_transform': {
-			const provider = step['prompt_transform.inference.provider'];
+			const { inferenceProvider, systemPromptTemplate, userPromptTemplate } =
+				step;
 			const systemPrompt = interpolateTemplate(
-				asTemplateString(step['prompt_transform.systemPromptTemplate']),
+				asTemplateString(systemPromptTemplate),
 				{ input },
 			);
 			const userPrompt = interpolateTemplate(
-				asTemplateString(step['prompt_transform.userPromptTemplate']),
+				asTemplateString(userPromptTemplate),
 				{ input },
 			);
 
-			switch (provider) {
-				case 'OpenAI': {
-					const { data: completionResponse, error: completionError } =
-						await services.completions.openai.complete({
-							apiKey: settings.value['apiKeys.openai'],
-							systemPrompt,
-							userPrompt,
-							model: step['prompt_transform.inference.provider.OpenAI.model'],
-						});
+			// Handle Custom separately—it has per-step baseUrl logic.
+			if (inferenceProvider === 'Custom') {
+				const model = step.customModel?.trim();
+				const stepBaseUrl = step.customBaseUrl?.trim();
+				const defaultBaseUrl = deviceConfig
+					.get('completion.custom.baseUrl')
+					?.trim();
+				const baseUrl = stepBaseUrl || defaultBaseUrl || '';
 
-					if (completionError) {
-						return Err(completionError.message);
-					}
-
-					return Ok(completionResponse);
-				}
-
-				case 'Groq': {
-					const model = step['prompt_transform.inference.provider.Groq.model'];
-					const { data: completionResponse, error: completionError } =
-						await services.completions.groq.complete({
-							apiKey: settings.value['apiKeys.groq'],
-							model,
-							systemPrompt,
-							userPrompt,
-						});
-
-					if (completionError) {
-						return Err(completionError.message);
-					}
-
-					return Ok(completionResponse);
-				}
-
-				case 'Anthropic': {
-					const { data: completionResponse, error: completionError } =
-						await services.completions.anthropic.complete({
-							apiKey: settings.value['apiKeys.anthropic'],
-							model:
-								step['prompt_transform.inference.provider.Anthropic.model'],
-							systemPrompt,
-							userPrompt,
-						});
-
-					if (completionError) {
-						return Err(completionError.message);
-					}
-
-					return Ok(completionResponse);
-				}
-
-				case 'Google': {
-					const { data: completion, error: completionError } =
-						await services.completions.google.complete({
-							apiKey: settings.value['apiKeys.google'],
-							model: step['prompt_transform.inference.provider.Google.model'],
-							systemPrompt,
-							userPrompt,
-						});
-
-					if (completionError) {
-						return Err(completionError.message);
-					}
-
-					return Ok(completion);
-				}
-
-				case 'OpenRouter': {
-					const { data: completionResponse, error: completionError } =
-						await services.completions.openrouter.complete({
-							apiKey: settings.value['apiKeys.openrouter'],
-							model:
-								step['prompt_transform.inference.provider.OpenRouter.model'],
-							systemPrompt,
-							userPrompt,
-						});
-
-					if (completionError) {
-						return Err(completionError.message);
-					}
-
-					return Ok(completionResponse);
-				}
-
-				case 'Custom': {
-					const model =
-						step['prompt_transform.inference.provider.Custom.model']?.trim();
-
-					// baseUrl is per-step because local LLM setups often have multiple endpoints
-					// (Ollama, LM Studio, llama.cpp) running on different ports
-					const stepBaseUrl =
-						step['prompt_transform.inference.provider.Custom.baseUrl']?.trim();
-					// Fall back to global default from Settings → API Keys → Custom section
-					const defaultBaseUrl =
-						settings.value['completion.custom.baseUrl']?.trim();
-					// Use || so empty string falls back to next value (cleared field = use default)
-					const baseUrl = stepBaseUrl || defaultBaseUrl || '';
-
-					// API key is global because most local endpoints don't require auth
-					const { data: completionResponse, error: completionError } =
-						await services.completions.custom.complete({
-							apiKey: settings.value['apiKeys.custom'],
-							model,
-							baseUrl,
-							systemPrompt,
-							userPrompt,
-						});
-
-					if (completionError) {
-						return Err(completionError.message);
-					}
-
-					return Ok(completionResponse);
-				}
-
-				default:
-					return Err(`Unsupported provider: ${provider}`);
+				const { data, error } = await services.completions.custom.complete({
+					apiKey: deviceConfig.get('apiKeys.custom'),
+					model,
+					baseUrl,
+					systemPrompt,
+					userPrompt,
+				});
+				if (error) return Err(error.message);
+				return Ok(data);
 			}
+
+			// Standard providers all share the same call signature.
+			const config = STANDARD_PROVIDER_CONFIG[inferenceProvider];
+			if (!config) return Err(`Unsupported provider: ${inferenceProvider}`);
+
+			const { data, error } = await config.service.complete({
+				apiKey: deviceConfig.get(config.apiKeyPath),
+				model: step[config.modelKey] as string,
+				systemPrompt,
+				userPrompt,
+			});
+			if (error) return Err(error.message);
+			return Ok(data);
 		}
 
 		default:
@@ -313,10 +262,12 @@ async function handleStep({
 async function runTransformation({
 	input,
 	transformation,
+	steps,
 	recordingId,
 }: {
 	input: string;
 	transformation: Transformation;
+	steps: TransformationStep[];
 	recordingId: string | null;
 }): Promise<
 	Result<TransformationRunCompleted | TransformationRunFailed, TransformError>
@@ -327,7 +278,7 @@ async function runTransformation({
 		});
 	}
 
-	if (transformation.steps.length === 0) {
+	if (steps.length === 0) {
 		return TransformError.NoSteps({
 			message:
 				'No steps configured. Please add at least one transformation step',
@@ -355,7 +306,7 @@ async function runTransformation({
 
 	let currentInput = input;
 
-	for (const step of transformation.steps) {
+	for (const step of steps) {
 		const {
 			data: newTransformationStepRun,
 			error: addTransformationStepRunError,

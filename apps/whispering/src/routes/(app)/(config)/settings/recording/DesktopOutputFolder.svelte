@@ -7,7 +7,7 @@
 	import { Ok, tryAsync } from 'wellcrafted/result';
 	import { PATHS } from '$lib/constants/paths';
 	import { rpc } from '$lib/query';
-	import { settings } from '$lib/state/settings.svelte';
+	import { deviceConfig } from '$lib/state/device-config.svelte';
 
 	// Top-level await to get the default app data directory
 	let defaultRecordingsFolder = $state<string | null>(null);
@@ -21,7 +21,7 @@
 
 	// Derived state for the display path
 	const displayPath = $derived(
-		settings.value['recording.cpal.outputFolder'] ??
+		deviceConfig.get('recording.cpal.outputFolder') ??
 			defaultRecordingsFolder ??
 			null,
 	);
@@ -36,7 +36,7 @@
 			title: 'Select Recording Output Folder',
 		});
 
-		if (selected) settings.updateKey('recording.cpal.outputFolder', selected);
+		if (selected) deviceConfig.set('recording.cpal.outputFolder', selected);
 	}
 
 	async function openOutputFolder() {
@@ -47,7 +47,7 @@
 				const { openPath } = await import('@tauri-apps/plugin-opener');
 
 				const folderPath =
-					settings.value['recording.cpal.outputFolder'] ??
+					deviceConfig.get('recording.cpal.outputFolder') ??
 					defaultRecordingsFolder;
 				if (!folderPath) {
 					throw new Error('No output folder configured');
@@ -91,13 +91,13 @@
 		<ExternalLink class="h-4 w-4" />
 	</Button>
 
-	{#if settings.value['recording.cpal.outputFolder']}
+	{#if deviceConfig.get('recording.cpal.outputFolder')}
 		<Button
 			tooltip="Reset to default folder"
 			variant="outline"
 			size="icon"
 			onclick={() => {
-				settings.updateKey('recording.cpal.outputFolder', null);
+				deviceConfig.set('recording.cpal.outputFolder', null);
 			}}
 		>
 			<RotateCcw class="h-4 w-4" />

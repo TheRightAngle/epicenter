@@ -1,52 +1,34 @@
 <script lang="ts">
-	import { Badge } from '@epicenter/ui/badge';
 	import { Button } from '@epicenter/ui/button';
+	import * as Empty from '@epicenter/ui/empty';
+	import * as StarRating from '@epicenter/ui/star-rating';
 	import * as Table from '@epicenter/ui/table';
 	import { SortableTableHeader } from '@epicenter/ui/table';
+	import ClockIcon from '@lucide/svelte/icons/clock';
+	import FileTextIcon from '@lucide/svelte/icons/file-text';
 	import PlusIcon from '@lucide/svelte/icons/plus';
 	import {
 		createTable as createSvelteTable,
 		FlexRender,
 		renderComponent,
 	} from '@tanstack/svelte-table';
-	import type { ColumnDef } from '@tanstack/table-core';
+	import type { ColumnDef, SortingState } from '@tanstack/table-core';
 	import {
 		getCoreRowModel,
 		getFilteredRowModel,
 		getSortedRowModel,
 	} from '@tanstack/table-core';
-	import { formatDistanceToNowStrict } from 'date-fns';
-	import { createRawSnippet } from 'svelte';
-	import type { Entry, EntryId } from '$lib/workspace';
+	import { goto } from '$app/navigation';
+	import {
+		entriesState,
+		matchesEntrySearch,
+		viewState,
+	} from '$lib/entries.svelte';
+	import { relativeTime } from '$lib/format';
+	import type { Entry } from '$lib/workspace';
 	import BadgeList from './BadgeList.svelte';
 
-	let {
-		entries,
-		globalFilter,
-		selectedEntryId,
-		onSelectEntry,
-		onAddEntry,
-	}: {
-		entries: Entry[];
-		globalFilter: string;
-		selectedEntryId: EntryId | null;
-		onSelectEntry: (id: EntryId) => void;
-		onAddEntry: () => void;
-	} = $props();
-
-	function parseDateTime(dts: string): Date {
-		return new Date(dts.split('|')[0]!);
-	}
-
-	function relativeTime(dts: string): string {
-		try {
-			return formatDistanceToNowStrict(parseDateTime(dts), {
-				addSuffix: true,
-			});
-		} catch {
-			return dts;
-		}
-	}
+	let { entries, title }: { entries: Entry[]; title?: string } = $props();
 
 	const columns: ColumnDef<Entry>[] = [
 		{
@@ -61,24 +43,18 @@
 				const title = getValue<string>();
 				return title || 'Untitled';
 			},
-			filterFn: (row, _columnId, filterValue) => {
-				const title = String(row.getValue('title')).toLowerCase();
-				const preview = String(row.getValue('preview')).toLowerCase();
-				const filter = filterValue.toLowerCase();
-				return title.includes(filter) || preview.includes(filter);
-			},
 		},
 		{
-			id: 'preview',
-			accessorKey: 'preview',
+			id: 'subtitle',
+			accessorKey: 'subtitle',
 			header: ({ column }) =>
 				renderComponent(SortableTableHeader, {
 					column,
-					headerText: 'Preview',
+					headerText: 'Subtitle',
 				}),
 			cell: ({ getValue }) => {
-				const preview = getValue<string>();
-				return preview || '';
+				const subtitle = getValue<string>();
+				return subtitle || '';
 			},
 		},
 		{
@@ -90,8 +66,8 @@
 					headerText: 'Type',
 				}),
 			cell: ({ getValue }) => {
-				const types = getValue<string[] | undefined>();
-				if (!types?.length) return '';
+				const types = getValue<string[]>();
+				if (!types.length) return '';
 				return renderComponent(BadgeList, { items: types });
 			},
 			enableSorting: false,
@@ -105,11 +81,39 @@
 					headerText: 'Tags',
 				}),
 			cell: ({ getValue }) => {
-				const tags = getValue<string[] | undefined>();
-				if (!tags?.length) return '';
+				const tags = getValue<string[]>();
+				if (!tags.length) return '';
 				return renderComponent(BadgeList, { items: tags });
 			},
 			enableSorting: false,
+		},
+		{
+			id: 'rating',
+			accessorKey: 'rating',
+			header: ({ column }) =>
+				renderComponent(SortableTableHeader, {
+					column,
+					headerText: 'Rating',
+				}),
+			cell: ({ getValue }) => {
+				const rating = getValue<number>();
+				if (!rating) return '';
+				return renderComponent(StarRating.Root, {
+					value: rating,
+					readonly: true,
+					class: 'pointer-events-none',
+				});
+			},
+		},
+		{
+			id: 'date',
+			accessorKey: 'date',
+			header: ({ column }) =>
+				renderComponent(SortableTableHeader, {
+					column,
+					headerText: 'Date',
+				}),
+			cell: ({ getValue }) => relativeTime(getValue<string>()),
 		},
 		{
 			id: 'createdAt',
@@ -133,7 +137,9 @@
 		},
 	];
 
-	let sorting = $state([{ id: 'updatedAt', desc: true }]);
+	let sorting = $state<SortingState>([
+		{ id: viewState.sortBy, desc: viewState.sortBy !== 'title' },
+	]);
 
 	const table = createSvelteTable({
 		getRowId: (row) => row.id,
@@ -150,36 +156,57 @@
 			} else {
 				sorting = updater;
 			}
+			// Propagate sort change back to persisted KV
+			const primary = sorting[0];
+			if (primary) {
+				viewState.sortBy = primary.id as typeof viewState.sortBy;
+			}
 		},
 		state: {
 			get sorting() {
 				return sorting;
 			},
 			get globalFilter() {
-				return globalFilter;
+				return viewState.searchQuery;
+			},
+			get columnVisibility() {
+				return {
+					subtitle: false,
+					createdAt: false,
+					updatedAt: false,
+				};
 			},
 		},
 		globalFilterFn: (row, _columnId, filterValue) => {
-			const title = String(row.getValue('title')).toLowerCase();
-			const preview = String(row.getValue('preview')).toLowerCase();
-			const filter = filterValue.toLowerCase();
-			return title.includes(filter) || preview.includes(filter);
+			return matchesEntrySearch(row.original, filterValue);
 		},
 	});
 </script>
 
-<div class="flex h-full flex-col">
+<div class="flex min-h-0 flex-1 flex-col overflow-hidden">
 	<!-- Toolbar -->
-	<div class="flex items-center justify-between border-b px-4 py-3">
-		<h2 class="text-sm font-semibold">Entries</h2>
-		<Button variant="ghost" size="icon" class="size-7" onclick={onAddEntry}>
-			<PlusIcon class="size-4" />
-		</Button>
+	<div class="flex items-center justify-between px-4 py-2">
+		<h2 class="text-sm font-semibold">{title ?? 'Entries'}</h2>
+		<div class="flex items-center gap-1">
+			<Button
+				variant="ghost"
+				size="icon-sm"
+				onclick={() => viewState.toggleViewMode()}
+				title="Switch to timeline"
+			>
+				<ClockIcon class="size-4" />
+			</Button>
+			<Button variant="ghost" size="icon-sm" onclick={entriesState.createEntry}>
+				<PlusIcon class="size-4" />
+			</Button>
+		</div>
 	</div>
 
 	<!-- Table -->
 	<div class="flex-1 overflow-auto">
-		<Table.Root>
+		<Table.Root
+			class="[&_th:first-child]:pl-4 [&_td:first-child]:pl-4 [&_th:last-child]:pr-4 [&_td:last-child]:pr-4"
+		>
 			<Table.Header>
 				{#each table.getHeaderGroups() as headerGroup}
 					<Table.Row>
@@ -202,13 +229,13 @@
 						<!-- svelte-ignore a11y_click_events_have_key_events -->
 						<!-- svelte-ignore a11y_no_static_element_interactions -->
 						<Table.Row
-							class="cursor-pointer {selectedEntryId === row.id
-								? 'bg-accent'
-								: ''}"
-							onclick={() => onSelectEntry(row.original.id)}
+							class="cursor-pointer transition-colors hover:bg-accent/50"
+							onclick={() => goto(`/entries/${row.original.id}`)}
 						>
 							{#each row.getVisibleCells() as cell}
-								<Table.Cell>
+								<Table.Cell
+									class={cell.column.id === 'title' ? 'max-w-[400px] truncate' : ''}
+								>
 									<FlexRender
 										content={cell.column.columnDef.cell}
 										context={cell.getContext()}
@@ -220,17 +247,32 @@
 				{:else}
 					<Table.Row>
 						<Table.Cell colspan={columns.length}>
-							<div
-								class="flex items-center justify-center py-8 text-muted-foreground"
-							>
-								<p class="text-sm">
-									{#if globalFilter}
-										No entries match your search.
-									{:else}
-										No entries yet. Click + to create one.
-									{/if}
-								</p>
-							</div>
+						<Empty.Root class="min-h-[50vh]">
+								<Empty.Media>
+									<FileTextIcon class="size-8 text-muted-foreground" />
+								</Empty.Media>
+								{#if viewState.searchQuery}
+									<Empty.Title>No entries match your search</Empty.Title>
+									<Empty.Description
+										>Try a different search term or clear your filters.</Empty.Description
+									>
+								{:else}
+									<Empty.Title>No entries yet</Empty.Title>
+									<Empty.Description
+										>Create your first entry to get started.</Empty.Description
+									>
+									<Empty.Content>
+										<Button
+											variant="outline"
+											size="sm"
+											onclick={entriesState.createEntry}
+										>
+											<PlusIcon class="mr-1.5 size-4" />
+											New Entry
+										</Button>
+									</Empty.Content>
+								{/if}
+							</Empty.Root>
 						</Table.Cell>
 					</Table.Row>
 				{/if}

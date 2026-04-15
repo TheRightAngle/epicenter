@@ -3,10 +3,28 @@ name: error-handling
 description: Error handling patterns using wellcrafted trySync and tryAsync. Use when writing or reviewing try-catch blocks, refactoring try-catch to linear control flow, working with Result types, or returning HTTP error responses from route handlers.
 metadata:
   author: epicenter
-  version: '1.2'
+  version: '2.0'
 ---
 
 # Error Handling with wellcrafted trySync and tryAsync
+
+## When to Apply This Skill
+
+Use this pattern when you need to:
+
+- Replace recoverable `try-catch` blocks with `trySync` or `tryAsync`.
+- Handle fallback success paths via `Ok(...)` and propagate failures with `Err(...)`.
+- Wrap caught exceptions as `cause` for typed domain error constructors.
+- Refactor nested error branches into immediate-return linear control flow.
+- Convert handler failures into HTTP status responses with explicit guards.
+
+## References
+
+Load these on demand based on what you're working on:
+
+- If working with **wrapping boundaries, minimal vs extended wrapping, or immediate-return control flow**, read [references/wrapping-patterns.md](references/wrapping-patterns.md)
+- If working with **real-world codebase examples and wrapping scenario guidelines**, read [references/real-world-examples.md](references/real-world-examples.md)
+- If working with **HTTP route handlers and status-response error conversion**, read [references/http-handlers.md](references/http-handlers.md)
 
 ## Use trySync/tryAsync Instead of try-catch for Graceful Error Handling
 
@@ -163,240 +181,3 @@ if (error) return Err(error);
   - For simple fire-and-forget operations
   - When you're outside of a function context
   - When integrating with code that expects thrown exceptions
-
-## Wrapping Patterns: Minimal vs Extended
-
-### The Minimal Wrapping Principle
-
-**Wrap only the specific operation that can fail.** This captures the error boundary precisely and makes code easier to reason about.
-
-```typescript
-// ✅ GOOD: Wrap only the risky operation, pass raw cause to constructor
-const { data: stream, error: streamError } = await tryAsync({
-	try: () => navigator.mediaDevices.getUserMedia({ audio: true }),
-	catch: (error) =>
-		DeviceStreamError.PermissionDenied({ cause: error }),
-});
-
-if (streamError) return Err(streamError);
-
-// Continue with non-throwing operations
-const mediaRecorder = new MediaRecorder(stream);
-mediaRecorder.start();
-```
-
-```typescript
-// ❌ BAD: Wrapping too much code
-const { data, error } = await tryAsync({
-	try: async () => {
-		const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-		const mediaRecorder = new MediaRecorder(stream);
-		mediaRecorder.start();
-		await someOtherAsyncCall();
-		return processResults();
-	},
-	catch: (error) => Err(error), // Too vague! No specific error type
-});
-```
-
-### The Immediate Return Pattern
-
-**Return errors immediately after checking.** This creates clear control flow and prevents error nesting.
-
-```typescript
-// ✅ GOOD: Check and return immediately
-const { data: devices, error: enumerateError } = await enumerateDevices();
-if (enumerateError) return Err(enumerateError);
-
-const { data: stream, error: streamError } = await getStreamForDevice(
-	devices[0],
-);
-if (streamError) return Err(streamError);
-
-// Happy path continues cleanly
-return Ok(stream);
-```
-
-```typescript
-// ❌ BAD: Nested error handling
-const { data: devices, error: enumerateError } = await enumerateDevices();
-if (!enumerateError) {
-	const { data: stream, error: streamError } = await getStreamForDevice(
-		devices[0],
-	);
-	if (!streamError) {
-		return Ok(stream);
-	} else {
-		return Err(streamError);
-	}
-} else {
-	return Err(enumerateError);
-}
-```
-
-### When to Extend the Try Block
-
-Sometimes it makes sense to include multiple operations in a single try block:
-
-1. **Atomic operations** - When operations must succeed or fail together
-2. **Same error type** - When all operations produce the same error category
-3. **Cleanup logic** - When you need to clean up on any failure
-
-```typescript
-// Extended block is appropriate here - all operations are part of "starting recording"
-const { data: mediaRecorder, error: recorderError } = trySync({
-	try: () => {
-		const recorder = new MediaRecorder(stream, { bitsPerSecond: bitrate });
-		recorder.addEventListener('dataavailable', handleData);
-		recorder.start(TIMESLICE_MS);
-		return recorder;
-	},
-	catch: (error) =>
-		RecorderError.InitFailed({ cause: error }),
-});
-```
-
-### Real-World Examples from the Codebase
-
-**Minimal wrap with immediate return:**
-
-```typescript
-// From device-stream.ts — cause: error at call site, extractErrorMessage in constructor
-async function getStreamForDeviceIdentifier(
-	deviceIdentifier: DeviceIdentifier,
-) {
-	return tryAsync({
-		try: async () => {
-			const stream = await navigator.mediaDevices.getUserMedia({
-				audio: { ...constraints, deviceId: { exact: deviceIdentifier } },
-			});
-			return stream;
-		},
-		catch: (error) =>
-			DeviceStreamError.DeviceConnectionFailed({ deviceId: deviceIdentifier, cause: error }),
-	});
-}
-```
-
-**Multiple minimal wraps with immediate returns:**
-
-```typescript
-// From navigator.ts
-startRecording: async (params, { sendStatus }) => {
-  if (activeRecording) {
-    return RecorderError.AlreadyRecording();
-  }
-
-  // First try block - get stream
-  const { data: streamResult, error: acquireStreamError } =
-    await getRecordingStream({ selectedDeviceId, sendStatus });
-  if (acquireStreamError) return Err(acquireStreamError);
-
-  const { stream, deviceOutcome } = streamResult;
-
-  // Second try block - create recorder
-  const { data: mediaRecorder, error: recorderError } = trySync({
-    try: () => new MediaRecorder(stream, { bitsPerSecond: bitrate }),
-    catch: (error) => RecorderError.InitFailed({ cause: error }),
-  });
-
-  if (recorderError) {
-    cleanupRecordingStream(stream);  // Cleanup on failure
-    return Err(recorderError);
-  }
-
-  // Happy path continues...
-  mediaRecorder.start(TIMESLICE_MS);
-  return Ok(deviceOutcome);
-},
-```
-
-### Summary: Wrapping Guidelines
-
-| Scenario                                     | Approach                                          |
-| -------------------------------------------- | ------------------------------------------------- |
-| Single risky operation                       | Wrap just that operation                          |
-| Sequential operations                        | Wrap each separately, return immediately on error |
-| Atomic operations that must succeed together | Wrap together in one block                        |
-| Different error types needed                 | Separate blocks with appropriate error types      |
-| Need cleanup on failure                      | Wrap, check error, cleanup if needed, return      |
-
-**The goal**: Each `trySync`/`tryAsync` block should represent a single "unit of failure" with a specific, descriptive error message.
-
-## Using trySync/tryAsync in HTTP Handlers
-
-Not all error handling involves propagating `Result` types up a service chain. In HTTP route handlers (Elysia, Express, SvelteKit, etc.), you often want to convert errors directly into HTTP status responses. The same trySync/tryAsync patterns apply; you just return a status response instead of `Err(...)`.
-
-### The Pattern: trySync → early return with status
-
-```typescript
-// From packages/server/src/ai/plugin.ts — Elysia route handler
-async ({ body, headers, status }) => {
-	// Validation guards use return status() directly
-	if (!isSupportedProvider(provider)) {
-		return status('Bad Request', `Unsupported provider: ${provider}`);
-	}
-
-	// Wrap only the call that can throw — chat() may fail on bad adapter config.
-	// toServerSentEventsResponse() is pure construction and never throws.
-	const { data: stream, error: chatError } = trySync({
-		try: () =>
-			chat({
-				adapter,
-				messages,
-				abortController,
-			}),
-		catch: (e) => Err(e instanceof Error ? e : new Error(String(e))),
-	});
-
-	if (chatError) {
-		if (chatError.name === 'AbortError' || abortController.signal.aborted) {
-			return status(499, 'Client closed request');
-		}
-		return status('Bad Gateway', `Provider error: ${chatError.message}`);
-	}
-
-	// Happy path — stream is guaranteed non-null after the error check
-	return toServerSentEventsResponse(stream, { abortController });
-};
-```
-
-### Key Differences from Service-Layer Usage
-
-| Service layer                                  | HTTP handler                                                       |
-| ---------------------------------------------- | ------------------------------------------------------------------ |
-| `catch: (e) => ServiceErr({ message: '...' })` | `catch: (e) => Err(e instanceof Error ? e : new Error(String(e)))` |
-| `if (error) return Err(error)`                 | `if (error) return status(502, error.message)`                     |
-| Propagates typed errors up the chain           | Converts errors to HTTP responses immediately                      |
-| Caller decides what to do with the error       | Handler IS the final caller                                        |
-
-In HTTP handlers, you're the last stop. There's no caller above you to propagate to; you convert the error into a response and return it. The trySync pattern still gives you linear control flow and surgical error boundaries—you just use `return status(...)` instead of `return Err(...)`.
-
-### Refactoring try-catch to trySync in Handlers
-
-Before (try-catch with throw):
-
-```typescript
-try {
-	const result = riskyCall();
-	return buildResponse(result);
-} catch (error) {
-	const message = error instanceof Error ? error.message : 'Unknown error';
-	throw status(500, message);
-}
-```
-
-After (trySync with early return):
-
-```typescript
-const { data: result, error } = trySync({
-	try: () => riskyCall(),
-	catch: (e) => Err(e instanceof Error ? e : new Error(String(e))),
-});
-
-if (error) return status(500, error.message);
-
-return buildResponse(result);
-```
-
-The trySync version wraps only the risky call, uses `return` consistently (no `throw` vs `return` mismatch), and keeps the happy path at the bottom of the function.

@@ -3,20 +3,19 @@
 	import { confirmationDialog } from '@epicenter/ui/confirmation-dialog';
 	import * as Modal from '@epicenter/ui/modal';
 	import { Separator } from '@epicenter/ui/separator';
-	import { Spinner } from '@epicenter/ui/spinner';
 	import HistoryIcon from '@lucide/svelte/icons/history';
 	import EditIcon from '@lucide/svelte/icons/pencil';
 	import PlayIcon from '@lucide/svelte/icons/play';
 	import TrashIcon from '@lucide/svelte/icons/trash-2';
-	import { createMutation } from '@tanstack/svelte-query';
 	import { Editor } from '$lib/components/transformations-editor';
 	import { rpc } from '$lib/query';
-	import type { Transformation } from '$lib/services/db';
+	import { transformationSteps } from '$lib/state/transformation-steps.svelte';
+	import {
+		saveTransformationWithSteps,
+		type Transformation,
+		transformations,
+	} from '$lib/state/transformations.svelte';
 	import MarkTransformationActiveButton from './MarkTransformationActiveButton.svelte';
-
-	const updateTransformation = createMutation(
-		() => rpc.db.transformations.update.options,
-	);
 
 	let {
 		transformation,
@@ -26,43 +25,23 @@
 	let isDialogOpen = $state(false);
 
 	/**
-	 * A working copy of the transformation that we can safely edit.
-	 *
-	 * It's like a photocopy of an important document—you don't want to
-	 * accidentally mess up the original. You edit the photocopy, submit it,
-	 * and the original is updated. Then you get a new photocopy.
-	 *
-	 * Here's how it works:
-	 * 1. We get the original transformation data
-	 * 2. We make a copy of it (this variable)
-	 * 3. User makes changes to the copy
-	 * 4. When they save, we send the copy via mutation
-	 * 5. The mutation updates the original transformation
-	 * 6. We get the fresh original data back and make a new copy (via $derived)
+	 * Working copy of the transformation metadata. Resets when upstream data changes.
+	 * User edits the copy freely; only persisted to workspace on Save.
 	 */
-	let workingCopy = $derived(
-		// Reset the working copy when new transformation data comes in.
-		transformation,
+	let workingCopy = $derived(transformation);
+
+	/**
+	 * Working copy of the transformation steps. Resets when upstream data changes.
+	 */
+	let workingSteps = $derived(
+		transformationSteps.getByTransformationId(transformation.id),
 	);
 
 	/**
-	 * Tracks whether the user has made changes to the working copy.
-	 *
-	 * Think of this like a "dirty" flag on a document - it tells us if
-	 * the user has made edits that haven't been saved yet.
-	 *
-	 * How it works:
-	 * - Starts as false when we get fresh data from the upstream transformation
-	 * - Becomes true as soon as the user edits anything
-	 * - Goes back to false when they save or when fresh data comes in
-	 *
-	 * We use this to:
-	 * - Show confirmation dialogs before closing unsaved work
-	 * - Disable the save button when there's nothing to save
-	 * - Reset the working copy when new data arrives
+	 * Tracks whether the user has made changes to either working copy.
+	 * Resets to false when upstream transformation data changes.
 	 */
 	let isWorkingCopyDirty = $derived.by(() => {
-		// Reset dirty flag when new transformation data comes in
 		transformation;
 		return false;
 	});
@@ -78,13 +57,27 @@
 			description: 'You have unsaved changes. Are you sure you want to leave?',
 			confirm: { text: 'Leave' },
 			onConfirm: () => {
-				// Reset working copy and dirty flag
 				workingCopy = transformation;
+				workingSteps = transformationSteps.getByTransformationId(
+					transformation.id,
+				);
 				isWorkingCopyDirty = false;
-
 				isDialogOpen = false;
 			},
 		});
+	}
+
+	function saveTransformation() {
+		saveTransformationWithSteps(
+			$state.snapshot(workingCopy),
+			$state.snapshot(workingSteps),
+		);
+
+		rpc.notify.success({
+			title: 'Updated transformation!',
+			description: 'Your transformation has been updated successfully.',
+		});
+		isDialogOpen = false;
 	}
 </script>
 
@@ -130,6 +123,11 @@
 					workingCopy = v;
 					isWorkingCopyDirty = true;
 				}}
+			bind:steps={() => workingSteps,
+				(v) => {
+					workingSteps = v;
+					isWorkingCopyDirty = true;
+				}}
 		/>
 
 		<Modal.Footer>
@@ -139,18 +137,11 @@
 						title: 'Delete transformation',
 						description: 'Are you sure? This action cannot be undone.',
 						confirm: { text: 'Delete', variant: 'destructive' },
-						onConfirm: async () => {
-							const { error } = await rpc.db.transformations.delete(
-								$state.snapshot(transformation),
+						onConfirm: () => {
+							transformationSteps.deleteByTransformationId(
+								transformation.id,
 							);
-							if (error) {
-								rpc.notify.error({
-									title: 'Failed to delete transformation!',
-									description: 'Your transformation could not be deleted.',
-									action: { type: 'more-details', error },
-								});
-								throw error;
-							}
+							transformations.delete(transformation.id);
 							isDialogOpen = false;
 							rpc.notify.success({
 								title: 'Deleted transformation!',
@@ -171,30 +162,9 @@
 					Close
 				</Button>
 				<Button
-					onclick={() => {
-						updateTransformation.mutate($state.snapshot(workingCopy), {
-							onSuccess: () => {
-								rpc.notify.success({
-									title: 'Updated transformation!',
-									description:
-										'Your transformation has been updated successfully.',
-								});
-								isDialogOpen = false;
-							},
-							onError: (error) => {
-								rpc.notify.error({
-									title: 'Failed to update transformation!',
-									description: 'Your transformation could not be updated.',
-									action: { type: 'more-details', error },
-								});
-							},
-						});
-					}}
-					disabled={updateTransformation.isPending || !isWorkingCopyDirty}
+					onclick={() => saveTransformation()}
+					disabled={!isWorkingCopyDirty}
 				>
-					{#if updateTransformation.isPending}
-						<Spinner />
-					{/if}
 					Save
 				</Button>
 			</div>

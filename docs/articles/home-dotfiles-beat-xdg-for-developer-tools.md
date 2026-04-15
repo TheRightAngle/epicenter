@@ -38,25 +38,33 @@ ls ~/.ollama/
 
 This is why Claude, Ollama, and Cursor all chose home dotfiles over XDG. Discoverability matters more than spec compliance for tools developers interact with daily.
 
-## Epicenter's Two-Level Convention
+## Epicenter's Centralized Store
 
-Epicenter has a wrinkle: it needs both project-local storage and global server config. A project's workspace data (Yjs documents, SQLite providers, markdown files) lives alongside the project. Server-wide config (API keys, encryption keys, allowed origins) is global.
+Epicenter follows the same model as Homebrew. All workspaces live under `~/.epicenter/workspaces/`, each in its own self-contained directory with its config, providers, and dependencies:
 
 ```
-~/.epicenter/              ← global server config
-  └── server/
-      └── config.json      ← allowed origins, app tokens
-
-<any-project>/.epicenter/  ← project-local workspace data
-  └── providers/
-      ├── persistence/     ← Yjs binary state
-      ├── sqlite/          ← materialized query databases
-      └── markdown/        ← human-readable file persistence
+~/.epicenter/
+  ├── server/
+  │   └── config.json        ← API keys, allowed origins
+  └── workspaces/
+      ├── blog/
+      │   ├── epicenter.config.ts
+      │   ├── package.json
+      │   ├── node_modules/
+      │   └── .epicenter/
+      │       └── providers/
+      │           ├── persistence/
+      │           ├── sqlite/
+      │           └── markdown/
+      ├── habits/
+      │   └── ...
+      └── notes/
+          └── ...
 ```
 
-Same name, different scope. `~/.epicenter/` is your global Epicenter home; `<project>/.epicenter/` is that project's workspace data. The symmetry is intentional: if you're working with Epicenter, `.epicenter` is always the directory you're looking for. The only question is whether you're looking globally or locally.
+One directory to back up, one directory to nuke, one directory to `ls`. The app server discovers workspaces by reading `~/.epicenter/workspaces/`—no registry file, no scattered project folders to track down.
 
-This mirrors how Git works: `~/.gitconfig` is global, `<project>/.git/` is local. Nobody argues Git should put its global config in `~/.config/git/` (even though it technically supports that path, almost nobody uses it).
+This mirrors how Homebrew puts everything in `/opt/homebrew/Cellar/` and how Cargo puts everything in `~/.cargo/`. A single, predictable location that you can find with your eyes closed.
 
 ## When XDG Is Still Right
 
@@ -66,6 +74,4 @@ Developer tools are different. Their "config" and "data" are intertwined: your `
 
 ## The Decision
 
-Epicenter's global server config lives at `~/.epicenter/server/`. Home dotfile, not XDG. The same convention as Claude Code, Ollama, and Cursor, because we'd rather be easy to find than spec-compliant.
-
-Project-local workspace data stays at `<project>/.epicenter/`, matching the existing convention already established in the codebase. Two scopes, one name, zero confusion.
+Epicenter's global config and all workspace data live under `~/.epicenter/`. Home dotfile, not XDG. The same convention as Claude Code, Ollama, and Cursor, because we'd rather be easy to find than spec-compliant.

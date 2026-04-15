@@ -1,19 +1,8 @@
 {
 	"extends": ["../../tsconfig.base.json"],
 	"compilerOptions": {
-		"allowJs": true,
-		"resolveJsonModule": true,
-
 		"module": "NodeNext",
-		"moduleResolution": "NodeNext",
-		"outDir": "dist",
-		"sourceMap": true,
-
-		"declaration": true,
-		"composite": true,
-		"declarationMap": true,
-
-		"lib": ["es2022"]
+		"moduleResolution": "NodeNext"
 	},
 	"include": ["src/**/*"],
 	"exclude": ["node_modules", "dist"]

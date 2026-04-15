@@ -13,7 +13,7 @@ git worktree add ../myproject-experiment experiment
 This creates a messy code directory:
 
 ```
-/Users/braden/Code/
+~/Code/
 ├── myproject/                 # The actual repo
 ├── myproject-feature-branch/  # Worktree #1
 ├── myproject-hotfix/         # Worktree #2  

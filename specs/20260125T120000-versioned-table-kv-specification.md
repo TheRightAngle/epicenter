@@ -331,7 +331,7 @@ type TableHelper<TRow extends { id: string }> = {
   setMany(rows: TRow[]): void;
 
   // Delete
-  delete(id: string): DeleteResult;
+  delete(id: string): void;
   deleteMany(ids: string[]): DeleteManyResult;
   clear(): void;
 

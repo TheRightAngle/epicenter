@@ -39,8 +39,10 @@ type RecordingFrontMatter = typeof RecordingFrontMatter.infer;
 /**
  * Convert Recording to markdown format (frontmatter + body)
  */
-function recordingToMarkdown(recording: Recording): string {
-	const { transcribedText, ...frontMatter } = recording;
+function recordingToMarkdown({
+	transcribedText,
+	...frontMatter
+}: Recording): string {
 	return stringifyFrontmatter(transcribedText ?? '', frontMatter);
 }
 
@@ -313,11 +315,10 @@ export function createFileSystemDb(): DbService {
 								const { data: recordings, error } = await this.getAll();
 								if (error) throw error;
 
-								const maxCount = Number.parseInt(maxRecordingCount, 10);
-								if (recordings.length <= maxCount) return;
+								if (recordings.length <= maxRecordingCount) return;
 
 								// Delete oldest recordings (already sorted newest first)
-								const toDelete = recordings.slice(maxCount);
+								const toDelete = recordings.slice(maxRecordingCount);
 								await this.delete(toDelete);
 							},
 							catch: (error) => DbError.MutationFailed({ cause: error }),

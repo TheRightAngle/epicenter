@@ -1,10 +1,10 @@
 import { Ok } from 'wellcrafted/result';
 import { WHISPERING_RECORDINGS_PATHNAME } from '$lib/constants/app';
+import { rpc } from '$lib/query';
 import { defineMutation } from '$lib/query/client';
 import type { WhisperingError } from '$lib/result';
 import type { TextError } from '$lib/services/text';
 import { settings } from '$lib/state/settings.svelte';
-import { rpc } from './index';
 
 export const delivery = {
 	/**
@@ -152,11 +152,8 @@ export const delivery = {
 			// Fast cursor paste already leaves the transcript in the clipboard,
 			// so skip the extra copy step when both outputs are enabled.
 			if (
-				settings.value['transcription.copyToClipboardOnSuccess'] &&
-				!(
-					settings.value['transcription.writeToCursorOnSuccess'] &&
-					fastOutputMode
-				)
+				settings.get('output.transcription.clipboard') &&
+				!(settings.get('output.transcription.cursor') && fastOutputMode)
 			) {
 				const { error: copyError } = await rpc.text.copyToClipboard({
 					text,
@@ -169,7 +166,7 @@ export const delivery = {
 			}
 
 			// Check if user wants to write to cursor (independent of copy)
-			if (settings.value['transcription.writeToCursorOnSuccess']) {
+			if (settings.get('output.transcription.cursor')) {
 				const { error: writeError } = await rpc.text.writeToCursor({
 					text,
 					preserveClipboard,
@@ -183,7 +180,7 @@ export const delivery = {
 						copied = true;
 					}
 					// Optionally simulate Enter keystroke after successful write
-					if (settings.value['transcription.simulateEnterAfterOutput']) {
+					if (settings.get('output.transcription.enter')) {
 						const { error: enterError } =
 							await rpc.text.simulateEnterKeystroke();
 						if (enterError) {
@@ -351,11 +348,8 @@ export const delivery = {
 			// Fast cursor paste already leaves the transformed text in the clipboard,
 			// so skip the extra copy step when both outputs are enabled.
 			if (
-				settings.value['transformation.copyToClipboardOnSuccess'] &&
-				!(
-					settings.value['transformation.writeToCursorOnSuccess'] &&
-					fastOutputMode
-				)
+				settings.get('output.transformation.clipboard') &&
+				!(settings.get('output.transformation.cursor') && fastOutputMode)
 			) {
 				const { error: copyError } = await rpc.text.copyToClipboard({
 					text,
@@ -368,7 +362,7 @@ export const delivery = {
 			}
 
 			// Check if user wants to write to cursor (independent of copy)
-			if (settings.value['transformation.writeToCursorOnSuccess']) {
+			if (settings.get('output.transformation.cursor')) {
 				const { error: writeError } = await rpc.text.writeToCursor({
 					text,
 					preserveClipboard,
@@ -382,7 +376,7 @@ export const delivery = {
 						copied = true;
 					}
 					// Optionally simulate Enter keystroke after successful write
-					if (settings.value['transformation.simulateEnterAfterOutput']) {
+					if (settings.get('output.transformation.enter')) {
 						const { error: enterError } =
 							await rpc.text.simulateEnterKeystroke();
 						if (enterError) {

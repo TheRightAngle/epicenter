@@ -127,7 +127,7 @@ async function main() {
 	}
 
 	// Cleanup
-	await workspace.destroy();
+	await workspace.dispose();
 }
 
 main().catch((err) => {

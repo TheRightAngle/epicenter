@@ -12,13 +12,14 @@
 	 * no polling, no derived stores.
 	 */
 
-	import type { SyncStatus } from '@epicenter/sync-client';
-	import { reconnectSync, workspaceClient } from '$lib/workspace';
+	import type { SyncStatus } from '@epicenter/workspace/extensions/sync/websocket';
+	import { workspace } from '$lib/client';
 
 	function createSyncStatus() {
-		let current = $state<SyncStatus>(workspaceClient.extensions.sync.status);
+		let current = $state<SyncStatus>({ phase: 'offline' });
 
-		workspaceClient.extensions.sync.onStatusChange((status) => {
+		current = workspace.extensions.sync.status;
+		workspace.extensions.sync.onStatusChange((status) => {
 			current = status;
 		});
 
@@ -32,8 +33,8 @@
 
 	const syncStatus = createSyncStatus();
 
-	function getTooltip(s: SyncStatus, isSignedIn: boolean): string {
-		if (!isSignedIn) return 'Sign in to sync across devices';
+	function getTooltip(s: SyncStatus, isAuthenticated: boolean): string {
+		if (!isAuthenticated) return 'Sign in to sync across devices';
 		switch (s.phase) {
 			case 'connected':
 				return 'Connected';
@@ -56,11 +57,12 @@
 	import LoaderCircle from '@lucide/svelte/icons/loader-circle';
 	import LogOutIcon from '@lucide/svelte/icons/log-out';
 	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
+	import { auth } from '$lib/client';
 	import AuthForm from '$lib/components/AuthForm.svelte';
-	import { authState } from '$lib/state/auth.svelte';
 
-	const isSignedIn = $derived(authState.status === 'signed-in');
-	const tooltip = $derived(getTooltip(syncStatus.current, isSignedIn));
+	const tooltip = $derived(
+		getTooltip(syncStatus.current, auth.isAuthenticated),
+	);
 
 	let popoverOpen = $state(false);
 </script>
@@ -71,7 +73,7 @@
 		title={tooltip}
 	>
 		<div class="relative">
-			{#if !isSignedIn}
+			{#if !auth.isAuthenticated}
 				<CloudOff class="size-4 text-muted-foreground" />
 			{:else if syncStatus.current.phase === 'connected'}
 				<Cloud class="size-4" />
@@ -80,7 +82,7 @@
 			{:else}
 				<CloudOff class="size-4 text-destructive" />
 			{/if}
-			{#if !isSignedIn}
+			{#if !auth.isAuthenticated}
 				<span
 					class="absolute -top-0.5 -right-0.5 size-2 rounded-full bg-primary"
 				></span>
@@ -88,21 +90,21 @@
 		</div>
 	</Popover.Trigger>
 	<Popover.Content class="w-80 p-0" align="end">
-		{#if isSignedIn}
+		{#if auth.isAuthenticated}
 			<!-- Account panel -->
 			<div class="p-4 space-y-3">
 				<div class="space-y-1">
-					<p class="text-sm font-medium">{authState.user?.name}</p>
-					<p class="text-xs text-muted-foreground">{authState.user?.email}</p>
+					<p class="text-sm font-medium">{auth.user?.name}</p>
+					<p class="text-xs text-muted-foreground">{auth.user?.email}</p>
 				</div>
 				<div class="border-t pt-3 space-y-1">
 					<p class="text-xs text-muted-foreground">
 						Sync:
-						{syncStatus.current.phase === 'connected'
-							? 'Connected'
-							: syncStatus.current.phase === 'connecting'
-								? 'Connecting…'
-								: 'Offline'}
+						{({
+						connected: 'Connected',
+						connecting: 'Connecting…',
+						offline: 'Offline',
+					} satisfies Record<SyncStatus['phase'], string>)[syncStatus.current.phase]}
 					</p>
 				</div>
 				<div class="border-t pt-3 flex gap-2">
@@ -111,7 +113,7 @@
 							variant="outline"
 							size="sm"
 							class="flex-1"
-							onclick={reconnectSync}
+							onclick={() => workspace.extensions.sync.reconnect()}
 						>
 							<RefreshCwIcon class="size-3.5" />
 							Reconnect
@@ -122,8 +124,7 @@
 						size="sm"
 						class="flex-1"
 						onclick={async () => {
-							await authState.signOut();
-							reconnectSync();
+							await auth.signOut();
 							popoverOpen = false;
 						}}
 					>

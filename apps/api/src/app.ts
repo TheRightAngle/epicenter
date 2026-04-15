@@ -1,14 +1,11 @@
 import {
-	oauthProvider,
 	oauthProviderAuthServerMetadata,
 	oauthProviderOpenIdConfigMetadata,
 } from '@better-auth/oauth-provider';
+import { AiChatError } from '@epicenter/constants/ai-chat-errors';
+import { APPS } from '@epicenter/constants/apps';
 import { sValidator } from '@hono/standard-validator';
 import { type } from 'arktype';
-import { betterAuth } from 'better-auth';
-import { drizzleAdapter } from 'better-auth/adapters/drizzle';
-import { bearer } from 'better-auth/plugins/bearer';
-import { jwt } from 'better-auth/plugins/jwt';
 import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres';
 import type { Context } from 'hono';
 import { cors } from 'hono/cors';
@@ -16,6 +13,16 @@ import { createFactory } from 'hono/factory';
 import { describeRoute } from 'hono-openapi';
 import pg from 'pg';
 import { aiChatHandlers } from './ai-chat';
+import { assetAuthedRoutes, assetPublicRoutes } from './asset-routes';
+import { createAuth } from './auth/create-auth';
+import {
+	renderConsentPage,
+	renderDevicePage,
+	renderSignedInPage,
+	renderSignInPage,
+} from './auth-pages';
+import { createAutumn } from './autumn';
+import { billingRoutes } from './billing-routes';
 import { MAX_PAYLOAD_BYTES } from './constants';
 import * as schema from './db/schema';
 
@@ -31,6 +38,44 @@ type Db = NodePgDatabase<typeof schema>;
 type Auth = ReturnType<typeof createAuth>;
 type Session = Auth['$Infer']['Session'];
 
+/**
+ * Create a queue for fire-and-forget promises that run after the HTTP response.
+ *
+ * Route handlers push promises into the queue via `push()`. The middleware's
+ * `finally` block calls `drain()` inside `executionCtx.waitUntil()` to keep
+ * the worker alive until all promises settle. Cleanup (e.g. closing the DB
+ * connection) is chained by the caller via `.then()`.
+ *
+ * @example
+ * ```typescript
+ * const afterResponse = createAfterResponseQueue();
+ * c.set('afterResponse', afterResponse);
+ * // ... await next() ...
+ * c.executionCtx.waitUntil(afterResponse.drain().then(() => client.end()));
+ * ```
+ */
+function createAfterResponseQueue() {
+	/**
+	 * Tracked promises whose resolution values are intentionally ignored.
+	 * `unknown` is the semantic contract for fire-and-forget: we track these
+	 * promises to completion via `Promise.allSettled`, but never inspect what
+	 * they resolve to.
+	 */
+	const promises: Promise<unknown>[] = [];
+	return {
+		/** Enqueue a fire-and-forget promise to run after the response is sent. */
+		push(promise: Promise<unknown>) {
+			promises.push(promise);
+		},
+		/** Settle all queued promises. Returns a single promise suitable for `executionCtx.waitUntil()`. */
+		drain() {
+			return Promise.allSettled(promises);
+		},
+	};
+}
+
+type AfterResponseQueue = ReturnType<typeof createAfterResponseQueue>;
+
 export type Env = {
 	Bindings: Cloudflare.Env;
 	Variables: {
@@ -38,104 +83,11 @@ export type Env = {
 		auth: Auth;
 		user: Session['user'];
 		session: Session['session'];
+		afterResponse: AfterResponseQueue;
+		/** Current plan ID. Only set by ensureAutumnCustomer middleware on /ai/* routes. */
+		planId: string | undefined;
 	};
 };
-
-// ---------------------------------------------------------------------------
-// Auth
-// ---------------------------------------------------------------------------
-
-/** Shared base config for Better Auth — used by both the runtime and the CLI schema tool. */
-export const BASE_AUTH_CONFIG = {
-	basePath: '/auth',
-	emailAndPassword: { enabled: true },
-	account: {
-		accountLinking: {
-			enabled: true,
-			trustedProviders: ['google', 'email-password'],
-		},
-	},
-} as const;
-
-/** Creates a Better Auth instance using an already-connected Drizzle instance. */
-function createAuth(db: Db, env: Env['Bindings']) {
-	return betterAuth({
-		...BASE_AUTH_CONFIG,
-		database: drizzleAdapter(db, { provider: 'pg' }),
-		baseURL: env.BASE_URL,
-		secret: env.BETTER_AUTH_SECRET,
-		socialProviders: {
-			google: {
-				clientId: env.GOOGLE_CLIENT_ID,
-				clientSecret: env.GOOGLE_CLIENT_SECRET,
-			},
-		},
-		plugins: [
-			bearer(),
-			jwt(),
-			oauthProvider({
-				loginPage: '/sign-in',
-				consentPage: '/consent',
-				requirePKCE: true,
-				allowDynamicClientRegistration: false,
-				trustedClients: [
-					{
-						clientId: 'epicenter-desktop',
-						name: 'Epicenter Desktop',
-						type: 'native',
-						redirectUrls: ['tauri://localhost/auth/callback'],
-						skipConsent: true,
-						metadata: {},
-					},
-					{
-						clientId: 'epicenter-mobile',
-						name: 'Epicenter Mobile',
-						type: 'native',
-						redirectUrls: ['epicenter://auth/callback'],
-						skipConsent: true,
-						metadata: {},
-					},
-				],
-			}),
-		],
-		session: {
-			expiresIn: 60 * 60 * 24 * 7,
-			updateAge: 60 * 60 * 24,
-			storeSessionInDatabase: true,
-			cookieCache: {
-				enabled: true,
-				maxAge: 60 * 5,
-				strategy: 'jwe',
-			},
-		},
-		advanced: {
-			crossSubDomainCookies: {
-				enabled: true,
-				domain: 'epicenter.so',
-			},
-		},
-		trustedOrigins: (request) => {
-			const origins = [
-				'https://*.epicenter.so',
-				'https://epicenter.so',
-				'tauri://localhost',
-			];
-			const origin = request?.headers.get('origin');
-			if (origin?.startsWith('chrome-extension://')) {
-				origins.push(origin);
-			}
-			return origins;
-		},
-		secondaryStorage: {
-			get: (key: string) => env.SESSION_KV.get(key),
-			set: (key: string, value: string, ttl?: number) =>
-				env.SESSION_KV.put(key, value, {
-					expirationTtl: ttl ?? 60 * 5,
-				}),
-			delete: (key: string) => env.SESSION_KV.delete(key),
-		},
-	});
-}
 
 // ---------------------------------------------------------------------------
 // Factory & App
@@ -143,42 +95,71 @@ function createAuth(db: Db, env: Env['Bindings']) {
 
 const factory = createFactory<Env>({
 	initApp: (app) => {
-		// CORS — skip WebSocket upgrades (101 response headers are immutable)
+		// CORS — skip WebSocket upgrades (101 response headers are immutable).
+		// Allowed origins derived from APPS so adding an app automatically allows it.
+		const allowedOrigins = new Set([
+			'tauri://localhost',
+			...Object.values(APPS).flatMap((a) => [
+				...a.urls,
+				`http://localhost:${a.port}`,
+			]),
+		]);
 		app.use('*', async (c, next) => {
 			if (c.req.header('upgrade') === 'websocket') return next();
 			return cors({
 				origin: (origin) => {
 					if (!origin) return origin;
-					if (origin === 'https://epicenter.so') return origin;
-					if (origin.endsWith('.epicenter.so') && origin.startsWith('https://'))
-						return origin;
-					if (origin === 'tauri://localhost') return origin;
+					if (allowedOrigins.has(origin)) return origin;
+					if (origin.startsWith('chrome-extension://')) return origin;
 					return undefined;
 				},
 				credentials: true,
 				allowHeaders: ['Content-Type', 'Authorization', 'Upgrade'],
 				allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+				exposeHeaders: ['set-auth-token'],
 			})(c, next);
 		});
 
 		// Layer 1: Database — per-request pg.Client lifecycle (connect/end).
 		// Uses Client (not Pool) because Hyperdrive IS the connection pool.
 		app.use('*', async (c, next) => {
+			// 1. Create a fresh pg connection and afterResponse queue for this request.
 			const client = new pg.Client({
 				connectionString: c.env.HYPERDRIVE.connectionString,
 			});
+			const afterResponse = createAfterResponseQueue();
 			try {
+				// 2. Connect and expose db + queue to downstream handlers.
 				await client.connect();
 				c.set('db', drizzle(client, { schema }));
+				c.set('afterResponse', afterResponse);
+
+				// 3. Run the route handler. Handlers push fire-and-forget
+				//    promises (e.g. upsertDoInstance) into afterResponse.
 				await next();
 			} finally {
-				c.executionCtx.waitUntil(client.end());
+				// 4. The response has already left — Hono streams it during `await next()`.
+				//    But the fire-and-forget promises are still in-flight. CF Workers
+				//    would kill the isolate as soon as the response finishes, so we use
+				//    `waitUntil()` to keep it alive. `drain()` settles every queued
+				//    promise via `Promise.allSettled`, then `.then()` closes the pg
+				//    connection — guaranteeing the client outlives all its queries.
+				c.executionCtx.waitUntil(
+					afterResponse.drain().then(() => client.end()),
+				);
 			}
 		});
 
 		// Layer 2: Auth — pure, reads db from context.
+		// Wrangler dev uses the custom domain from routes config as the Host header,
+		// producing http://api.epicenter.so (no TLS). Detect this and use localhost.
 		app.use('*', async (c, next) => {
-			c.set('auth', createAuth(c.var.db, c.env));
+			const origin = new URL(c.req.url).origin;
+			const baseURL =
+				origin === `http://${new URL(APPS.API.urls[0]).host}`
+					? `http://localhost:${APPS.API.port}`
+					: origin;
+			c.set('auth', createAuth({ db: c.var.db, env: c.env, baseURL }));
 			await next();
 		});
 	},
@@ -194,6 +175,67 @@ app.get(
 		tags: ['health'],
 	}),
 	(c) => c.json({ mode: 'hub', version: '0.1.0', runtime: 'cloudflare' }),
+);
+
+// Auth pages — server-rendered Hono JSX
+app.get('/sign-in', async (c) => {
+	const session = await c.var.auth.api.getSession({
+		headers: c.req.raw.headers,
+	});
+	if (session) {
+		const url = new URL(c.req.url);
+		// OAuth re-entry: signed params present → continue the authorize flow
+		if (url.searchParams.has('sig')) {
+			return c.redirect(`/auth/oauth2/authorize${url.search}`);
+		}
+		// Post-signin redirect (e.g. from /device or /consent)
+		const callbackURL = url.searchParams.get('callbackURL');
+		if (callbackURL?.startsWith('/')) {
+			return c.redirect(callbackURL);
+		}
+		// Already signed in, no redirect needed — show signed-in confirmation
+		const displayName = session.user.name ?? session.user.email;
+		return c.html(
+			renderSignedInPage({ displayName, email: session.user.email }),
+		);
+	}
+	return c.html(renderSignInPage());
+});
+app.get(
+	'/consent',
+	sValidator('query', type({ 'client_id?': 'string', 'scope?': 'string' })),
+	async (c) => {
+		const session = await c.var.auth.api.getSession({
+			headers: c.req.raw.headers,
+		});
+		if (!session) {
+			const consentUrl = `/consent${new URL(c.req.url).search}`;
+			return c.redirect(
+				`/sign-in?callbackURL=${encodeURIComponent(consentUrl)}`,
+			);
+		}
+		const { client_id: clientId, scope } = c.req.valid('query');
+		return c.html(renderConsentPage({ clientId, scope }));
+	},
+);
+app.get(
+	'/device',
+	sValidator('query', type({ 'user_code?': 'string' })),
+	async (c) => {
+		const { user_code: userCode } = c.req.valid('query');
+		const session = await c.var.auth.api.getSession({
+			headers: c.req.raw.headers,
+		});
+		if (!session) {
+			const callbackURL = userCode
+				? `/device?user_code=${encodeURIComponent(userCode)}`
+				: '/device';
+			return c.redirect(
+				`/sign-in?callbackURL=${encodeURIComponent(callbackURL)}`,
+			);
+		}
+		return c.html(renderDevicePage({ userCode }));
+	},
 );
 
 // Auth
@@ -225,6 +267,10 @@ app.get(
 	(c) => oauthProviderAuthServerMetadata(c.var.auth)(c.req.raw),
 );
 
+// Asset reads — unauthenticated (unguessable URL is the credential).
+// Must be mounted BEFORE authGuard so GET requests aren't blocked.
+app.route('/api/assets', assetPublicRoutes);
+
 // Auth guard for protected routes
 const authGuard = factory.createMiddleware(async (c, next) => {
 	const wsToken = c.req.query('token');
@@ -233,7 +279,7 @@ const authGuard = factory.createMiddleware(async (c, next) => {
 		: c.req.raw.headers;
 
 	const result = await c.var.auth.api.getSession({ headers });
-	if (!result) return c.json({ error: 'Unauthorized' }, 401);
+	if (!result) return c.json(AiChatError.Unauthorized(), 401);
 
 	c.set('user', result.user);
 	c.set('session', result.session);
@@ -242,6 +288,50 @@ const authGuard = factory.createMiddleware(async (c, next) => {
 app.use('/ai/*', authGuard);
 app.use('/workspaces/*', authGuard);
 app.use('/documents/*', authGuard);
+app.use('/api/billing/*', authGuard);
+app.use('/api/assets/*', authGuard);
+
+// Ensure Autumn customer exists and stash planId for model gating.
+// Runs after authGuard for AI routes so c.var.user is available.
+app.use('/ai/*', async (c, next) => {
+	const autumn = createAutumn(c.env);
+	const customer = await autumn.customers.getOrCreate({
+		customerId: c.var.user.id,
+		name: c.var.user.name ?? undefined,
+		email: c.var.user.email ?? undefined,
+		expand: ['subscriptions.plan'],
+	});
+	const mainSub = customer.subscriptions?.find(
+		(s: { addOn?: boolean }) => !s.addOn,
+	);
+	c.set('planId', mainSub?.planId ?? 'free');
+	await next();
+});
+
+// Billing — redirect legacy page to dashboard SPA
+app.get('/billing', (c) => c.redirect('/dashboard'));
+
+// Dashboard SPA — static assets served by Workers Static Assets (wrangler.jsonc).
+// This catch-all handles SPA client-side routing: when no static file matches,
+// serve index.html so the SvelteKit router takes over.
+app.get('/dashboard/*', async (c) => {
+	const assets = c.env.ASSETS;
+	if (!assets) return c.notFound();
+	const indexUrl = new URL('/dashboard/index.html', c.req.url);
+	return assets.fetch(new Request(indexUrl.toString(), c.req.raw));
+});
+app.get('/dashboard', async (c) => {
+	const assets = c.env.ASSETS;
+	if (!assets) return c.notFound();
+	const indexUrl = new URL('/dashboard/index.html', c.req.url);
+	return assets.fetch(new Request(indexUrl.toString(), c.req.raw));
+});
+
+// Billing API routes — typed JSON routes consumed by the dashboard SPA via hc<AppType>
+app.route('/api/billing', billingRoutes);
+
+// Asset routes — upload + delete (authed, mounted after authGuard)
+app.route('/api/assets', assetAuthedRoutes);
 
 // AI chat
 app.post(
@@ -258,7 +348,7 @@ app.post(
 // ---------------------------------------------------------------------------
 
 /**
- * DO name namespacing: `user:{userId}:{workspace|document}`
+ * DO name namespacing: `user:{userId}:{type}:{name}`
  *
  * We use user-scoped DO names (Google Docs model) rather than org-scoped names
  * (Vercel/Supabase model). Each user gets their own DO instance per workspace.
@@ -285,16 +375,66 @@ app.post(
  * a tenant prefix added at the routing layer, not embedded in the app's data model.
  */
 
-/** Get a WorkspaceRoom DO stub for the authenticated user's workspace. */
+/** Get a WorkspaceRoom DO stub and its DO name for the authenticated user's workspace. */
 function getWorkspaceStub(c: Context<Env>) {
-	const doName = `user:${c.var.user.id}:${c.req.param('workspace')}`;
-	return c.env.WORKSPACE_ROOM.get(c.env.WORKSPACE_ROOM.idFromName(doName));
+	const doName = `user:${c.var.user.id}:workspace:${c.req.param('workspace')}`;
+	return {
+		stub: c.env.WORKSPACE_ROOM.get(c.env.WORKSPACE_ROOM.idFromName(doName)),
+		doName,
+	};
 }
 
-/** Get a DocumentRoom DO stub for the authenticated user's document. */
+/** Get a DocumentRoom DO stub and its DO name for the authenticated user's document. */
 function getDocumentStub(c: Context<Env>) {
-	const doName = `user:${c.var.user.id}:${c.req.param('document')}`;
-	return c.env.DOCUMENT_ROOM.get(c.env.DOCUMENT_ROOM.idFromName(doName));
+	const doName = `user:${c.var.user.id}:document:${c.req.param('document')}`;
+	return {
+		stub: c.env.DOCUMENT_ROOM.get(c.env.DOCUMENT_ROOM.idFromName(doName)),
+		doName,
+	};
+}
+
+/**
+ * Fire-and-forget upsert for DO instance tracking.
+ *
+ * Records that a user accessed a DO, optionally updating storage bytes.
+ * Uses INSERT ON CONFLICT so the first access creates the row and
+ * subsequent accesses update `lastAccessedAt` (and `storageBytes` when
+ * provided). Errors are caught and logged—this is best-effort telemetry,
+ * not billing authority.
+ */
+function upsertDoInstance(
+	db: Db,
+	params: {
+		userId: string;
+		doType: schema.DoType;
+		resourceName: string;
+		doName: string;
+		storageBytes?: number;
+	},
+) {
+	const now = new Date();
+	return db
+		.insert(schema.durableObjectInstance)
+		.values({
+			userId: params.userId,
+			doType: params.doType,
+			resourceName: params.resourceName,
+			doName: params.doName,
+			storageBytes: params.storageBytes ?? null,
+			lastAccessedAt: now,
+			storageMeasuredAt: params.storageBytes != null ? now : null,
+		})
+		.onConflictDoUpdate({
+			target: schema.durableObjectInstance.doName,
+			set: {
+				lastAccessedAt: now,
+				...(params.storageBytes != null && {
+					storageBytes: params.storageBytes,
+					storageMeasuredAt: now,
+				}),
+			},
+		})
+		.catch((e) => console.error('[do-tracking] upsert failed:', e));
 }
 
 app.get(
@@ -304,14 +444,31 @@ app.get(
 		tags: ['workspaces'],
 	}),
 	async (c) => {
-		const stub = getWorkspaceStub(c);
+		const { stub, doName } = getWorkspaceStub(c);
 
 		if (c.req.header('upgrade') === 'websocket') {
+			c.var.afterResponse.push(
+				upsertDoInstance(c.var.db, {
+					userId: c.var.user.id,
+					doType: 'workspace',
+					resourceName: c.req.param('workspace'),
+					doName,
+				}),
+			);
 			return stub.fetch(c.req.raw);
 		}
 
-		const update = await stub.getDoc();
-		return new Response(update, {
+		const { data, storageBytes } = await stub.getDoc();
+		c.var.afterResponse.push(
+			upsertDoInstance(c.var.db, {
+				userId: c.var.user.id,
+				doType: 'workspace',
+				resourceName: c.req.param('workspace'),
+				doName,
+				storageBytes,
+			}),
+		);
+		return new Response(data, {
 			headers: { 'content-type': 'application/octet-stream' },
 		});
 	},
@@ -329,8 +486,18 @@ app.post(
 			return c.body('Payload too large', 413);
 		}
 
-		const stub = getWorkspaceStub(c);
-		const diff = await stub.sync(body);
+		const { stub, doName } = getWorkspaceStub(c);
+		const { diff, storageBytes } = await stub.sync(body);
+
+		c.var.afterResponse.push(
+			upsertDoInstance(c.var.db, {
+				userId: c.var.user.id,
+				doType: 'workspace',
+				resourceName: c.req.param('workspace'),
+				doName,
+				storageBytes,
+			}),
+		);
 
 		if (!diff) return c.body(null, 304);
 		return new Response(diff, {
@@ -350,14 +517,31 @@ app.get(
 		tags: ['documents'],
 	}),
 	async (c) => {
-		const stub = getDocumentStub(c);
+		const { stub, doName } = getDocumentStub(c);
 
 		if (c.req.header('upgrade') === 'websocket') {
+			c.var.afterResponse.push(
+				upsertDoInstance(c.var.db, {
+					userId: c.var.user.id,
+					doType: 'document',
+					resourceName: c.req.param('document'),
+					doName,
+				}),
+			);
 			return stub.fetch(c.req.raw);
 		}
 
-		const update = await stub.getDoc();
-		return new Response(update, {
+		const { data, storageBytes } = await stub.getDoc();
+		c.var.afterResponse.push(
+			upsertDoInstance(c.var.db, {
+				userId: c.var.user.id,
+				doType: 'document',
+				resourceName: c.req.param('document'),
+				doName,
+				storageBytes,
+			}),
+		);
+		return new Response(data, {
 			headers: { 'content-type': 'application/octet-stream' },
 		});
 	},
@@ -375,8 +559,18 @@ app.post(
 			return c.body('Payload too large', 413);
 		}
 
-		const stub = getDocumentStub(c);
-		const diff = await stub.sync(body);
+		const { stub, doName } = getDocumentStub(c);
+		const { diff, storageBytes } = await stub.sync(body);
+
+		c.var.afterResponse.push(
+			upsertDoInstance(c.var.db, {
+				userId: c.var.user.id,
+				doType: 'document',
+				resourceName: c.req.param('document'),
+				doName,
+				storageBytes,
+			}),
+		);
 
 		if (!diff) return c.body(null, 304);
 		return new Response(diff, {
@@ -394,7 +588,7 @@ app.post(
 	}),
 	sValidator('json', type({ label: 'string | null' })),
 	async (c) => {
-		const stub = getDocumentStub(c);
+		const { stub } = getDocumentStub(c);
 		const { label } = c.req.valid('json');
 		const result = await stub.saveSnapshot(label ?? undefined);
 		return c.json(result);
@@ -408,7 +602,7 @@ app.get(
 		tags: ['documents', 'snapshots'],
 	}),
 	async (c) => {
-		const stub = getDocumentStub(c);
+		const { stub } = getDocumentStub(c);
 		const snapshots = await stub.listSnapshots();
 		return c.json(snapshots);
 	},
@@ -422,7 +616,7 @@ app.get(
 	}),
 	sValidator('param', type({ document: 'string', id: 'string.numeric' })),
 	async (c) => {
-		const stub = getDocumentStub(c);
+		const { stub } = getDocumentStub(c);
 		const { id } = c.req.valid('param');
 		const data = await stub.getSnapshot(Number(id));
 		if (!data) return c.body('Snapshot not found', 404);
@@ -432,21 +626,23 @@ app.get(
 	},
 );
 
-app.post(
-	'/documents/:document/snapshots/:id/apply',
+app.delete(
+	'/documents/:document/snapshots/:id',
 	describeRoute({
-		description:
-			'Apply a past snapshot state into the current document (CRDT forward-merge)',
+		description: 'Delete a document snapshot',
 		tags: ['documents', 'snapshots'],
 	}),
 	sValidator('param', type({ document: 'string', id: 'string.numeric' })),
 	async (c) => {
-		const stub = getDocumentStub(c);
+		const { stub } = getDocumentStub(c);
 		const { id } = c.req.valid('param');
-		const ok = await stub.applySnapshot(Number(id));
-		if (!ok) return c.json({ error: 'Snapshot not found' }, 404);
+		const deleted = await stub.deleteSnapshot(Number(id));
+		if (!deleted) return c.body('Snapshot not found', 404);
 		return c.body(null, 204);
 	},
 );
+
+/** App type for hc<AppType> in the dashboard. */
+export type AppType = typeof app;
 
 export default app;

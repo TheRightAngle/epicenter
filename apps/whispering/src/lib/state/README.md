@@ -9,23 +9,90 @@ Singleton reactive state that stays in sync with the application. Unlike the que
 | **Pattern** | Singleton reactive state | Stale-while-revalidate (TanStack Query) |
 | **State Location** | Module-level `$state` runes | TanStack Query cache |
 | **Updates** | Immediate, live | Cached with background refresh |
-| **Use Case** | Hardware state, user preferences, live status | Data fetching, mutations, cached data |
+| **Use Case** | Hardware state, user preferences, live status, workspace table data | Data fetching, mutations, external API calls |
 | **Lifecycle** | Application lifetime | Managed by TanStack Query |
 
 ## Current State Modules
 
 ### `settings.svelte.ts`
 
-Persistent user settings using `createPersistedState`. Automatically syncs to localStorage and provides reactive access to all app configuration.
+Synced workspace settings backed by Yjs KV. Settings here roam across devices via CRDT sync. Uses a SvelteMap for per-key reactivity.
 
 ```typescript
 import { settings } from '$lib/state/settings.svelte';
 
-// Read settings reactively
-const mode = settings.value['recording.mode'];
+// Read settings reactively (re-renders on change)
+const mode = settings.get('recording.mode');
 
-// Update settings
+// Update settings (writes to Yjs KV → syncs to other devices)
 settings.set('recording.mode', 'vad');
+```
+
+### `recordings.svelte.ts`
+
+Recording metadata backed by Yjs workspace table. SvelteMap provides per-key reactivity—updating one recording doesn't re-render the entire list. Audio blobs are NOT stored here (too large for CRDTs); use `DbService.recordings.getAudioBlob()` for audio access.
+
+```typescript
+import { recordings } from '$lib/state/recordings.svelte';
+
+// Read recordings reactively
+const recording = recordings.get(id);
+const sorted = recordings.sorted; // newest first
+
+// Write (Yjs observer auto-updates SvelteMap)
+recordings.set(recording);
+recordings.update(id, { transcriptionStatus: 'DONE' });
+recordings.delete(id);
+```
+
+### `transformations.svelte.ts`
+
+Transformation metadata backed by Yjs workspace table. Steps are stored in a separate table (`transformation-steps.svelte.ts`), not embedded in the transformation.
+
+```typescript
+import { transformations } from '$lib/state/transformations.svelte';
+
+const transformation = transformations.get(id);
+const sorted = transformations.sorted; // alphabetical
+```
+
+### `transformation-steps.svelte.ts`
+
+Transformation steps backed by Yjs workspace table. Steps have a `transformationId` FK and `order` field.
+
+```typescript
+import { transformationSteps } from '$lib/state/transformation-steps.svelte';
+
+// Get steps for a transformation, sorted by order
+const steps = transformationSteps.getByTransformationId(transformationId);
+```
+
+### `transformation-runs.svelte.ts`
+
+Transformation run execution records backed by Yjs workspace table.
+
+```typescript
+import { transformationRuns } from '$lib/state/transformation-runs.svelte';
+
+const runs = transformationRuns.getByRecordingId(recordingId);
+const latest = transformationRuns.getLatestByRecordingId(recordingId);
+```
+
+### `device-config.svelte.ts`
+
+Device-bound configuration backed by per-key localStorage. Secrets, hardware IDs, filesystem paths, and global OS shortcuts that should never sync across devices. Uses a SvelteMap for per-key reactivity with cross-tab sync via storage events.
+
+```typescript
+import { deviceConfig } from '$lib/state/device-config.svelte';
+
+// Read config reactively
+const apiKey = deviceConfig.get('apiKeys.openai');
+
+// Update config (writes to localStorage per-key)
+deviceConfig.set('apiKeys.openai', 'sk-...');
+
+// Get definition default (for "Default: X" placeholders)
+const defaultShortcut = deviceConfig.getDefault('shortcuts.global.toggleManualRecording');
 ```
 
 ### `vad-recorder.svelte.ts`
@@ -46,9 +113,6 @@ await vadRecorder.startActiveListening({
   onSpeechEnd: (blob) => processAudio(blob),
 });
 await vadRecorder.stopActiveListening();
-
-// Device enumeration (uses TanStack Query for caching)
-const devices = createQuery(() => vadRecorder.enumerateDevices.options);
 ```
 
 ## Why VAD Lives Here
@@ -59,12 +123,6 @@ The VAD recorder doesn't fit the query layer pattern because:
 2. **Singleton nature**: Only one VAD instance can exist at a time
 3. **Resource management**: Requires explicit cleanup (`stopActiveListening`) rather than cache invalidation
 4. **Hardware lifecycle**: Tied to microphone access, not data fetching
-
-Compare this to the query layer which:
-- Caches data and refreshes in the background
-- Manages multiple query/mutation instances
-- Doesn't track hardware state
-- Uses TanStack Query's lifecycle management
 
 ## Adding New State Modules
 

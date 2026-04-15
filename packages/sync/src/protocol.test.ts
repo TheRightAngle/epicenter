@@ -19,17 +19,24 @@ import {
 import * as Y from 'yjs';
 import {
 	decodeMessageType,
+	decodeRpcMessage,
 	decodeSyncMessage,
+	decodeSyncStatus,
 	encodeAwareness,
 	encodeAwarenessStates,
 	encodeQueryAwareness,
+	encodeRpcRequest,
+	encodeRpcResponse,
+	encodeSyncStatus,
 	encodeSyncStep1,
 	encodeSyncStep2,
 	encodeSyncUpdate,
 	handleSyncPayload,
 	MESSAGE_TYPE,
+	RPC_TYPE,
 	SYNC_MESSAGE_TYPE,
 } from './protocol';
+import { RpcError } from './rpc-errors';
 
 // ============================================================================
 // MESSAGE_TYPE Constants
@@ -44,8 +51,159 @@ describe('MESSAGE_TYPE constants', () => {
 		expect(MESSAGE_TYPE.QUERY_AWARENESS).toBe(3);
 	});
 
-	test('SYNC_STATUS is 102 (extension beyond standard y-websocket)', () => {
-		expect(MESSAGE_TYPE.SYNC_STATUS).toBe(102);
+	test('SYNC_STATUS is 100 (custom extension for version tracking)', () => {
+		expect(MESSAGE_TYPE.SYNC_STATUS).toBe(100);
+	});
+});
+
+// ============================================================================
+// SYNC_STATUS Encode/Decode Tests
+// ============================================================================
+
+describe('SYNC_STATUS encode/decode', () => {
+	test('encodeSyncStatus produces correct message type', () => {
+		const message = encodeSyncStatus(42);
+		expect(decodeMessageType(message)).toBe(MESSAGE_TYPE.SYNC_STATUS);
+	});
+
+	test('round-trip: encode then decode preserves localVersion', () => {
+		const version = 12345;
+		const encoded = encodeSyncStatus(version);
+		const decoded = decodeSyncStatus(encoded);
+		expect(decoded).toBe(version);
+	});
+
+	test('round-trip with version 0', () => {
+		const encoded = encodeSyncStatus(0);
+		const decoded = decodeSyncStatus(encoded);
+		expect(decoded).toBe(0);
+	});
+
+	test('round-trip with large version number', () => {
+		const version = 1_000_000;
+		const encoded = encodeSyncStatus(version);
+		const decoded = decodeSyncStatus(encoded);
+		expect(decoded).toBe(version);
+	});
+
+	test('decodeSyncStatus throws on non-SYNC_STATUS message', () => {
+		const doc = createDoc();
+		const syncMessage = encodeSyncStep1({ doc });
+		expect(() => decodeSyncStatus(syncMessage)).toThrow(
+			'Expected SYNC_STATUS message (100), got 0',
+		);
+	});
+});
+
+// ============================================================================
+// RPC Encode/Decode Tests
+// ============================================================================
+
+describe('RPC protocol', () => {
+	test('MESSAGE_TYPE.RPC is 101', () => {
+		expect(MESSAGE_TYPE.RPC).toBe(101);
+	});
+
+	test('RPC_TYPE constants', () => {
+		expect(RPC_TYPE.REQUEST).toBe(0);
+		expect(RPC_TYPE.RESPONSE).toBe(1);
+	});
+
+	test('round-trip: encode/decode RPC REQUEST', () => {
+		const encoded = encodeRpcRequest({
+			requestId: 42,
+			targetClientId: 100,
+			requesterClientId: 200,
+			action: 'tabs.close',
+			input: { tabIds: [1, 2, 3] },
+		});
+
+		expect(decodeMessageType(encoded)).toBe(MESSAGE_TYPE.RPC);
+
+		const decoded = decodeRpcMessage(encoded);
+		expect(decoded.type).toBe('request');
+		if (decoded.type === 'request') {
+			expect(decoded.requestId).toBe(42);
+			expect(decoded.targetClientId).toBe(100);
+			expect(decoded.requesterClientId).toBe(200);
+			expect(decoded.action).toBe('tabs.close');
+			expect(decoded.input).toEqual({ tabIds: [1, 2, 3] });
+		}
+	});
+
+	test('round-trip: encode/decode RPC RESPONSE', () => {
+		const encoded = encodeRpcResponse({
+			requestId: 42,
+			requesterClientId: 200,
+			result: { data: { closedCount: 3 }, error: null },
+		});
+
+		expect(decodeMessageType(encoded)).toBe(MESSAGE_TYPE.RPC);
+
+		const decoded = decodeRpcMessage(encoded);
+		expect(decoded.type).toBe('response');
+		if (decoded.type === 'response') {
+			expect(decoded.requestId).toBe(42);
+			expect(decoded.requesterClientId).toBe(200);
+			expect(decoded.result).toEqual({ data: { closedCount: 3 }, error: null });
+		}
+	});
+
+	test('REQUEST with null input', () => {
+		const encoded = encodeRpcRequest({
+			requestId: 0,
+			targetClientId: 50,
+			requesterClientId: 60,
+			action: 'devices.list',
+		});
+
+		const decoded = decodeRpcMessage(encoded);
+		expect(decoded.type).toBe('request');
+		if (decoded.type === 'request') {
+			expect(decoded.input).toBeNull();
+		}
+	});
+
+	test('RESPONSE with error', () => {
+		const encoded = encodeRpcResponse({
+			requestId: 7,
+			requesterClientId: 300,
+			result: RpcError.PeerOffline(),
+		});
+
+		const decoded = decodeRpcMessage(encoded);
+		expect(decoded.type).toBe('response');
+		if (decoded.type === 'response') {
+			expect(decoded.result.data).toBeNull();
+			expect(decoded.result.error).toMatchObject({
+				name: 'PeerOffline',
+				message: 'Target peer is not connected',
+			});
+		}
+	});
+
+	test('decodeRpcMessage discriminates REQUEST vs RESPONSE', () => {
+		const request = encodeRpcRequest({
+			requestId: 1,
+			targetClientId: 10,
+			requesterClientId: 20,
+			action: 'test',
+		});
+		const response = encodeRpcResponse({
+			requestId: 1,
+			requesterClientId: 20,
+			result: { data: 'ok', error: null },
+		});
+
+		expect(decodeRpcMessage(request).type).toBe('request');
+		expect(decodeRpcMessage(response).type).toBe('response');
+	});
+
+	test('decodeRpcMessage throws on non-RPC message', () => {
+		const syncMessage = encodeSyncStep1({ doc: new Y.Doc() });
+		expect(() => decodeRpcMessage(syncMessage)).toThrow(
+			'Expected RPC message (101), got 0',
+		);
 	});
 });
 

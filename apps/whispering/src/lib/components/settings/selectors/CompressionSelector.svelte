@@ -20,7 +20,7 @@
 
 	// Visual state for the button icon
 	const isCompressionEnabled = $derived(
-		settings.value['transcription.compressionEnabled'],
+		settings.get('transcription.compressionEnabled'),
 	);
 </script>
 

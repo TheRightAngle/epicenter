@@ -4,167 +4,99 @@ description: Analyze changes and create a new version release
 
 # Create a New Release
 
-You are tasked with helping create a new version release of the application.
-
-## Process
-
-### 1. Analyze Changes Since Last Release
-
-First, identify what has changed:
+## Step 1: Identify changes since last release
 
 ```bash
-# Get the latest tag
 LATEST_TAG=$(git tag --sort=-version:refname | head -1)
 echo "Latest tag: $LATEST_TAG"
 
-# Show commits since last tag
-git log $LATEST_TAG..HEAD --oneline
-
-# Get PRs merged since last release (more useful for release notes)
-gh pr list --state merged --base main --limit 100 --json number,title,author,mergedAt | jq -r '.[] | select(.mergedAt > "RELEASE_DATE") | "* \(.title) by @\(.author.login) in https://github.com/EpicenterHQ/epicenter/pull/\(.number)"'
+git log "$LATEST_TAG..HEAD" --oneline
+gh pr list --state merged --base main --limit 100 --json number,title,author,mergedAt
 ```
 
-### 2. Categorize the Changes
+## Step 2: Categorize changes
 
-Review all commits and PRs, categorizing them:
+Review all commits and merged PRs:
 
 **User-facing (highlight these):**
-- Features (feat): New functionality users can use
-- Fixes (fix): Bugs that were annoying users
-- Performance (perf): Speed improvements users will feel
+- Features (`feat:`): new functionality
+- Fixes (`fix:`): bugs that were annoying users
+- Performance (`perf:`): speed improvements users will feel
 
 **Internal (mention briefly if significant):**
 - Refactoring, migrations, infrastructure changes
-- Only include if they're foundational (e.g., "Zod to Arktype migration")
+- Only include if foundational (e.g., "encryption model rewrite")
 
-**Skip entirely:**
-- Docs, chores, CI changes (unless user-relevant)
+**Skip:** docs, chores, CI (unless user-relevant)
 
-### 3. Determine Version Bump
+## Step 3: Determine version bump
 
-Based on semantic versioning:
-
-- **MAJOR (X.0.0):** Breaking changes that require user migration
-- **MINOR (X.Y.0):** New features, backward compatible
-- **PATCH (X.Y.Z):** Bug fixes only
+This monorepo uses a unified version scheme (`8.Y.Z`), major version 8 is permanent:
+- **Minor** (`8.Y+1.0`): new features, backward compatible
+- **Patch** (`8.Y.Z+1`): bug fixes only
 
 Present your recommendation with reasoning.
 
-### 4. Execute the Version Bump
+## Step 4: Execute the bump
 
-Once confirmed, run from the repository root:
+Once confirmed:
 
 ```bash
-cd /Users/braden/Code/whispering
 git checkout main
 git pull origin main
 bun run scripts/bump-version.ts [VERSION]
 ```
 
-### 5. Draft Release Notes
+## Step 5: Draft release notes
 
-Generate TWO versions of release notes:
+Generate TWO versions:
 
-#### GitHub Release Notes
-
-Follow this structure:
+### GitHub Release Notes
 
 ```markdown
-# Whispering vX.Y.Z: [Catchy 2-4 Word Summary]
+# vX.Y.Z: [Catchy 2-4 Word Summary]
 
-[1-2 sentence narrative intro explaining the headline features. Frame it as what users can now DO, not what we changed.]
+[1-2 sentence narrative intro framing what users can now DO.]
 
 ## [Feature Name]
-
-[2-3 sentences explaining the feature. What is it, why it matters, how to use it.]
-
-[Settings path or usage instructions if relevant]
-
-## [Another Feature or Fix Category]
-
-[Same pattern - explain, don't just list]
-
-## Internal: [Significant Internal Change]
-
-[Brief explanation of why this matters for the project's future, even if users don't see it directly]
+[2-3 sentences: what it is, why it matters, how to use it.]
 
 ## What's Changed
-
 ### Features
-* feat: description by @author in https://github.com/EpicenterHQ/epicenter/pull/XXX
+* feat: description by @author in #NNN
 
 ### Bug Fixes
-* fix: description by @author in https://github.com/EpicenterHQ/epicenter/pull/XXX
-
-### Performance
-* perf: description by @author in https://github.com/EpicenterHQ/epicenter/pull/XXX
-
-### Internal
-* refactor/chore: description by @author in https://github.com/EpicenterHQ/epicenter/pull/XXX
+* fix: description by @author in #NNN
 
 ## New Contributors
-* @username made their first contribution in https://github.com/EpicenterHQ/epicenter/pull/XXX
+* @username made their first contribution in #NNN
 
 **Full Changelog**: https://github.com/EpicenterHQ/epicenter/compare/vOLD...vNEW
 
 ---
-
-**Questions?** Join our [Discord](https://go.epicenter.so/discord) or check the [README](https://github.com/EpicenterHQ/epicenter/tree/main/apps/whispering#readme).
-
-**Love Whispering?** [Star us on GitHub](https://github.com/EpicenterHQ/epicenter) to show your support!
+**Questions?** Join our [Discord](https://go.epicenter.so/discord)
+**Love Epicenter?** [Star us on GitHub](https://github.com/EpicenterHQ/epicenter)
 ```
 
-#### Discord Announcement
-
-Shorter but not sparse. Convey the breadth of work:
+### Discord Announcement
 
 ```
-**Whispering vX.Y.Z is out!**
+**vX.Y.Z is out!**
 
-[Headline feature in 1-2 sentences - what you can now do]
-
+[Headline feature in 1-2 sentences]
 [Second feature or major fix]
 
-[Third thing if significant]
-
 Also in this release:
-- [Quick bullet for smaller fix]
-- [Another quick bullet]
-- [Performance note if relevant]
-
-[Acknowledge contributors if there are new ones or significant external PRs]
+- [Quick bullet]
+- [Quick bullet]
 
 Full release notes: [link]
 ```
 
-## Voice Guidelines
+## Rules
 
-**DO:**
+- Load the `writing-voice` skill for tone
+- Verify all @mentions with `gh pr view <N> --json author` before using them
 - Lead with what users can DO, not what we changed
-- Use "you can now..." framing
-- Explain WHY features matter
-- Credit contributors with @mentions
-- Include PR numbers and links
-- Acknowledge the breadth of work without overwhelming
-
-**DON'T:**
-- Write generic bullet lists without context
-- Use marketing language ("game-changing", "revolutionary")
-- Skip the narrative intro
-- Forget to include the PR list with authors
-- Make Discord announcement too sparse OR too long
-
-## Important Notes
-
-- The bump script MUST run from main repo root, not Conductor workspace
-- Script uses `git add -A` - check for untracked files first
-- CI will trigger release builds when tag is pushed
-
-## Rollback
-
-```bash
-git tag -d v[VERSION]
-git push origin :refs/tags/v[VERSION]
-git revert HEAD
-git push origin main
-```
+- No marketing language or dramatic hyperbole
+- Bump script runs from repo root, not a subdirectory

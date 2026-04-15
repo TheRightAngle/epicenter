@@ -19,7 +19,6 @@ export function createNotificationServiceWeb(): NotificationService {
 	const detectExtension = async (): Promise<boolean> => {
 		if (extensionChecked) return hasExtension;
 
-		// TODO: Implement real extension detection
 		// This would involve sending a ping message to the extension
 		// and waiting for a response with a timeout
 		// For now, always use browser API

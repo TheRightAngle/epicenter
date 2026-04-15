@@ -1,10 +1,35 @@
 # Hub + Sidecar Architecture
 
-**Goal**: Establish a two-plane server architecture where the hub handles sync and identity, and the sidecar handles data and execution. Consolidate the current three server packages (`server-elysia`, `server-local`, `server-remote`) around this model.
+**Goal**: Establish a two-plane server architecture where the hub handles sync and identity, and the sidecar handles data and execution.
 
-**Status**: Phase 1 & 2 Complete
+**Status**: Partially Implemented — Hub exists on Cloudflare, sidecar and self-hosted tiers are unbuilt (see Current State below)
 
 > The hub is a sync and identity plane; the sidecar is the data and execution plane. Hosted users get your hub. Self-hosters can run their own hub. Enterprises can plug their own identity. The sidecar stays local and stable across all three tiers.
+
+---
+
+## Current State (2026-03-20)
+
+The two-plane concept holds, but only the hub plane shipped. Here's what exists versus what remains planned.
+
+### What exists
+
+- **Hub (Tier 1 / Hosted)**: Implemented as `apps/api/` on Cloudflare Workers + Hono + Durable Objects. This is the `server-cloudflare` concept from the package structure below, but it lives at `apps/api/` rather than `packages/server-cloudflare/`. The hub endpoint contract described in this spec (WebSocket sync, HTTP sync, auth, AI chat) matches the actual `apps/api/src/app.ts` routes.
+- **Auth**: Better Auth with email/password, Google OAuth, bearer tokens, JWT, and OAuth provider plugin. Cross-subdomain cookies on `epicenter.so`. OAuth/PKCE for desktop and mobile clients.
+- **Durable Objects**: Per-user `WorkspaceRoom` and `DocumentRoom` with SQLite-backed sync state, WebSocket hibernation, and alarm-based compaction.
+- **Sync client**: `packages/sync-client/` provides the WebSocket/HTTP provider. `packages/workspace/src/extensions/sync.ts` wraps it as a workspace extension with `getToken` callback.
+
+### What doesn't exist
+
+- **Sidecar plane**: No `server-sidecar` package. No local Elysia server running per-device. The desktop app (Tauri) talks directly to the hub via the sync extension.
+- **Self-hosted hub (Tier 2)**: No `server-hub` package. The CLI prints: *"Self-hosted hub is not yet available. Use Epicenter Cloud."*
+- **Enterprise hub (Tier 3)**: No OIDC/SAML federation. No enterprise auth mode.
+- **Package restructure**: The `server-elysia`, `server-local`, and `server-remote` packages referenced in the Problem section have been deleted (commit `185dd1204`). They were not replaced by `server-hub`/`server-sidecar`—the Cloudflare hub in `apps/api/` became the sole implementation.
+- **R2 blob storage**: The `storage.ts` → R2 concept from the package structure hasn't been built. Durable Object SQLite is the only sync storage.
+
+### Ownership model divergence
+
+This spec assumes org-scoped workspaces (from the sync architecture spec). The actual implementation uses per-user scoping: `user:{userId}:workspace:{name}`. See `specs/20260121T170000-sync-architecture.md` for the full divergence notes.
 
 ---
 
@@ -117,7 +142,9 @@ Same as Tier 2 but with proper auth. Better Auth runs on the hub with the enterp
 
 ---
 
-## Package Structure (Target)
+## Package Structure (Target) — Planned, Not Started
+
+> **Note (2026-03-20)**: None of these packages exist. The source packages (`server-elysia`, `server-local`, `server-remote`) were deleted. The Cloudflare hub lives at `apps/api/` and is the only server implementation. This section describes the target architecture if/when self-hosted and enterprise tiers are built.
 
 ```
 packages/

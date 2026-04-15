@@ -1,6 +1,23 @@
 {
 	"name": "@epicenter/sync",
-	"version": "0.0.1",
+	"version": "0.1.0",
+	"description": "Sync protocol for Epicenter workspaces. Yjs-based encoding, WebSocket transport, and broadcast channel sync.",
+	"keywords": [
+		"local-first",
+		"Yjs",
+		"CRDT",
+		"sync",
+		"epicenter",
+		"WebSocket",
+		"offline-first",
+		"real-time"
+	],
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/EpicenterHQ/epicenter.git",
+		"directory": "packages/sync"
+	},
+	"homepage": "https://epicenter.so",
 	"main": "./src/index.ts",
 	"types": "./src/index.ts",
 	"exports": {
@@ -12,6 +29,7 @@
 	},
 	"dependencies": {
 		"lib0": "catalog:",
+		"wellcrafted": "catalog:",
 		"y-protocols": "catalog:"
 	},
 	"peerDependencies": {

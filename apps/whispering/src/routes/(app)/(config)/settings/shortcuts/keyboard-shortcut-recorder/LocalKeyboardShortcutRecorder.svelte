@@ -23,9 +23,7 @@
 		pressedKeys: PressedKeys;
 	} = $props();
 
-	const shortcutValue = $derived(
-		settings.value[`shortcuts.local.${command.id}`],
-	);
+	const shortcutValue = $derived(settings.get(`shortcut.${command.id}`));
 
 	const keyRecorder = createKeyRecorder({
 		getPressedKeys: () => pressedKeys,
@@ -57,8 +55,8 @@
 				return;
 			}
 
-			settings.updateKey(
-				`shortcuts.local.${command.id}`,
+			settings.set(
+				`shortcut.${command.id}`,
 				arrayToShortcutString(keyCombination),
 			);
 
@@ -79,7 +77,7 @@
 					action: { type: 'more-details', error: unregisterError },
 				});
 			}
-			settings.updateKey(`shortcuts.local.${command.id}`, null);
+			settings.set(`shortcut.${command.id}`, null);
 
 			rpc.notify.success({
 				title: 'Local shortcut cleared',

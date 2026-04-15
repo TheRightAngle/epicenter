@@ -83,31 +83,33 @@ async function transcribeBlob(blob: Blob) {
 }
 ```
 
-**Optimistic Updates** - Using the TanStack Query client to manipulate the cache for optimistic UI. By updating the cache, reactivity automatically kicks in and the UI reflects these changes, giving you instant optimistic updates.
+**Workspace State** - After migrating to Yjs CRDTs, domain data (recordings, transformations, transformation runs) lives in reactive workspace state modules (`$lib/state/*.svelte.ts`). These use SvelteMap backed by Yjs documents for instant reactivity—no cache invalidation or optimistic updates needed.
 
-It's often unclear where exactly you should mutate the cache with the query client—sometimes at the component level, sometimes elsewhere. By having this dedicated query layer, it becomes very clear: we co-locate three key things in one place: (1) the service call, (2) runtime settings injection based on reactive variables, and (3) cache manipulation (also reactive). This creates a layer that bridges reactivity with services in an intuitive way. It also cleans up our components significantly because we have a consistent place to put this logic—now developers know that all cache manipulation lives in the query folder, making it clear where to find and add this type of functionality:
+The query layer's role has narrowed to things that don't fit in CRDTs:
 
-```typescript
-// From recordings mutations
-createRecording: defineMutation({
-  mutationFn: async (recording: Recording) => {
-    const { data, error } = await services.db.createRecording(recording);
-    if (error) return Err(error);
+- **External APIs**: Transcription services, LLM completions (`rpc.transcription.*`, `rpc.transformer.*`)
+- **Hardware state**: Recorder state, microphone enumeration (`rpc.recorder.*`)
+- **Audio blob access**: Too large for Yjs CRDTs, still served via DbService (`rpc.audio.getPlaybackUrl`)
 
-    // Optimistically update cache - UI updates instantly
-    queryClient.setQueryData(['recordings'], (oldData) => {
-      if (!oldData) return [recording];
-      return [...oldData, recording];
-    });
+```svelte
+<script>
+  import { rpc } from '$lib/query';
+  import { recordings } from '$lib/state/recordings.svelte';
 
-    return Ok(data);
-  },
-})
+  // Domain data — workspace state (reactive, no queries needed)
+  const latestRecording = $derived(recordings.sorted[0]);
+
+  // Audio blob — still needs TanStack Query (too large for CRDTs)
+  const audioUrl = createQuery(() => ({
+    ...rpc.audio.getPlaybackUrl(() => latestRecording?.id ?? '').options,
+    enabled: !!latestRecording?.id,
+  }));
+</script>
 ```
 
-This design keeps all reactive state management isolated in the query layer, allowing services to remain pure and platform-agnostic while the UI gets dynamic behavior and instant updates. 
+This design keeps services pure and platform-agnostic while giving the UI immediate reactivity for domain data and cached access for external resources.
 
-**→ Learn more:** [Query README](./src/lib/query/README.md) | [RPC Pattern Guide](./src/lib/query/README.md#rpc-pattern)
+**→ Learn more:** [Query README](./src/lib/query/README.md) | [State README](./src/lib/state/README.md)
 
 ## Error Transformation
 
@@ -137,7 +139,7 @@ Whispering uses [WellCrafted](https://github.com/wellcrafted-dev/wellcrafted), a
 
 - **Service Layer**: Platform-agnostic business logic with Result types
 - **Query Layer**: Reactive data management with caching
-- **RPC Pattern**: Unified API interface (`rpc.recordings.getAllRecordings`)
+- **RPC Pattern**: Unified API interface for non-CRUD operations (`rpc.audio.*`, `rpc.transcription.*`, `rpc.recorder.*`)
 - **Dependency Injection**: Clean separation of concerns
 
 ## Key Architectural Decisions

@@ -1,9 +1,26 @@
 ---
 name: two-factor-authentication-best-practices
 description: Configure TOTP authenticator apps, send OTP codes via email/SMS, manage backup codes, handle trusted devices, and implement 2FA sign-in flows using Better Auth's twoFactor plugin. Use when users need MFA, multi-factor authentication, authenticator setup, or login security with Better Auth.
+metadata:
+  author: epicenter
+  version: '1.0'
 ---
 
+## When to Apply This Skill
+
+Use this pattern when you need to:
+
+- Configure Better Auth 2FA with `twoFactor()` and `twoFactorClient()`.
+- Implement TOTP apps, OTP delivery (email/SMS), and backup code recovery.
+- Handle `twoFactorRedirect` in credential sign-in flows.
+- Add trusted-device behavior and 2FA verification UX.
+- Tune 2FA security settings like rate limits, cookie age, and encrypted OTP storage.
+
 ## Setup
+
+## Reference Repositories
+
+- [Better Auth](https://github.com/better-auth/better-auth) — TypeScript authentication framework with plugins
 
 1. Add `twoFactor()` plugin to server config with `issuer`
 2. Add `twoFactorClient()` plugin to client config

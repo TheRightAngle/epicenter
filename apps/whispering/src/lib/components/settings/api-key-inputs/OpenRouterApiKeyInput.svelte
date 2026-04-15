@@ -2,7 +2,7 @@
 	import * as Field from '@epicenter/ui/field';
 	import { Input } from '@epicenter/ui/input';
 	import { Link } from '@epicenter/ui/link';
-	import { settings } from '$lib/state/settings.svelte';
+	import { deviceConfig } from '$lib/state/device-config.svelte';
 </script>
 
 <Field.Field>
@@ -12,8 +12,8 @@
 		type="password"
 		placeholder="Your OpenRouter API Key"
 		autocomplete="off"
-		bind:value={() => settings.value['apiKeys.openrouter'],
-			(value) => settings.updateKey('apiKeys.openrouter', value)}
+		bind:value={() => deviceConfig.get('apiKeys.openrouter'),
+			(value) => deviceConfig.set('apiKeys.openrouter', value)}
 	/>
 	<Field.Description>
 		You can find your OpenRouter API key in your <Link

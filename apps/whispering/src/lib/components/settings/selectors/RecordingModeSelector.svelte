@@ -27,7 +27,7 @@
 
 	const currentMode = $derived(
 		availableModes.find(
-			(mode) => mode.value === settings.value['recording.mode'],
+			(mode) => mode.value === settings.get('recording.mode'),
 		),
 	);
 </script>
@@ -56,11 +56,14 @@
 				<Command.Group>
 					{#each availableModes as mode (mode.value)}
 						{@const isSelected =
-							settings.value['recording.mode'] === mode.value}
+							settings.get('recording.mode') === mode.value}
 						<Command.Item
 							value={mode.value}
 							onSelect={async () => {
-								await settings.switchRecordingMode(mode.value as RecordingMode);
+								settings.set(
+									'recording.mode',
+									mode.value as RecordingMode,
+								);
 								combobox.closeAndFocusTrigger();
 							}}
 							class="flex items-center gap-2 px-2 py-2"

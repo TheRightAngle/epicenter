@@ -586,7 +586,7 @@ The following spec components are deferred to follow-up work:
 - **Schema seeding**: Auto-populate Y.Doc schema from code on first run
 - **Auth server integration**: Permission tables and checks
 
-See `specs/20260108T133200-collaborative-workspace-config-ydoc-handoff.md` for detailed handoff.
+See `specs/20260108T133200-collaborative-workspace-config-ydoc.handoff.md` for detailed handoff.
 
 ## References
 

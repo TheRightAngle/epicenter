@@ -1,12 +1,75 @@
 import { partitionResults } from 'wellcrafted/result';
 import { commands } from '$lib/commands';
-import { desktopRpc, rpc } from '$lib/query';
+import { CommandOrAlt, CommandOrControl } from '$lib/constants/keyboard';
+import { rpc } from '$lib/query';
+import { desktopRpc } from '$lib/query/desktop';
 import type { Accelerator } from '$lib/services/desktop/global-shortcut-manager';
 import {
 	type CommandId,
 	shortcutStringToArray,
 } from '$lib/services/local-shortcut-manager';
+import { deviceConfig } from '$lib/state/device-config.svelte';
 import { settings } from '$lib/state/settings.svelte';
+
+/** Default values for in-app (local) shortcuts. Keyed by command id string. */
+const DEFAULT_LOCAL_SHORTCUTS: Record<string, string | null> = {
+	pushToTalk: 'p',
+	toggleManualRecording: ' ',
+	startManualRecording: null,
+	stopManualRecording: null,
+	cancelManualRecording: 'c',
+	startVadRecording: null,
+	stopVadRecording: null,
+	toggleVadRecording: 'v',
+	openTransformationPicker: 't',
+	runTransformationOnClipboard: 'r',
+};
+
+/** Default values for global OS shortcuts. Keyed by command id string. */
+const DEFAULT_GLOBAL_SHORTCUTS: Record<string, string | null> = {
+	pushToTalk: `${CommandOrAlt}+Shift+D`,
+	toggleManualRecording: `${CommandOrControl}+Shift+;`,
+	startManualRecording: null,
+	stopManualRecording: null,
+	cancelManualRecording: `${CommandOrControl}+Shift+'`,
+	startVadRecording: null,
+	stopVadRecording: null,
+	toggleVadRecording: null,
+	openTransformationPicker: `${CommandOrControl}+Shift+X`,
+	runTransformationOnClipboard: `${CommandOrControl}+Shift+R`,
+};
+
+type LocalShortcutKey =
+	| 'shortcut.toggleManualRecording'
+	| 'shortcut.startManualRecording'
+	| 'shortcut.stopManualRecording'
+	| 'shortcut.cancelManualRecording'
+	| 'shortcut.toggleVadRecording'
+	| 'shortcut.startVadRecording'
+	| 'shortcut.stopVadRecording'
+	| 'shortcut.pushToTalk'
+	| 'shortcut.openTransformationPicker'
+	| 'shortcut.runTransformationOnClipboard';
+
+type GlobalShortcutKey =
+	| 'shortcuts.global.toggleManualRecording'
+	| 'shortcuts.global.startManualRecording'
+	| 'shortcuts.global.stopManualRecording'
+	| 'shortcuts.global.cancelManualRecording'
+	| 'shortcuts.global.toggleVadRecording'
+	| 'shortcuts.global.startVadRecording'
+	| 'shortcuts.global.stopVadRecording'
+	| 'shortcuts.global.pushToTalk'
+	| 'shortcuts.global.openTransformationPicker'
+	| 'shortcuts.global.runTransformationOnClipboard';
+
+function getLocalShortcutKey(commandId: string): LocalShortcutKey {
+	return `shortcut.${commandId}` as LocalShortcutKey;
+}
+
+function getGlobalShortcutKey(commandId: string): GlobalShortcutKey {
+	return `shortcuts.global.${commandId}` as GlobalShortcutKey;
+}
 
 /**
  * Synchronizes local keyboard shortcuts with the current settings.
@@ -18,7 +81,7 @@ export async function syncLocalShortcutsWithSettings() {
 	const results = await Promise.all(
 		commands
 			.map((command) => {
-				const keyCombination = settings.value[`shortcuts.local.${command.id}`];
+				const keyCombination = settings.get(getLocalShortcutKey(command.id));
 				if (!keyCombination) {
 					return rpc.localShortcuts.unregisterCommand({
 						commandId: command.id as CommandId,
@@ -26,7 +89,7 @@ export async function syncLocalShortcutsWithSettings() {
 				}
 				return rpc.localShortcuts.registerCommand({
 					command,
-					keyCombination: shortcutStringToArray(keyCombination),
+					keyCombination: shortcutStringToArray(String(keyCombination)),
 				});
 			})
 			.filter((result) => result !== undefined),
@@ -50,9 +113,9 @@ export async function syncLocalShortcutsWithSettings() {
 export async function syncGlobalShortcutsWithSettings() {
 	const commandsWithAccelerators = commands
 		.map((command) => {
-			const accelerator = settings.value[
-				`shortcuts.global.${command.id}`
-			] as Accelerator | null;
+			const accelerator = deviceConfig.get(
+				getGlobalShortcutKey(command.id),
+			) as Accelerator | null;
 			if (!accelerator) return null;
 			return { command, accelerator };
 		})
@@ -82,11 +145,11 @@ export function resetLocalShortcutsToDefaultIfDuplicates(): boolean {
 
 	// Check for duplicates
 	for (const command of commands) {
-		const shortcut = settings.value[`shortcuts.local.${command.id}`];
+		const shortcut = settings.get(getLocalShortcutKey(command.id));
 		if (shortcut) {
-			if (localShortcuts.has(shortcut)) {
+			if (localShortcuts.has(String(shortcut))) {
 				// If duplicates found, reset all local shortcuts to defaults
-				settings.resetLocalShortcuts();
+				resetLocalShortcuts();
 				rpc.notify.success({
 					title: 'Shortcuts reset',
 					description:
@@ -100,7 +163,7 @@ export function resetLocalShortcutsToDefaultIfDuplicates(): boolean {
 
 				return true;
 			}
-			localShortcuts.set(shortcut, command.id);
+			localShortcuts.set(String(shortcut), command.id);
 		}
 	}
 	return false;
@@ -115,11 +178,11 @@ export function resetGlobalShortcutsToDefaultIfDuplicates(): boolean {
 
 	// Check for duplicates
 	for (const command of commands) {
-		const shortcut = settings.value[`shortcuts.global.${command.id}`];
+		const shortcut = deviceConfig.get(getGlobalShortcutKey(command.id));
 		if (shortcut) {
 			if (globalShortcuts.has(shortcut)) {
 				// If duplicates found, reset all global shortcuts to defaults
-				settings.resetGlobalShortcuts();
+				resetGlobalShortcuts();
 				rpc.notify.success({
 					title: 'Shortcuts reset',
 					description:
@@ -137,4 +200,30 @@ export function resetGlobalShortcutsToDefaultIfDuplicates(): boolean {
 		}
 	}
 	return false;
+}
+
+/**
+ * Reset all local shortcuts to their default values and re-sync.
+ */
+export function resetLocalShortcuts() {
+	for (const command of commands) {
+		settings.set(
+			getLocalShortcutKey(command.id),
+			DEFAULT_LOCAL_SHORTCUTS[command.id] ?? null,
+		);
+	}
+	void syncLocalShortcutsWithSettings();
+}
+
+/**
+ * Reset all global shortcuts to their default values and re-sync.
+ */
+export function resetGlobalShortcuts() {
+	for (const command of commands) {
+		deviceConfig.set(
+			getGlobalShortcutKey(command.id),
+			DEFAULT_GLOBAL_SHORTCUTS[command.id] ?? null,
+		);
+	}
+	void syncGlobalShortcutsWithSettings();
 }

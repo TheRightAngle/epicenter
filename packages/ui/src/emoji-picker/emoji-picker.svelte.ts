@@ -168,15 +168,12 @@ class EmojiPickerSkinToneSelectorState {
 		for (const emoji of Object.entries(emojiData.emojis)) {
 			const [_, data] = emoji;
 
-			let found = false;
-			for (const skin of data.skins) {
-				if (skin.native === this.opts.previewEmoji.current) {
-					found = true;
-					break;
-				}
-			}
-
-			if (!found) continue;
+			if (
+				!data.skins.some(
+					(skin) => skin.native === this.opts.previewEmoji.current,
+				)
+			)
+				continue;
 
 			if (data.skins.length === 0) {
 				throw new Error(

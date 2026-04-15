@@ -69,18 +69,17 @@ If Alice edits `title` and Bob edits `views` at the same time, one of their chan
 Here's how it looks in practice:
 
 ```typescript
-const posts = defineTable('posts')
-	.version(type({ id: 'string', title: 'string', _v: '1' }))
-	.version(type({ id: 'string', title: 'string', views: 'number', _v: '2' }))
-	.version(
-		type({
-			id: 'string',
-			title: 'string',
-			views: 'number',
-			tags: 'string[]',
-			_v: '3',
-		}),
-	)
+const posts = defineTable(
+	type({ id: 'string', title: 'string', _v: '1' }),
+	type({ id: 'string', title: 'string', views: 'number', _v: '2' }),
+	type({
+		id: 'string',
+		title: 'string',
+		views: 'number',
+		tags: 'string[]',
+		_v: '3',
+	}),
+)
 	.migrate((row) => {
 		switch (row._v) {
 			case 1:
@@ -93,7 +92,7 @@ const posts = defineTable('posts')
 	});
 ```
 
-The `.version()` calls register schema versions. The `.migrate()` function receives any version and normalizes to the latest.
+The schema versions are declared directly in `defineTable(...)`. The `.migrate()` function receives any version and normalizes to the latest.
 
 Because the entire row is atomic, you're guaranteed that `row._v` tells you the exact schema of every field in that row. No ambiguity, no mixed versions.
 
@@ -102,13 +101,10 @@ Because the entire row is atomic, you're guaranteed that `row._v` tells you the 
 The same principle applies to key-value storage, though KV values don't need a `_v` discriminator. KV values are small enough that field presence is unambiguous:
 
 ```typescript
-const theme = defineKv('theme')
-	.version(type({ mode: "'light' | 'dark'" }))
-	.version(type({ mode: "'light' | 'dark' | 'system'", accentColor: 'string' }))
-	.migrate((v) => {
-		if (!('accentColor' in v)) return { ...v, accentColor: '#3b82f6' };
-		return v;
-	});
+const theme = defineKv(
+	type({ mode: "'light' | 'dark' | 'system'", accentColor: 'string' }),
+	{ mode: 'light', accentColor: '#3b82f6' },
+)
 ```
 
 Each KV value is an atomic blob with a coherent shape. For small objects, field presence checks are simpler than version discriminators.

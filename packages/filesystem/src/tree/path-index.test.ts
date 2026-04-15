@@ -53,7 +53,7 @@ describe('createFileSystemIndex', () => {
 		expect(index.pathCount).toBe(0);
 		expect(index.getChildIds(null)).toEqual([]);
 
-		index.destroy();
+		index.dispose();
 	});
 
 	test('indexes a single root file by absolute path', () => {
@@ -64,7 +64,7 @@ describe('createFileSystemIndex', () => {
 		expect(index.getIdByPath('/hello.txt')).toBe(fid('f1'));
 		expect(index.getChildIds(null)).toContain(fid('f1'));
 
-		index.destroy();
+		index.dispose();
 	});
 
 	test('indexes multiple root files with distinct absolute paths', () => {
@@ -80,7 +80,7 @@ describe('createFileSystemIndex', () => {
 		expect(index.getIdByPath('/c.txt')).toBe(fid('f3'));
 		expect(index.getChildIds(null)).toHaveLength(3);
 
-		index.destroy();
+		index.dispose();
 	});
 
 	test('indexes nested directories and files under parent paths', () => {
@@ -97,7 +97,7 @@ describe('createFileSystemIndex', () => {
 			expect.arrayContaining([fid('f1'), fid('f2')]),
 		);
 
-		index.destroy();
+		index.dispose();
 	});
 
 	test('resolves deeply nested file paths through multiple folders', () => {
@@ -112,7 +112,7 @@ describe('createFileSystemIndex', () => {
 		expect(index.getChildIds(fid('d2'))).toEqual([fid('d3')]);
 		expect(index.getChildIds(fid('d3'))).toEqual([fid('f1')]);
 
-		index.destroy();
+		index.dispose();
 	});
 
 	test('empty folder gets a path but no children entry', () => {
@@ -123,7 +123,7 @@ describe('createFileSystemIndex', () => {
 		expect(index.getIdByPath('/empty')).toBe(fid('d1'));
 		expect(index.getChildIds(fid('d1'))).toEqual([]);
 
-		index.destroy();
+		index.dispose();
 	});
 
 	// ═══════════════════════════════════════════════════════════════════════
@@ -140,7 +140,7 @@ describe('createFileSystemIndex', () => {
 		expect(index.hasPath('/trashed.txt')).toBe(false);
 		expect(index.pathCount).toBe(1);
 
-		index.destroy();
+		index.dispose();
 	});
 
 	test('children of a trashed folder become orphans and move to root', () => {
@@ -156,7 +156,7 @@ describe('createFileSystemIndex', () => {
 		// Child's parent is trashed → orphan → moved to root
 		expect(index.getIdByPath('/readme.md')).toBe(fid('f1'));
 
-		index.destroy();
+		index.dispose();
 	});
 
 	test('trashing a file frees its name for other files', () => {
@@ -168,7 +168,7 @@ describe('createFileSystemIndex', () => {
 		expect(index.getIdByPath('/report.txt')).toBe(fid('f2'));
 		expect(index.pathCount).toBe(1);
 
-		index.destroy();
+		index.dispose();
 	});
 
 	// ═══════════════════════════════════════════════════════════════════════
@@ -185,7 +185,7 @@ describe('createFileSystemIndex', () => {
 
 		expect(index.getIdByPath('/new.txt')).toBe(fid('f1'));
 
-		index.destroy();
+		index.dispose();
 	});
 
 	test('reactive — trashing a file removes it', () => {
@@ -199,7 +199,7 @@ describe('createFileSystemIndex', () => {
 
 		expect(index.hasPath('/hello.txt')).toBe(false);
 
-		index.destroy();
+		index.dispose();
 	});
 
 	test('reactive — rename updates path', () => {
@@ -212,7 +212,7 @@ describe('createFileSystemIndex', () => {
 		expect(index.hasPath('/old.txt')).toBe(false);
 		expect(index.getIdByPath('/new.txt')).toBe(fid('f1'));
 
-		index.destroy();
+		index.dispose();
 	});
 
 	test('reactive — move file to different parent', () => {
@@ -231,7 +231,7 @@ describe('createFileSystemIndex', () => {
 		expect(index.getChildIds(fid('d1'))).toEqual([]);
 		expect(index.getChildIds(fid('d2'))).toContain(fid('f1'));
 
-		index.destroy();
+		index.dispose();
 	});
 
 	test('reactive — move file to root', () => {
@@ -247,7 +247,7 @@ describe('createFileSystemIndex', () => {
 		expect(index.hasPath('/folder/file.txt')).toBe(false);
 		expect(index.getIdByPath('/file.txt')).toBe(fid('f1'));
 
-		index.destroy();
+		index.dispose();
 	});
 
 	test('reactive — deleting a file removes it', () => {
@@ -260,7 +260,7 @@ describe('createFileSystemIndex', () => {
 		expect(index.hasPath('/doomed.txt')).toBe(false);
 		expect(index.pathCount).toBe(0);
 
-		index.destroy();
+		index.dispose();
 	});
 
 	test('reactive — renaming a parent folder updates children paths', () => {
@@ -276,21 +276,21 @@ describe('createFileSystemIndex', () => {
 		expect(index.getIdByPath('/new-name')).toBe(fid('d1'));
 		expect(index.getIdByPath('/new-name/child.txt')).toBe(fid('f1'));
 
-		index.destroy();
+		index.dispose();
 	});
 
 	// ═══════════════════════════════════════════════════════════════════════
-	// DESTROY / UNSUBSCRIBE
+	// DISPOSE / UNSUBSCRIBE
 	// ═══════════════════════════════════════════════════════════════════════
 
-	test('destroy stops observing — mutations after destroy do not update index', () => {
+	test('dispose stops observing — mutations after dispose do not update index', () => {
 		const { files } = setup();
 		files.set(makeRow('f1', 'before.txt'));
 		const index = createFileSystemIndex(files);
 
 		expect(index.getIdByPath('/before.txt')).toBe(fid('f1'));
 
-		index.destroy();
+		index.dispose();
 
 		files.set(makeRow('f2', 'after.txt'));
 		expect(index.hasPath('/after.txt')).toBe(false);
@@ -316,7 +316,7 @@ describe('createFileSystemIndex', () => {
 		}
 		expect(index.getIdByPath('/self-loop.txt')).toBe(fid('f1'));
 
-		index.destroy();
+		index.dispose();
 	});
 
 	test('circular ref — two-node cycle (A→B→A) moves latest to root', () => {
@@ -338,7 +338,7 @@ describe('createFileSystemIndex', () => {
 		expect(index.getIdByPath('/beta')).toBe(fid('b'));
 		expect(index.getIdByPath('/beta/alpha')).toBe(fid('a'));
 
-		index.destroy();
+		index.dispose();
 	});
 
 	test('circular ref — three-node cycle (A→B→C→A) moves latest to root', () => {
@@ -361,7 +361,7 @@ describe('createFileSystemIndex', () => {
 		// All three should be reachable
 		expect(index.pathCount).toBe(3);
 
-		index.destroy();
+		index.dispose();
 	});
 
 	test('circular ref — cycle does not affect non-cycle siblings', () => {
@@ -375,7 +375,7 @@ describe('createFileSystemIndex', () => {
 		expect(index.getIdByPath('/clean.txt')).toBe(fid('clean'));
 		expect(index.pathCount).toBe(3);
 
-		index.destroy();
+		index.dispose();
 	});
 
 	// ═══════════════════════════════════════════════════════════════════════
@@ -394,7 +394,7 @@ describe('createFileSystemIndex', () => {
 		}
 		expect(index.getIdByPath('/orphan.txt')).toBe(fid('f1'));
 
-		index.destroy();
+		index.dispose();
 	});
 
 	test('orphan — parent is trashed, child moved to root', () => {
@@ -413,7 +413,7 @@ describe('createFileSystemIndex', () => {
 		}
 		expect(index.getIdByPath('/child.txt')).toBe(fid('f1'));
 
-		index.destroy();
+		index.dispose();
 	});
 
 	test('orphan — multiple orphans with same missing parent', () => {
@@ -433,7 +433,7 @@ describe('createFileSystemIndex', () => {
 			expect.arrayContaining([fid('f1'), fid('f2')]),
 		);
 
-		index.destroy();
+		index.dispose();
 	});
 
 	test('orphan — chain (grandparent missing) only fixes the direct orphan', () => {
@@ -452,7 +452,7 @@ describe('createFileSystemIndex', () => {
 		expect(index.getIdByPath('/lost-folder')).toBe(fid('d1'));
 		expect(index.getIdByPath('/lost-folder/deep-orphan.txt')).toBe(fid('f1'));
 
-		index.destroy();
+		index.dispose();
 	});
 
 	// ═══════════════════════════════════════════════════════════════════════
@@ -468,7 +468,7 @@ describe('createFileSystemIndex', () => {
 		expect(index.getIdByPath('/foo.txt')).toBe(fid('a'));
 		expect(index.getIdByPath('/foo (1).txt')).toBe(fid('b'));
 
-		index.destroy();
+		index.dispose();
 	});
 
 	test('disambiguation — three files with same name', () => {
@@ -482,7 +482,7 @@ describe('createFileSystemIndex', () => {
 		expect(index.getIdByPath('/doc (1).md')).toBe(fid('b'));
 		expect(index.getIdByPath('/doc (2).md')).toBe(fid('c'));
 
-		index.destroy();
+		index.dispose();
 	});
 
 	test('disambiguation — files without extensions', () => {
@@ -494,7 +494,7 @@ describe('createFileSystemIndex', () => {
 		expect(index.getIdByPath('/Makefile')).toBe(fid('a'));
 		expect(index.getIdByPath('/Makefile (1)')).toBe(fid('b'));
 
-		index.destroy();
+		index.dispose();
 	});
 
 	test('disambiguation — duplicate folder names propagate to children paths', () => {
@@ -510,7 +510,7 @@ describe('createFileSystemIndex', () => {
 		expect(index.getIdByPath('/src/index.ts')).toBe(fid('f1'));
 		expect(index.getIdByPath('/src (1)/index.ts')).toBe(fid('f2'));
 
-		index.destroy();
+		index.dispose();
 	});
 
 	test('disambiguation — same name in different parents is not disambiguated', () => {
@@ -524,7 +524,7 @@ describe('createFileSystemIndex', () => {
 		expect(index.getIdByPath('/a/same.txt')).toBe(fid('f1'));
 		expect(index.getIdByPath('/b/same.txt')).toBe(fid('f2'));
 
-		index.destroy();
+		index.dispose();
 	});
 
 	// ═══════════════════════════════════════════════════════════════════════
@@ -550,7 +550,7 @@ describe('createFileSystemIndex', () => {
 		// Shallow files still work
 		expect(index.getIdByPath('/level-0')).toBe(fid('d0'));
 
-		index.destroy();
+		index.dispose();
 	});
 
 	test('path at depth 49 (under MAX_DEPTH) is included', () => {
@@ -569,7 +569,7 @@ describe('createFileSystemIndex', () => {
 
 		expect(index.allPaths().some((p) => p.endsWith('/file.txt'))).toBe(true);
 
-		index.destroy();
+		index.dispose();
 	});
 
 	// ═══════════════════════════════════════════════════════════════════════
@@ -591,7 +591,7 @@ describe('createFileSystemIndex', () => {
 		expect(index.getIdByPath('/root.txt')).toBe(fid('f2'));
 		expect(index.pathCount).toBe(3);
 
-		index.destroy();
+		index.dispose();
 	});
 
 	test('orphan moved to root gets disambiguated with existing root file', () => {
@@ -608,7 +608,7 @@ describe('createFileSystemIndex', () => {
 		// Both reachable with unique paths
 		expect(index.pathCount).toBe(2);
 
-		index.destroy();
+		index.dispose();
 	});
 
 	test('rebuild clears stale entries completely', () => {
@@ -625,6 +625,6 @@ describe('createFileSystemIndex', () => {
 		expect(index.pathCount).toBe(0);
 		expect(index.getChildIds(null)).toEqual([]);
 
-		index.destroy();
+		index.dispose();
 	});
 });

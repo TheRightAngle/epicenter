@@ -1,8 +1,6 @@
 <script lang="ts">
-	import { Skeleton } from '@epicenter/ui/skeleton';
-	import { createQuery } from '@tanstack/svelte-query';
 	import TextPreviewDialog from '$lib/components/copyable/TextPreviewDialog.svelte';
-	import { rpc } from '$lib/query';
+	import { transformationRuns } from '$lib/state/transformation-runs.svelte';
 	import { viewTransition } from '$lib/utils/viewTransitions';
 
 	let {
@@ -11,8 +9,8 @@
 		recordingId: string;
 	} = $props();
 
-	const latestTransformationRunByRecordingIdQuery = createQuery(
-		() => rpc.db.runs.getLatestByRecordingId(() => recordingId).options,
+	const latestRun = $derived(
+		transformationRuns.getLatestByRecordingId(recordingId),
 	);
 
 	const id = $derived(
@@ -20,31 +18,18 @@
 	);
 </script>
 
-{#if latestTransformationRunByRecordingIdQuery.isPending}
-	<div class="space-y-2">
-		<Skeleton class="h-3" />
-		<Skeleton class="h-3" />
-		<Skeleton class="h-3" />
-	</div>
-{:else if latestTransformationRunByRecordingIdQuery.error}
-	<TextPreviewDialog
-		{id}
-		title="Query Error"
-		label="query error"
-		text={latestTransformationRunByRecordingIdQuery.error.message}
-	/>
-{:else if latestTransformationRunByRecordingIdQuery.data?.status === 'failed'}
+{#if latestRun?.status === 'failed'}
 	<TextPreviewDialog
 		{id}
 		title="Transformation Error"
 		label="transformation error"
-		text={latestTransformationRunByRecordingIdQuery.data.error}
+		text={latestRun.error}
 	/>
-{:else if latestTransformationRunByRecordingIdQuery.data?.status === 'completed'}
+{:else if latestRun?.status === 'completed'}
 	<TextPreviewDialog
 		{id}
 		title="Transformation Output"
 		label="transformation output"
-		text={latestTransformationRunByRecordingIdQuery.data.output}
+		text={latestRun.output}
 	/>
 {/if}

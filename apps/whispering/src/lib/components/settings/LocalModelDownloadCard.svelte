@@ -2,6 +2,7 @@
 	import { Badge } from '@epicenter/ui/badge';
 	import { Button } from '@epicenter/ui/button';
 	import { Progress } from '@epicenter/ui/progress';
+	import { toast } from '@epicenter/ui/sonner';
 	import { Spinner } from '@epicenter/ui/spinner';
 	import CheckIcon from '@lucide/svelte/icons/check';
 	import Download from '@lucide/svelte/icons/download';
@@ -9,7 +10,6 @@
 	import { join } from '@tauri-apps/api/path';
 	import { exists, mkdir, remove } from '@tauri-apps/plugin-fs';
 	import { onMount } from 'svelte';
-	import { toast } from 'svelte-sonner';
 	import { extractErrorMessage } from 'wellcrafted/error';
 	import { Ok, tryAsync } from 'wellcrafted/result';
 	import { PATHS } from '$lib/constants/paths';
@@ -24,6 +24,7 @@
 		downloadLocalModelToDestination,
 		validateConfiguredLocalModelPath,
 	} from '$lib/components/settings/local-models';
+	import { deviceConfig } from '$lib/state/device-config.svelte';
 	import { settings } from '$lib/state/settings.svelte';
 
 	let {
@@ -101,7 +102,7 @@
 	$effect(() => {
 		// React to settings changes for this engine
 		const settingsKey = `transcription.${model.engine}.modelPath` as const;
-		const currentPath = settings.value[settingsKey];
+		const currentPath = deviceConfig.get(settingsKey);
 		// Trigger refresh when settings change (currentPath is a dependency)
 		refreshStatus();
 	});
@@ -133,7 +134,7 @@
 
 				// Check if this model is active in settings
 				const settingsKey = `transcription.${model.engine}.modelPath` as const;
-				const currentPath = settings.value[settingsKey];
+				const currentPath = deviceConfig.get(settingsKey);
 				const isActive = currentPath === path;
 
 				modelState = isActive ? { type: 'active' } : { type: 'ready' };
@@ -235,7 +236,7 @@
 				const destinationPath = path ?? (await ensureModelDestinationPath());
 				const settingsKey = `transcription.${model.engine}.modelPath` as const;
 
-				settings.updateKey(settingsKey, destinationPath);
+				deviceConfig.set(settingsKey, destinationPath);
 				// The settings watcher will update modelState to 'active'
 				if (showToast) {
 					toast.success('Model activated');
@@ -266,8 +267,8 @@
 				// Clear settings if this was the active model
 				const settingsKey = `transcription.${model.engine}.modelPath` as const;
 
-				if (settings.value[settingsKey] === path) {
-					settings.updateKey(settingsKey, '');
+				if (deviceConfig.get(settingsKey) === path) {
+					deviceConfig.set(settingsKey, '');
 				}
 				clearCachedLocalModelValidity(path);
 

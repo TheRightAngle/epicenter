@@ -1,7 +1,9 @@
+> **Status: Superseded** by `20260313T063000-workspace-architecture-decisions.md`. The centralized workspace model, Hono-based app server, and self-contained config pattern replace this spec's architecture.
+
 # Workspace Apps: Install, Mount, Run
 
 **Date**: 2026-02-25
-**Status**: Draft
+**Status**: Superseded
 **Author**: AI-assisted
 
 ## Overview

@@ -1,3 +1,5 @@
+> **Status: Superseded** by `20260313T063000-workspace-architecture-decisions.md`. Config shape (named exports, builder chain with terminal `.withActions()`) and multi-workspace composition are defined in the main spec.
+
 # CLI Config, Actions, and Multi-Workspace Composition
 
 ## Problem

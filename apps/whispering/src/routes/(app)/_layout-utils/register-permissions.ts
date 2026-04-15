@@ -1,8 +1,8 @@
+import { toast } from '@epicenter/ui/sonner';
 import { nanoid } from 'nanoid/non-secure';
-import { toast } from 'svelte-sonner';
 import { goto } from '$app/navigation';
 import { IS_MACOS } from '$lib/constants/platform';
-import { desktopServices } from '$lib/services';
+import { desktopServices } from '$lib/services/desktop';
 
 export function registerAccessibilityPermission() {
 	// Only run on macOS desktop

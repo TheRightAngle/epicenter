@@ -1,9 +1,28 @@
 ---
 name: styling
-description: CSS and Tailwind styling guidelines. Use when writing styles, creating UI components, reviewing CSS/Tailwind code, or deciding on wrapper element structure.
+description: CSS and Tailwind styling guidelines for this codebase. Use when the user says "style this", "fix the CSS", "add classes", "not scrolling", "overflow", or when writing Tailwind utilities, using cn(), creating UI components, reviewing CSS code, fixing scroll/overflow issues in flex layouts, or deciding on wrapper element structure.
+metadata:
+  author: epicenter
+  version: '1.0'
 ---
 
 # Styling Guidelines
+
+## Reference Repositories
+
+- [shadcn-svelte](https://github.com/huntabyte/shadcn-svelte) — Port of shadcn/ui for Svelte with Bits UI primitives
+- [shadcn-svelte-extras](https://github.com/ieedan/shadcn-svelte-extras) — Additional components for shadcn-svelte
+- [Svelte](https://github.com/sveltejs/svelte) — Svelte 5 framework
+
+## When to Apply This Skill
+
+Use this pattern when you need to:
+
+- Write Tailwind/CSS for UI components in this repo.
+- Decide whether a wrapper element is necessary or can be removed.
+- Style interactive disabled states using HTML `disabled` and Tailwind variants.
+- Replace JS click guards with semantic disabled behavior.
+- Build scrollable content areas inside flex columns, resizable panes, or split layouts.
 
 ## Minimize Wrapper Elements
 
@@ -80,3 +99,92 @@ When an interactive element can be non-interactive (empty section, loading state
 ```
 
 The JS guard leaves `cursor-pointer` and `hover:opacity-80` active on a non-interactive element. The user sees a clickable button that does nothing. Use `disabled` and let the browser + CSS handle it.
+
+## Flex Column Scroll Trap
+
+When a flex child uses `h-full` (height: 100%) but shares a flex column with siblings (headers, toolbars, footers), it computes to the *full parent height*—overflowing past siblings instead of taking the *remaining space*. The content gets clipped or pushes the layout past the viewport, and scroll areas inside never activate.
+
+This is the single most common layout bug in this codebase. It appears whenever you have:
+
+- A component inside a `Resizable.Pane` (paneforge) that needs to scroll
+- A `ScrollArea.Root` (bits-ui) or `overflow-auto` div inside a flex column with a header/toolbar sibling
+- Any split-pane or panel layout where one section should scroll independently
+
+### The Fix: `flex-1 min-h-0 overflow-hidden`
+
+Replace `h-full` with these three utilities on the flex child that contains scrollable content. Each solves a distinct problem:
+
+| Utility | What it does | Why it's needed |
+|---|---|---|
+| `flex-1` | Take remaining space after siblings | `h-full` = 100% of parent, ignoring siblings. `flex-1` = remaining space. |
+| `min-h-0` | Allow shrinking below content size | Flex items default to `min-height: auto`, preventing them from being smaller than their content. |
+| `overflow-hidden` | Establish a bounded height context | Without this, children with `overflow-auto` or `ScrollArea` have no height ceiling to scroll against. |
+
+All three are required. Missing any one breaks the fix:
+
+- Without `flex-1`: element is still 100% of parent, overflows siblings
+- Without `min-h-0`: element refuses to shrink, content pushes it taller
+- Without `overflow-hidden`: inner scroll containers have no bounded ancestor, so they expand instead of scrolling
+
+### Before / After
+
+```svelte
+<!-- BROKEN: h-full = 100% of parent, ignores the toolbar sibling -->
+<main class="flex h-full flex-col overflow-hidden">
+  <div class="border-b px-4 py-2">Toolbar</div>
+  <MyScrollableContent class="h-full" />  <!-- overflows past main -->
+</main>
+
+<!-- FIXED: flex-1 takes remaining space, overflow-hidden bounds it -->
+<main class="flex h-full flex-col overflow-hidden">
+  <div class="border-b px-4 py-2">Toolbar</div>
+  <MyScrollableContent class="flex-1 min-h-0 overflow-hidden" />
+</main>
+```
+
+### Inside Resizable Panes (paneforge)
+
+Paneforge `Pane` components set width via flex ratios but do not constrain height or clip overflow. Any scrollable content inside a Pane needs the full `flex-1 min-h-0 overflow-hidden` chain on its root element:
+
+```svelte
+<Resizable.Pane defaultSize={80}>
+  <!-- Pane provides no height constraint or overflow clipping -->
+  <div class="flex flex-1 min-h-0 flex-col overflow-hidden">
+    <div class="border-b">Header</div>
+    <div class="flex-1 overflow-y-auto">
+      <!-- this content now scrolls -->
+    </div>
+  </div>
+</Resizable.Pane>
+```
+
+### With ScrollArea (bits-ui)
+
+`ScrollArea.Root` renders with `position: relative` and its viewport uses `height: 100%`. This breaks the flex sizing chain—the viewport's percentage height resolves against the `relative` parent, which has no explicit height in a flex context. The content expands instead of scrolling.
+
+Two options:
+
+1. **Prefer plain `overflow-y-auto`** on a div with `flex-1 min-h-0` (simpler, always works)
+2. **If you need styled scrollbars**, wrap `ScrollArea.Root` in a div with `flex-1 min-h-0 overflow-hidden` to give it a bounded ancestor
+
+```svelte
+<!-- Option 1: Plain overflow (preferred) -->
+<div class="flex-1 overflow-y-auto">
+  {#each items as item}
+    <div>{item.name}</div>
+  {/each}
+</div>
+
+<!-- Option 2: ScrollArea with bounded wrapper -->
+<div class="flex-1 min-h-0 overflow-hidden">
+  <ScrollArea.Root class="h-full">
+    {#each items as item}
+      <div>{item.name}</div>
+    {/each}
+  </ScrollArea.Root>
+</div>
+```
+
+### Rule of Thumb
+
+If you write `h-full` on a flex child that has siblings in the same flex column, **stop and replace it with `flex-1 min-h-0 overflow-hidden`**. The `h-full` pattern only works when the element is the sole child of its flex parent.

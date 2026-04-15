@@ -1,17 +1,17 @@
 <script lang="ts">
 	import { Button } from '@epicenter/ui/button';
 	import * as Card from '@epicenter/ui/card';
-	import { createMutation } from '@tanstack/svelte-query';
 	import { goto } from '$app/navigation';
 	import { Editor } from '$lib/components/transformations-editor';
 	import { rpc } from '$lib/query';
-	import { generateDefaultTransformation } from '$lib/services/db';
-
-	const createTransformation = createMutation(
-		() => rpc.db.transformations.create.options,
-	);
+	import { type TransformationStep } from '$lib/state/transformation-steps.svelte';
+	import {
+		generateDefaultTransformation,
+		saveTransformationWithSteps,
+	} from '$lib/state/transformations.svelte';
 
 	let transformation = $state(generateDefaultTransformation());
+	let steps = $state<TransformationStep[]>([]);
 </script>
 
 <Card.Root class="w-full max-w-4xl">
@@ -22,27 +22,20 @@
 		</Card.Description>
 	</Card.Header>
 	<Card.Content class="space-y-6">
-		<Editor bind:transformation />
+		<Editor bind:transformation bind:steps />
 		<Card.Footer class="flex justify-end gap-2">
 			<Button
-				onclick={() =>
-					createTransformation.mutate($state.snapshot(transformation), {
-						onSuccess: () => {
-							goto('/transformations');
-							rpc.notify.success({
-								title: 'Created transformation!',
-								description:
-									'Your transformation has been created successfully.',
-							});
-						},
-						onError: (error) => {
-							rpc.notify.error({
-								title: 'Failed to create transformation!',
-								description: 'Your transformation could not be created.',
-								action: { type: 'more-details', error },
-							});
-						},
-					})}
+				onclick={() => {
+					saveTransformationWithSteps(
+						$state.snapshot(transformation),
+						$state.snapshot(steps),
+					);
+					goto('/transformations');
+					rpc.notify.success({
+						title: 'Created transformation!',
+						description: 'Your transformation has been created successfully.',
+					});
+				}}
 			>
 				Create Transformation
 			</Button>

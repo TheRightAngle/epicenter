@@ -26,14 +26,6 @@ const nanoid15 = customAlphabet(ALPHABET, 15);
 export type Id = string & Brand<'Id'>;
 
 /**
- * Minimum shape every row must satisfy — an object with a branded `Id`.
- *
- * `Row<TFields>` always includes `& BaseRow` to guarantee `.id` is accessible
- * even when TypeScript widens mapped-type keys to `string`.
- */
-export type BaseRow = { id: Id };
-
-/**
  * Create a branded Id from an arbitrary string.
  *
  * Validates that the string does not contain ':' (reserved for cell-key separator).

@@ -1,48 +1,73 @@
 {
 	"name": "@epicenter/workspace",
-	"version": "0.0.1",
+	"version": "0.1.0",
+	"description": "Local-first workspace library. CRDT-backed tables, key-value stores, and sync — built on Yjs.",
+	"keywords": [
+		"local-first",
+		"CRDT",
+		"epicenter",
+		"Yjs",
+		"offline-first",
+		"SQLite",
+		"markdown",
+		"personal knowledge base",
+		"PKM",
+		"second brain",
+		"sync",
+		"workspace",
+		"typed schema"
+	],
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/EpicenterHQ/epicenter.git",
+		"directory": "packages/workspace"
+	},
+	"homepage": "https://epicenter.so",
 	"main": "./src/index.ts",
 	"types": "./src/index.ts",
 	"exports": {
 		".": "./src/index.ts",
-		"./extensions": {
-			"node": "./src/extensions/index.ts",
-			"default": "./src/extensions/index.ts"
-		},
-		"./extensions/sync": "./src/extensions/sync.ts",
-		"./extensions/sync/web": "./src/extensions/sync/web.ts",
-		"./extensions/sync/desktop": "./src/extensions/sync/desktop.ts",
+		"./extensions/persistence/indexeddb": "./src/extensions/persistence/indexeddb.ts",
+		"./extensions/sync/websocket": "./src/extensions/sync/websocket.ts",
 		"./extensions/sync/broadcast-channel": "./src/extensions/sync/broadcast-channel.ts",
-		"./ingest": "./src/ingest/index.ts",
-		"./ingest/reddit": "./src/ingest/reddit/index.ts"
+		"./shared/crypto": "./src/shared/crypto/index.ts",
+		"./extensions/materializer/markdown": "./src/extensions/materializer/markdown/index.ts",
+		"./ai": "./src/ai/index.ts",
+		"./extensions/persistence/sqlite": "./src/extensions/persistence/sqlite.ts",
+		"./extensions/materializer/sqlite": "./src/extensions/materializer/sqlite/index.ts"
 	},
-	"license": "AGPL-3.0",
+	"license": "MIT",
 	"scripts": {
 		"typecheck": "tsc --noEmit"
 	},
 	"dependencies": {
 		"@ark/json-schema": "^0.0.4",
-		"@standard-schema/spec": "catalog:",
+		"@tanstack/ai": "catalog:",
+		"@epicenter/sync": "workspace:*",
+		"@noble/ciphers": "^2.1.1",
+		"@noble/hashes": "^2.0.1",
 		"@sindresorhus/slugify": "catalog:",
-		"@tursodatabase/database": "^0.5.1",
+		"@standard-schema/spec": "catalog:",
+		"@tursodatabase/database": "^0.3.2",
 		"@types/bun": "catalog:",
-		"@epicenter/sync-client": "workspace:*",
 		"arkregex": "catalog:",
 		"arktype": "catalog:",
 		"chokidar": "^5.0.0",
 		"diff": "^8.0.3",
 		"drizzle-orm": "catalog:",
-		"elysia": "^1.4.27",
+		"elysia": "^1.2.25",
 		"fflate": "catalog:",
 		"lib0": "catalog:",
 		"mime": "catalog:",
 		"nanoid": "catalog:",
-		"temporal-polyfill": "^0.3.2",
-		"tinybase": "^8.0.1",
+		"temporal-polyfill": "^0.3.0",
+		"tinybase": "^5.4.2",
 		"typebox": "catalog:",
 		"wellcrafted": "catalog:",
 		"y-indexeddb": "catalog:",
-		"y-protocols": "catalog:"
+		"y-protocols": "catalog:",
+		"remark-parse": "^11.0.0",
+		"unified": "^11.0.5"
 	},
 	"peerDependencies": {
 		"yjs": "catalog:"
@@ -50,7 +75,7 @@
 	"devDependencies": {
 		"@types/diff": "^8.0.0",
 		"@types/node": "catalog:",
-		"better-sqlite3": "^12.6.2",
+		"better-sqlite3": "^12.4.1",
 		"drizzle-kit": "catalog:",
 		"filenamify": "^7.0.1",
 		"typescript": "catalog:",

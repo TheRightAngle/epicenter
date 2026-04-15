@@ -11,8 +11,6 @@ import { TextServiceLive } from './text';
 import { ToastServiceLive } from './toast';
 import * as transcriptions from './transcription';
 
-export { desktopServices } from './desktop';
-
 /**
  * Cross-platform services.
  * These are available on both web and desktop.

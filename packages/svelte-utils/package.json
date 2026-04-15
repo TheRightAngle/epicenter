@@ -1,14 +1,33 @@
 {
-	"name": "@epicenter/svelte-utils",
-	"version": "0.0.1",
+	"name": "@epicenter/svelte",
+	"version": "0.1.0",
 	"private": true,
 	"type": "module",
-	"description": "Svelte utilities for synchronizing state with external systems",
+	"description": "Svelte 5 utilities for Epicenter workspaces. Reactive state bindings, persisted state, and TanStack Query integration.",
+	"keywords": [
+		"svelte",
+		"local-first",
+		"CRDT",
+		"epicenter",
+		"workspace",
+		"TanStack Query",
+		"reactive state"
+	],
 	"exports": {
 		".": "./src/index.ts",
-		"./createPersistedState": "./src/createPersistedState.svelte.ts"
+		"./auth": "./src/auth/index.ts",
+		"./auth-form": "./src/auth-form/index.ts",
+		"./workspace-gate": "./src/workspace-gate/index.ts"
 	},
 	"dependencies": {
+		"@epicenter/constants": "workspace:*",
+		"@epicenter/api": "workspace:*",
+		"@epicenter/ui": "workspace:*",
+		"@epicenter/workspace": "workspace:*",
+		"@lucide/svelte": "catalog:",
+		"arktype": "catalog:",
+		"better-auth": "catalog:",
+		"idb": "^8.0.3",
 		"wellcrafted": "catalog:"
 	},
 	"devDependencies": {
@@ -20,5 +39,6 @@
 	},
 	"scripts": {
 		"typecheck": "svelte-check --tsconfig ./tsconfig.json"
-	}
+	},
+	"license": "MIT"
 }

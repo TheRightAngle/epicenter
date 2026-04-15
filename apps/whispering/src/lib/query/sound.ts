@@ -10,13 +10,24 @@ const soundKeys = {
 	playSoundIfEnabled: ['sound', 'playSoundIfEnabled'] as const,
 } as const;
 
+const soundSettingKeyMap = {
+	'manual-start': 'sound.manualStart',
+	'manual-stop': 'sound.manualStop',
+	'manual-cancel': 'sound.manualCancel',
+	'vad-start': 'sound.vadStart',
+	'vad-capture': 'sound.vadCapture',
+	'vad-stop': 'sound.vadStop',
+	transcriptionComplete: 'sound.transcriptionComplete',
+	transformationComplete: 'sound.transformationComplete',
+} as const satisfies Record<WhisperingSoundNames, string>;
+
 export const sound = {
 	playSoundIfEnabled: defineMutation({
 		mutationKey: soundKeys.playSoundIfEnabled,
 		mutationFn: async (
 			soundName: WhisperingSoundNames,
 		): Promise<Result<void, SoundError>> => {
-			if (!settings.value[`sound.playOn.${soundName}`]) {
+			if (!settings.get(soundSettingKeyMap[soundName])) {
 				return Ok(undefined);
 			}
 			return await services.sound.playSound(soundName);

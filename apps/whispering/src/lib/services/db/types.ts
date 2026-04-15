@@ -4,7 +4,7 @@ import {
 	type InferErrors,
 } from 'wellcrafted/error';
 import type { Result } from 'wellcrafted/result';
-import type { Settings } from '$lib/settings';
+
 import type {
 	Recording,
 	Transformation,
@@ -47,8 +47,8 @@ export type DbService = {
 		update(recording: Recording): Promise<Result<Recording, DbError>>;
 		delete(recording: Recording | Recording[]): Promise<Result<void, DbError>>;
 		cleanupExpired(params: {
-			recordingRetentionStrategy: Settings['database.recordingRetentionStrategy'];
-			maxRecordingCount: Settings['database.maxRecordingCount'];
+			recordingRetentionStrategy: 'keep-forever' | 'limit-count';
+			maxRecordingCount: number;
 		}): Promise<Result<void, DbError>>;
 		clear(): Promise<Result<void, DbError>>;
 		getCount(): Promise<Result<number, DbError>>;

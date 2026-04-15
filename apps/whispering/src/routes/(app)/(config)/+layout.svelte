@@ -2,9 +2,7 @@
 	import { Button } from '@epicenter/ui/button';
 	import { cn } from '@epicenter/ui/utils';
 	import { createQuery } from '@tanstack/svelte-query';
-	import { MediaQuery } from 'svelte/reactivity';
 	import { commandCallbacks } from '$lib/commands';
-	import NavItems from '$lib/components/NavItems.svelte';
 	import {
 		CompressionSelector,
 		RecordingModeSelector,
@@ -27,8 +25,6 @@
 	);
 
 	let { children } = $props();
-
-	const isMobile = new MediaQuery('(max-width: 640px)');
 </script>
 
 <header
@@ -44,7 +40,7 @@
 
 	<div class="flex items-center gap-1.5">
 		<div class="flex items-center gap-1.5">
-			{#if settings.value['recording.mode'] === 'manual'}
+			{#if settings.get('recording.mode') === 'manual'}
 				{#if getRecorderStateQuery.data === 'RECORDING'}
 					<Button
 						tooltip="Cancel recording"
@@ -86,7 +82,7 @@
 						<RecordingModeSelector class="rounded-l-none" />
 					</div>
 				{/if}
-			{:else if settings.value['recording.mode'] === 'vad'}
+			{:else if settings.get('recording.mode') === 'vad'}
 				{#if vadRecorder.state === 'IDLE'}
 					<VadDeviceSelector />
 					<CompressionSelector />
@@ -118,37 +114,19 @@
 						{VAD_STATE_TO_ICON[vadRecorder.state]}
 					</Button>
 				{/if}
-			{:else if settings.value['recording.mode'] === 'upload'}
+			{:else if settings.get('recording.mode') === 'upload'}
 				<CompressionSelector />
 				<TranscriptionSelector />
 				<TransformationSelector />
 				<RecordingModeSelector />
-			{:else if settings.value['recording.mode'] === 'live'}
+			{:else if settings.get('recording.mode') === 'live'}
 				<ManualDeviceSelector />
 				<CompressionSelector />
 				<TranscriptionSelector />
 				<TransformationSelector />
-				<div class="flex">
-					<Button
-						tooltip="Toggle live recording"
-						onclick={() => {
-							// TODO: Implement live recording toggle
-							alert('Live recording not yet implemented');
-						}}
-						variant="ghost"
-						size="icon"
-						style="view-transition-name: {viewTransition.global.microphone}"
-						class="rounded-r-none border-r-0"
-					>
-						🎬
-					</Button>
-					<RecordingModeSelector class="rounded-l-none" />
-				</div>
+				<RecordingModeSelector />
 			{/if}
 		</div>
-		{#if settings.value['ui.layoutMode'] === 'nav-items'}
-			<NavItems class="-mr-4" collapsed={isMobile.current} />
-		{/if}
 	</div>
 </header>
 

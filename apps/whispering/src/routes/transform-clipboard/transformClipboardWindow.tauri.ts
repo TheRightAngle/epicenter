@@ -54,7 +54,7 @@ export async function toggle(): Promise<void> {
 }
 
 /**
- * Hides the transform clipboard window (doesn't destroy it for fast re-opening)
+ * Hides the transform clipboard window (doesn't dispose it for fast re-opening)
  */
 export async function hide(): Promise<void> {
 	const existingWindow = await WebviewWindow.getByLabel(WINDOW_LABEL);

@@ -250,8 +250,17 @@ export function createDbServiceDesktop({
 			},
 
 			getCount: async () => {
-				// Get count from file system (source of truth)
-				return fileSystemDb.recordings.getCount();
+				// DUAL READ: Sum both sources to avoid missing unmigrated IndexedDB data
+				const [fsResult, idbResult] = await Promise.all([
+					fileSystemDb.recordings.getCount(),
+					indexedDb.recordings.getCount(),
+				]);
+
+				if (fsResult.error && idbResult.error) {
+					return DbError.QueryFailed({ cause: fsResult.error });
+				}
+
+				return Ok((fsResult.data ?? 0) + (idbResult.data ?? 0));
 			},
 		},
 
@@ -357,8 +366,17 @@ export function createDbServiceDesktop({
 			},
 
 			getCount: async () => {
-				// Get count from file system (source of truth)
-				return fileSystemDb.transformations.getCount();
+				// DUAL READ: Sum both sources to avoid missing unmigrated IndexedDB data
+				const [fsResult, idbResult] = await Promise.all([
+					fileSystemDb.transformations.getCount(),
+					indexedDb.transformations.getCount(),
+				]);
+
+				if (fsResult.error && idbResult.error) {
+					return DbError.QueryFailed({ cause: fsResult.error });
+				}
+
+				return Ok((fsResult.data ?? 0) + (idbResult.data ?? 0));
 			},
 		},
 
@@ -551,8 +569,17 @@ export function createDbServiceDesktop({
 			},
 
 			getCount: async () => {
-				// Get count from file system (source of truth)
-				return fileSystemDb.runs.getCount();
+				// DUAL READ: Sum both sources to avoid missing unmigrated IndexedDB data
+				const [fsResult, idbResult] = await Promise.all([
+					fileSystemDb.runs.getCount(),
+					indexedDb.runs.getCount(),
+				]);
+
+				if (fsResult.error && idbResult.error) {
+					return DbError.QueryFailed({ cause: fsResult.error });
+				}
+
+				return Ok((fsResult.data ?? 0) + (idbResult.data ?? 0));
 			},
 		},
 	};

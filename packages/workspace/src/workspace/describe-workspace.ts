@@ -27,7 +27,7 @@
 import type { StandardJSONSchemaV1 } from '@standard-schema/spec';
 import type { TSchema } from 'typebox';
 import { iterateActions } from '../shared/actions.js';
-import { standardSchemaToJsonSchema } from '../shared/standard-schema/to-json-schema.js';
+import { standardSchemaToJsonSchema } from '../shared/standard-schema.js';
 import type { AnyWorkspaceClient } from './types.js';
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -43,6 +43,7 @@ export type SchemaDescriptor = {
 export type ActionDescriptor = {
 	path: string[];
 	type: 'query' | 'mutation';
+	title?: string;
 	description?: string;
 	input?: TSchema;
 };
@@ -119,6 +120,7 @@ export function describeWorkspace(
 			actions.push({
 				path,
 				type: action.type,
+				...(action.title !== undefined && { title: action.title }),
 				...(action.description !== undefined && {
 					description: action.description,
 				}),

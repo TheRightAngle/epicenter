@@ -38,6 +38,49 @@ describe('YKeyValueLww', () => {
 			expect(kv.get('foo')).toBe('second');
 		});
 
+		test('bulkSet inserts all entries', () => {
+			const ydoc = new Y.Doc({ guid: 'test' });
+			const yarray = ydoc.getArray<YKeyValueLwwEntry<string>>('data');
+			const kv = new YKeyValueLww(yarray);
+
+			kv.bulkSet([
+				{ key: 'foo', val: 'bar' },
+				{ key: 'baz', val: 'qux' },
+				{ key: 'zap', val: 'zip' },
+			]);
+
+			expect(kv.get('foo')).toBe('bar');
+			expect(kv.get('baz')).toBe('qux');
+			expect(kv.get('zap')).toBe('zip');
+			expect(Array.from(kv.entries())).toHaveLength(3);
+		});
+
+		test('bulkSet updates existing entries', () => {
+			const ydoc = new Y.Doc({ guid: 'test' });
+			const yarray = ydoc.getArray<YKeyValueLwwEntry<string>>('data');
+			const kv = new YKeyValueLww(yarray);
+
+			kv.set('foo', 'first');
+			kv.bulkSet([
+				{ key: 'foo', val: 'second' },
+				{ key: 'bar', val: 'third' },
+			]);
+
+			expect(kv.get('foo')).toBe('second');
+			expect(kv.get('bar')).toBe('third');
+			expect(
+				Array.from(kv.entries())
+					.map(([key]) => key)
+					.sort(),
+			).toEqual(['bar', 'foo']);
+			expect(
+				yarray
+					.toArray()
+					.map((entry) => entry.key)
+					.sort(),
+			).toEqual(['bar', 'foo']);
+		});
+
 		test('delete removes value', () => {
 			const ydoc = new Y.Doc({ guid: 'test' });
 			const yarray = ydoc.getArray<YKeyValueLwwEntry<string>>('data');
@@ -47,6 +90,42 @@ describe('YKeyValueLww', () => {
 			kv.delete('foo');
 			expect(kv.get('foo')).toBeUndefined();
 			expect(kv.has('foo')).toBe(false);
+		});
+
+		test('bulkDelete removes all specified keys', () => {
+			const ydoc = new Y.Doc({ guid: 'test' });
+			const yarray = ydoc.getArray<YKeyValueLwwEntry<string>>('data');
+			const kv = new YKeyValueLww(yarray);
+
+			kv.bulkSet([
+				{ key: 'foo', val: 'bar' },
+				{ key: 'baz', val: 'qux' },
+				{ key: 'zap', val: 'zip' },
+			]);
+			kv.bulkDelete(['foo', 'zap']);
+
+			expect(kv.get('foo')).toBeUndefined();
+			expect(kv.get('zap')).toBeUndefined();
+			expect(kv.get('baz')).toBe('qux');
+			expect(Array.from(kv.entries()).map(([key]) => key)).toEqual(['baz']);
+		});
+
+		test('bulkDelete is a no-op for missing keys', () => {
+			const ydoc = new Y.Doc({ guid: 'test' });
+			const yarray = ydoc.getArray<YKeyValueLwwEntry<string>>('data');
+			const kv = new YKeyValueLww(yarray);
+
+			kv.bulkSet([
+				{ key: 'foo', val: 'bar' },
+				{ key: 'baz', val: 'qux' },
+			]);
+			const before = yarray.toArray();
+
+			kv.bulkDelete(['missing', 'still-missing']);
+
+			expect(kv.get('foo')).toBe('bar');
+			expect(kv.get('baz')).toBe('qux');
+			expect(yarray.toArray()).toEqual(before);
 		});
 
 		test('entries have timestamp field', () => {

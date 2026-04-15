@@ -123,7 +123,7 @@ Every major real-time service uses this exact flow: Firebase Realtime Database, 
 | Concern          | Mode 1 (URL only)      | Mode 2 (URL + token)   | Mode 3 (URL + getToken)             |
 | ---------------- | ---------------------- | ---------------------- | ----------------------------------- |
 | Who can connect  | Anyone                 | Anyone with the secret | Anyone with a valid JWT             |
-| Encryption       | Same AES-256-GCM       | Same                   | Same                                |
+| Encryption       | Same XChaCha20-Poly1305 | Same                   | Same                                |
 | Key distribution | QR / passphrase        | QR / passphrase        | Server-side key vault (wrapped DKs) |
 | Recovery         | Recovery secret only   | Recovery secret only   | Password + recovery code            |
 | Multi-device     | Manual secret transfer | Manual secret transfer | Login → auto-fetch wrapped DK       |

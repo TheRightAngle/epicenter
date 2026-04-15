@@ -1,1 +1,0 @@
-export { redditAdapter } from './adapter';

@@ -6,7 +6,7 @@
  */
 
 import type { StandardSchemaV1 } from '@standard-schema/spec';
-import type { CombinedStandardSchema } from '../shared/standard-schema/types.js';
+import type { CombinedStandardSchema } from '../shared/standard-schema.js';
 
 /**
  * Creates a Standard Schema that validates against a union of schemas.

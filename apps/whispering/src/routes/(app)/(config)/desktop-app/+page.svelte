@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { Button } from '@epicenter/ui/button';
-	import { Card } from '@epicenter/ui/card';
+	import * as Card from '@epicenter/ui/card';
+	import * as SectionHeader from '@epicenter/ui/section-header';
 	import CommandIcon from '@lucide/svelte/icons/command';
 	import DownloadIcon from '@lucide/svelte/icons/download';
 	import MicIcon from '@lucide/svelte/icons/mic';
@@ -14,48 +15,51 @@
 	class="flex flex-1 items-center justify-center p-4 container max-w-4xl mx-auto"
 >
 	<div class="w-full">
-		<header class="text-center space-y-4 mb-8">
-			<h1 class="scroll-m-20 text-4xl font-bold tracking-tight lg:text-5xl">
+		<SectionHeader.Root class="text-center space-y-4 mb-8">
+			<SectionHeader.Title
+				level={1}
+				class="scroll-m-20 text-4xl tracking-tight lg:text-5xl"
+			>
 				Whispering Desktop
-			</h1>
-			<p class="text-muted-foreground text-lg lg:text-xl max-w-2xl mx-auto">
+			</SectionHeader.Title>
+			<SectionHeader.Description class="text-lg lg:text-xl max-w-2xl mx-auto">
 				Experience the full power of Whispering with native performance and
 				system-wide integration.
-			</p>
-		</header>
+			</SectionHeader.Description>
+		</SectionHeader.Root>
 
 		<div class="grid gap-6 mb-8 lg:grid-cols-3">
-			<Card class="p-6">
-				<div class="space-y-2">
-					<CommandIcon class="h-8 w-8 text-primary mb-2" />
-					<h3 class="text-lg font-semibold">Global Shortcuts</h3>
-					<p class="text-sm text-muted-foreground">
+			<Card.Root class="p-6">
+				<Card.Header class="gap-2 p-0">
+					<CommandIcon class="h-8 w-8 text-primary" />
+					<Card.Title class="text-lg">Global Shortcuts</Card.Title>
+					<Card.Description>
 						Customizable global keyboard shortcuts for recording control from
 						anywhere on your system
-					</p>
-				</div>
-			</Card>
+					</Card.Description>
+				</Card.Header>
+			</Card.Root>
 
-			<Card class="p-6">
-				<div class="space-y-2">
-					<MicIcon class="h-8 w-8 text-primary mb-2" />
-					<h3 class="text-lg font-semibold">Native Performance</h3>
-					<p class="text-sm text-muted-foreground">
+			<Card.Root class="p-6">
+				<Card.Header class="gap-2 p-0">
+					<MicIcon class="h-8 w-8 text-primary" />
+					<Card.Title class="text-lg">Native Performance</Card.Title>
+					<Card.Description>
 						Rust backend, more audio APIs, and optimized resource usage
-					</p>
-				</div>
-			</Card>
+					</Card.Description>
+				</Card.Header>
+			</Card.Root>
 
-			<Card class="p-6">
-				<div class="space-y-2">
-					<ZapIcon class="h-8 w-8 text-primary mb-2" />
-					<h3 class="text-lg font-semibold">System Integration</h3>
-					<p class="text-sm text-muted-foreground">
+			<Card.Root class="p-6">
+				<Card.Header class="gap-2 p-0">
+					<ZapIcon class="h-8 w-8 text-primary" />
+					<Card.Title class="text-lg">System Integration</Card.Title>
+					<Card.Description>
 						System tray controls, direct text injection, auto-updates, and
 						window management
-					</p>
-				</div>
-			</Card>
+					</Card.Description>
+				</Card.Header>
+			</Card.Root>
 		</div>
 
 		<div class="flex flex-col items-center gap-4">

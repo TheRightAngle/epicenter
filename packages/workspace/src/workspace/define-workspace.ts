@@ -57,6 +57,3 @@ export function defineWorkspace<
 		awareness: config.awareness,
 	};
 }
-
-// Re-export types for convenience
-export type { WorkspaceDefinition };

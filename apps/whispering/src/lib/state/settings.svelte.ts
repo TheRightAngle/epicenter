@@ -1,214 +1,164 @@
-import { createPersistedState } from '@epicenter/svelte-utils';
-import { nanoid } from 'nanoid/non-secure';
-import { extractErrorMessage } from 'wellcrafted/error';
-import { Ok, partitionResults } from 'wellcrafted/result';
-import { commands } from '$lib/commands';
-import type { RecordingMode } from '$lib/constants/audio';
-import { rpc } from '$lib/query';
+import type { InferKvValue } from '@epicenter/workspace';
+import { SvelteMap } from 'svelte/reactivity';
+import { workspace } from '$lib/client';
 import {
-	getDefaultSettings,
-	parseStoredSettings,
-	Settings,
-} from '$lib/settings/settings';
-import { vadRecorder } from '$lib/state/vad-recorder.svelte';
-import {
-	syncGlobalShortcutsWithSettings,
-	syncLocalShortcutsWithSettings,
-} from '$routes/(app)/_layout-utils/register-commands';
+	DEVICE_CONFIG_KEYS,
+	deviceConfig,
+} from '$lib/state/device-config.svelte';
+
+const KV_DEFINITIONS = workspace.definitions.kv;
+type KvKey = keyof typeof KV_DEFINITIONS & string;
+type KvDefs = typeof KV_DEFINITIONS;
 
 /**
- * Encapsulated settings object with controlled access.
- * Provides read-only access to settings values and methods for controlled mutations.
+ * Legacy fork key → canonical upstream key.
+ *
+ * Upstream renamed many settings keys during the unified-settings deletion
+ * refactor. Our fork's call sites still use the old names; this table
+ * translates them transparently on read/write so the fork code keeps working
+ * without per-call-site migration.
  */
-export const settings = (() => {
-	// Private settings instance
-	const _settings = createPersistedState({
-		key: 'whispering-settings',
-		schema: Settings,
-		onParseError: (error) => {
-			// For empty storage, return defaults
-			if (error.type === 'storage_empty') {
-				return getDefaultSettings();
-			}
+const LEGACY_KEY_MAP: Record<string, string> = {
+	'sound.playOn.manual-start': 'sound.manualStart',
+	'sound.playOn.manual-stop': 'sound.manualStop',
+	'sound.playOn.manual-cancel': 'sound.manualCancel',
+	'sound.playOn.vad-start': 'sound.vadStart',
+	'sound.playOn.vad-capture': 'sound.vadCapture',
+	'sound.playOn.vad-stop': 'sound.vadStop',
+	'sound.playOn.transcriptionComplete': 'sound.transcriptionComplete',
+	'sound.playOn.transformationComplete': 'sound.transformationComplete',
+	'transcription.copyToClipboardOnSuccess': 'output.transcription.clipboard',
+	'transcription.writeToCursorOnSuccess': 'output.transcription.cursor',
+	'transcription.simulateEnterAfterOutput': 'output.transcription.enter',
+	'transformation.copyToClipboardOnSuccess': 'output.transformation.clipboard',
+	'transformation.writeToCursorOnSuccess': 'output.transformation.cursor',
+	'transformation.simulateEnterAfterOutput': 'output.transformation.enter',
+	'system.alwaysOnTop': 'ui.alwaysOnTop',
+	'database.recordingRetentionStrategy': 'retention.strategy',
+	'database.maxRecordingCount': 'retention.maxCount',
+	'transcription.selectedTranscriptionService': 'transcription.service',
+	'transcription.outputLanguage': 'transcription.language',
+	'transformations.selectedTransformationId': 'transformation.selectedId',
+	'completion.openrouter.model': 'transformation.openrouterModel',
+	'shortcuts.local.toggleManualRecording': 'shortcut.toggleManualRecording',
+	'shortcuts.local.startManualRecording': 'shortcut.startManualRecording',
+	'shortcuts.local.stopManualRecording': 'shortcut.stopManualRecording',
+	'shortcuts.local.cancelManualRecording': 'shortcut.cancelManualRecording',
+	'shortcuts.local.toggleVadRecording': 'shortcut.toggleVadRecording',
+	'shortcuts.local.startVadRecording': 'shortcut.startVadRecording',
+	'shortcuts.local.stopVadRecording': 'shortcut.stopVadRecording',
+	'shortcuts.local.pushToTalk': 'shortcut.pushToTalk',
+	'shortcuts.local.openTransformationPicker': 'shortcut.openTransformationPicker',
+	'shortcuts.local.runTransformationOnClipboard':
+		'shortcut.runTransformationOnClipboard',
+};
 
-			// For JSON parse errors, return defaults
-			if (error.type === 'json_parse_error') {
-				console.error('Failed to parse settings JSON:', error.error);
-				return getDefaultSettings();
-			}
+function canonicalKey(key: string): string {
+	return LEGACY_KEY_MAP[key] ?? key;
+}
 
-			// For schema validation failures, use our progressive validation
-			if (error.type === 'schema_validation_failed') {
-				return parseStoredSettings(error.value);
-			}
+function isKvKey(key: string): key is KvKey {
+	return key in KV_DEFINITIONS;
+}
 
-			// For async validation (shouldn't happen with our schemas)
-			if (error.type === 'schema_validation_async_during_sync') {
-				console.warn('Unexpected async validation for settings');
-				return parseStoredSettings(error.value);
-			}
+function isDeviceKey(key: string): boolean {
+	return DEVICE_CONFIG_KEYS.has(key);
+}
 
-			// Fallback - should never reach here
-			return getDefaultSettings();
+function createSettings() {
+	const map = new SvelteMap<string, unknown>();
+
+	for (const key of Object.keys(KV_DEFINITIONS) as KvKey[]) {
+		map.set(key, workspace.kv.get(key));
+	}
+
+	workspace.kv.observeAll((changes) => {
+		for (const [key, change] of changes) {
+			if (change.type === 'set') {
+				map.set(key, change.value);
+			} else if (change.type === 'delete') {
+				map.set(key, workspace.kv.get(key));
+			}
+		}
+	});
+
+	function readValue(rawKey: string): unknown {
+		const key = canonicalKey(rawKey);
+		if (isKvKey(key)) return map.get(key);
+		if (isDeviceKey(key)) return deviceConfig.get(key as never);
+		return undefined;
+	}
+
+	function writeValue(rawKey: string, value: unknown): void {
+		const key = canonicalKey(rawKey);
+		if (isKvKey(key)) {
+			workspace.kv.set(key, value as never);
+			return;
+		}
+		if (isDeviceKey(key)) {
+			deviceConfig.set(key as never, value as never);
+		}
+	}
+
+	/**
+	 * Proxy that emulates the fork's legacy `settings.value[key]` read/write API.
+	 * Each access routes through readValue/writeValue, which handle key renames
+	 * and device/synced storage routing transparently.
+	 */
+	const valueProxy = new Proxy({} as Record<string, unknown>, {
+		get: (_target, prop) => {
+			if (typeof prop !== 'string') return undefined;
+			return readValue(prop);
 		},
-		onUpdateError: (err) => {
-			rpc.notify.error({
-				title: 'Error updating settings',
-				description: extractErrorMessage(err),
-			});
+		set: (_target, prop, value) => {
+			if (typeof prop !== 'string') return false;
+			writeValue(prop, value);
+			return true;
 		},
 	});
 
-	// Private helper for shared reset logic
-	function _resetShortcutDefaults(type: 'local' | 'global') {
-		const defaultSettings = getDefaultSettings();
-
-		// Build a partial settings object containing only the shortcuts we want to reset
-		const updates = commands.reduce<Partial<Settings>>((acc, command) => {
-			const shortcutKey = `shortcuts.${type}.${command.id}` as const;
-			// Copy the default value for this specific shortcut from defaultSettings to our updates object
-			acc[shortcutKey] = defaultSettings[shortcutKey];
-			return acc;
-		}, {});
-
-		_settings.value = {
-			..._settings.value,
-			...updates,
-		};
-	}
-
 	return {
 		/**
-		 * Read-only access to current settings values
+		 * Get a setting value. Accepts either the canonical key or a legacy
+		 * fork-era key name; routes to workspace.kv or deviceConfig.
 		 */
-		get value(): Settings {
-			return _settings.value;
+		get<K extends keyof KvDefs & string>(key: K): InferKvValue<KvDefs[K]> {
+			return readValue(key) as InferKvValue<KvDefs[K]>;
 		},
 
 		/**
-		 * Update multiple settings at once
-		 * @param updates Partial settings object with keys to update
+		 * Set a setting value. Writes go to workspace.kv or deviceConfig
+		 * depending on whether the key is synced or device-bound.
 		 */
-		update(updates: Partial<Settings>) {
-			_settings.value = { ..._settings.value, ...updates };
+		set<K extends keyof KvDefs & string>(
+			key: K,
+			value: InferKvValue<KvDefs[K]>,
+		) {
+			writeValue(key, value);
 		},
 
 		/**
-		 * Update a single setting key
-		 * @param key The setting key to update
-		 * @param value The new value for the setting
-		 */
-		updateKey<K extends keyof Settings>(key: K, value: Settings[K]) {
-			_settings.value = { ..._settings.value, [key]: value };
-		},
-
-		/**
-		 * Reset all settings to their default values
+		 * Reset all workspace settings to their default values.
 		 */
 		reset() {
-			_settings.value = getDefaultSettings();
-		},
-
-		/**
-		 * Reset local shortcuts to their default values
-		 */
-		resetLocalShortcuts() {
-			_resetShortcutDefaults('local');
-			syncLocalShortcutsWithSettings();
-		},
-
-		/**
-		 * Reset global shortcuts to their default values
-		 */
-		resetGlobalShortcuts() {
-			_resetShortcutDefaults('global');
-			syncGlobalShortcutsWithSettings();
-		},
-
-		/**
-		 * Switches the recording mode and automatically stops any active recordings.
-		 * This ensures a clean transition between recording modes.
-		 */
-		async switchRecordingMode(newMode: RecordingMode) {
-			const toastId = nanoid();
-
-			// First, stop all active recordings except the new mode
-			const { errs } = await stopAllRecordingModesExcept(newMode);
-
-			if (errs.length > 0) {
-				// Even if stopping fails, we should still switch modes
-				console.error('Failed to stop active recordings:', errs);
-				rpc.notify.warning({
-					id: toastId,
-					title: '⚠️ Recording may still be active',
-					description:
-						'Previous recording could not be stopped automatically. Please stop it manually.',
-				});
+			for (const key of Object.keys(KV_DEFINITIONS) as KvKey[]) {
+				workspace.kv.set(key, KV_DEFINITIONS[key].defaultValue);
 			}
+		},
 
-			// Update the settings if not already in new mode
-			if (_settings.value['recording.mode'] !== newMode) {
-				_settings.value = {
-					..._settings.value,
-					'recording.mode': newMode,
-				};
+		/**
+		 * Legacy fork API — preserved for backwards compatibility with the
+		 * ~60 call sites that still use `settings.value[key]` and
+		 * `settings.updateKey(key, value)`. New code should prefer `get`/`set`.
+		 */
+		get value(): Record<string, unknown> {
+			return valueProxy;
+		},
 
-				// Show success notification
-				rpc.notify.success({
-					id: toastId,
-					title: '✅ Recording mode switched',
-					description: `Switched to ${newMode} recording mode`,
-				});
-			}
-
-			return Ok(newMode);
+		updateKey(key: string, value: unknown): void {
+			writeValue(key, value);
 		},
 	};
-})();
-
-/**
- * Ensures only one recording mode is active at a time by stopping all other modes.
- * This prevents conflicts between different recording methods and ensures clean transitions.
- *
- * @returns Object containing array of errors that occurred while stopping recordings
- */
-async function stopAllRecordingModesExcept(modeToKeep: RecordingMode) {
-	const { data: recorderState } = await rpc.recorder.getRecorderState.fetch();
-
-	// Each recording mode with its check and stop logic
-	const recordingModes = [
-		{
-			mode: 'manual' as const,
-			isActive: () => recorderState === 'RECORDING',
-			stop: () => rpc.commands.stopManualRecording(),
-		},
-		{
-			mode: 'vad' as const,
-			isActive: () => vadRecorder.state !== 'IDLE',
-			stop: () => rpc.commands.stopVadRecording(),
-		},
-	] satisfies {
-		mode: RecordingMode;
-		isActive: () => boolean;
-		stop: () => Promise<unknown>;
-	}[];
-
-	// Filter to modes that need to be stopped
-	const modesToStop = recordingModes.filter(
-		(recordingMode) =>
-			recordingMode.mode !== modeToKeep && recordingMode.isActive(),
-	);
-
-	// Create promises that wrap each stop call in try-catch
-	const stopPromises = modesToStop.map(
-		async (recordingMode) => await recordingMode.stop(),
-	);
-
-	// Execute all stops in parallel
-	const results = await Promise.all(stopPromises);
-
-	// Partition results into successes and errors
-	const { errs } = partitionResults(results);
-
-	return { errs };
 }
+
+export const settings = createSettings();

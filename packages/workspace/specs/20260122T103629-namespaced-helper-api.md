@@ -123,7 +123,7 @@ posts.getAll(); // RowResult<Row>[]
 posts.getAllValid(); // Row[]
 posts.getAllInvalid(); // InvalidRowResult[]
 posts.has(id); // boolean
-posts.delete(id); // DeleteResult
+posts.delete(id); // void
 posts.deleteMany(ids); // DeleteManyResult
 posts.clear(); // void
 posts.count(); // number

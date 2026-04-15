@@ -2,7 +2,7 @@
 	import * as Field from '@epicenter/ui/field';
 	import { Input } from '@epicenter/ui/input';
 	import { Link } from '@epicenter/ui/link';
-	import { settings } from '$lib/state/settings.svelte';
+	import { deviceConfig } from '$lib/state/device-config.svelte';
 </script>
 
 <Field.Group>
@@ -13,8 +13,8 @@
 			type="password"
 			placeholder="Your Groq API Key"
 			autocomplete="off"
-			bind:value={() => settings.value['apiKeys.groq'],
-				(value) => settings.updateKey('apiKeys.groq', value)}
+			bind:value={() => deviceConfig.get('apiKeys.groq'),
+				(value) => deviceConfig.set('apiKeys.groq', value)}
 		/>
 		<Field.Description>
 			You can find your Groq API key in your <Link
@@ -35,8 +35,8 @@
 			type="url"
 			placeholder="https://api.groq.com/openai/v1 (default)"
 			autocomplete="off"
-			bind:value={() => settings.value['apiEndpoints.groq'],
-				(value) => settings.updateKey('apiEndpoints.groq', value)}
+			bind:value={() => deviceConfig.get('apiEndpoints.groq'),
+				(value) => deviceConfig.set('apiEndpoints.groq', value)}
 		/>
 		<Field.Description>
 			Override the default Groq API endpoint. Useful for reverse proxies or

@@ -6,6 +6,7 @@ import {
 	getCachedLocalModelValidity,
 	validateConfiguredLocalModelPath,
 } from '$lib/components/settings/local-models';
+import { deviceConfig } from '$lib/state/device-config.svelte';
 import { settings } from '$lib/state/settings.svelte';
 
 /**
@@ -17,8 +18,7 @@ import { settings } from '$lib/state/settings.svelte';
 export function getSelectedTranscriptionService():
 	| TranscriptionService
 	| undefined {
-	const selectedServiceId =
-		settings.value['transcription.selectedTranscriptionService'];
+	const selectedServiceId = settings.get('transcription.service');
 	return TRANSCRIPTION_SERVICES.find((s) => s.id === selectedServiceId);
 }
 
@@ -34,15 +34,22 @@ export function isTranscriptionServiceConfigured(
 ): boolean {
 	switch (service.location) {
 		case 'cloud': {
-			const apiKey = settings.value[service.apiKeyField];
-			return apiKey !== '';
+			const apiKeyByService = {
+				Groq: 'apiKeys.groq',
+				OpenAI: 'apiKeys.openai',
+				ElevenLabs: 'apiKeys.elevenlabs',
+				Deepgram: 'apiKeys.deepgram',
+				Mistral: 'apiKeys.mistral',
+			} as const;
+
+			return deviceConfig.get(apiKeyByService[service.id]) !== '';
 		}
 		case 'self-hosted': {
-			const url = settings.value[service.serverUrlField];
+			const url = deviceConfig.get('transcription.speaches.baseUrl');
 			return url !== '';
 		}
 		case 'local': {
-			const modelPath = settings.value[service.modelPathField];
+			const modelPath = deviceConfig.get(service.modelPathField);
 			return modelPath !== '' && getCachedLocalModelValidity(modelPath);
 		}
 		default: {
@@ -60,6 +67,6 @@ export async function refreshTranscriptionServiceConfiguration(
 
 	return await validateConfiguredLocalModelPath(
 		service.id,
-		settings.value[service.modelPathField],
+		deviceConfig.get(service.modelPathField),
 	);
 }

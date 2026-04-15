@@ -69,10 +69,12 @@ export const NavigatorRecorderServiceLive: RecorderService = {
 
 		const { stream, deviceOutcome } = streamResult;
 
+		const mimeType = getSupportedAudioMimeType();
 		const { data: mediaRecorder, error: recorderError } = trySync({
 			try: () =>
 				new MediaRecorder(stream, {
 					bitsPerSecond: Number(bitrateKbps) * 1000,
+					mimeType,
 				}),
 			catch: (error) => RecorderError.InitFailed({ cause: error }),
 		});
@@ -184,3 +186,33 @@ export const NavigatorRecorderServiceLive: RecorderService = {
 };
 
 export type NavigatorRecorderService = typeof NavigatorRecorderServiceLive;
+
+/**
+ * Determines the best supported audio MIME type for the current browser.
+ *
+ * Called before `MediaRecorder` construction so the type can be passed explicitly.
+ * This is the industry-standard pattern (used by LibreChat, AutoGPT, 1code, etc.)
+ * because:
+ *
+ * 1. Firefox (and forks like Zen) may leave `mediaRecorder.mimeType` empty when
+ *    no type is specified at construction — see https://bugzilla.mozilla.org/show_bug.cgi?id=1512175
+ * 2. Safari only supports `audio/mp4`, not `audio/webm`.
+ * 3. Specifying upfront means the constructor throws `NotSupportedError` if invalid,
+ *    rather than silently producing a blob with an empty type.
+ * 4. MDN recommends calling `isTypeSupported()` before construction.
+ *
+ * @see https://developer.mozilla.org/en-US/docs/Web/API/MediaRecorder/isTypeSupported_static
+ */
+function getSupportedAudioMimeType(): string {
+	const candidates = [
+		'audio/webm;codecs=opus',
+		'audio/webm',
+		'audio/ogg;codecs=opus',
+		'audio/mp4',
+		'audio/mp4;codecs=mp4a.40.2',
+	];
+	for (const candidate of candidates) {
+		if (MediaRecorder.isTypeSupported(candidate)) return candidate;
+	}
+	return 'audio/webm';
+}

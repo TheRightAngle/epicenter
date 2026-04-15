@@ -14,7 +14,8 @@
 	import CopyablePre from '$lib/components/copyable/CopyablePre.svelte';
 	import TextPreviewDialog from '$lib/components/copyable/TextPreviewDialog.svelte';
 	import { rpc } from '$lib/query';
-	import type { TransformationRun } from '$lib/services/db';
+	import type { TransformationRun } from '$lib/state/transformation-runs.svelte';
+	import { transformationRuns } from '$lib/state/transformation-runs.svelte';
 	import { viewTransition } from '$lib/utils/viewTransitions';
 
 	let { runs }: { runs: TransformationRun[] } = $props();
@@ -51,14 +52,9 @@
 						title: 'Clear all transformation runs?',
 						description: `This will permanently delete all ${runs.length} run${runs.length !== 1 ? 's' : ''} from this history. This action cannot be undone.`,
 						confirm: { text: 'Delete All', variant: 'destructive' },
-						onConfirm: async () => {
-							const { error } = await rpc.db.runs.delete(runs);
-							if (error) {
-								rpc.notify.error({
-									title: 'Failed to delete runs',
-									description: error.message,
-								});
-								throw error;
+						onConfirm: () => {
+							for (const run of runs) {
+						transformationRuns.delete(run.id);
 							}
 							rpc.notify.success({
 								title: `${runs.length} run${runs.length !== 1 ? 's' : ''} deleted successfully`,
@@ -117,21 +113,14 @@
 											title: 'Delete transformation run?',
 											description: `This will permanently delete the run from ${formatDate(run.startedAt)}. This action cannot be undone.`,
 											confirm: { text: 'Delete', variant: 'destructive' },
-											onConfirm: async () => {
-												const { error } = await rpc.db.runs.delete(run);
-												if (error) {
-													rpc.notify.error({
-														title: 'Failed to delete run',
-														description: error.message,
-													});
-													throw error;
-												}
-												rpc.notify.success({
-													title: 'Run deleted successfully',
-													description:
-														'Your transformation run has been deleted.',
-												});
-											},
+										onConfirm: () => {
+						transformationRuns.delete(run.id);
+											rpc.notify.success({
+												title: 'Run deleted successfully',
+												description:
+													'Your transformation run has been deleted.',
+											});
+										},
 										});
 									}}
 								>

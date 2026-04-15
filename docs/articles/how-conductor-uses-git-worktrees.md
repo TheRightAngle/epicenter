@@ -15,7 +15,7 @@ Conductor's solution is elegant: use Git's built-in worktree feature to create l
 When I looked in my Whispering project, I found this structure:
 
 ```
-/Users/braden/Code/whispering/          # Main repository
+~/Code/whispering/          # Main repository
 └── .conductor/                         # Conductor's directory
     ├── worktrees/                      # Current workspace
     └── app-nap/                        # Another workspace
@@ -25,9 +25,9 @@ Each subdirectory in `.conductor/` is a Git worktree. Running `git worktree list
 
 ```bash
 $ git worktree list
-/Users/braden/Code/whispering                     671d3820e [feat/vault]
-/Users/braden/Code/whispering/.conductor/app-nap  0b2b27316 [app-nap]
-/Users/braden/Code/whispering/.conductor/worktrees 0b2b27316 [worktrees]
+~/Code/whispering                     671d3820e [feat/vault]
+~/Code/whispering/.conductor/app-nap  0b2b27316 [app-nap]
+~/Code/whispering/.conductor/worktrees 0b2b27316 [worktrees]
 # ... plus 20+ PR-specific worktrees
 ```
 
@@ -39,7 +39,7 @@ Here's what makes Conductor's approach brilliant: it puts worktrees INSIDE the m
 
 ```bash
 # Traditional approach (clutters your code folder)
-/Users/braden/Code/
+~/Code/
 ├── whispering/                    # Main repo
 ├── whispering-feature-branch/     # Worktree
 ├── whispering-hotfix/             # Another worktree
@@ -50,7 +50,7 @@ Conductor does this instead:
 
 ```bash
 # Conductor's approach (organized)
-/Users/braden/Code/whispering/     # Main repo
+~/Code/whispering/     # Main repo
 └── .conductor/                    # All worktrees contained here
     ├── worktrees/                 # Current workspace
     └── app-nap/                   # Another workspace

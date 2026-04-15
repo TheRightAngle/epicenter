@@ -1,13 +1,30 @@
 ---
 name: create-auth-skill
 description: Scaffold and implement authentication in TypeScript/JavaScript apps using Better Auth. Detect frameworks, configure database adapters, set up route handlers, add OAuth providers, and create auth UI pages. Use when users want to add login, sign-up, or authentication to a new or existing project with Better Auth.
+metadata:
+  author: epicenter
+  version: '1.0'
 ---
 
 # Create Auth Skill
 
+## Reference Repositories
+
+- [Better Auth](https://github.com/better-auth/better-auth) — TypeScript authentication framework with plugins
+
 Guide for adding authentication to TypeScript/JavaScript applications using Better Auth.
 
 **For code examples and syntax, see [better-auth.com/docs](https://better-auth.com/docs).**
+
+## When to Apply This Skill
+
+Use this pattern when you need to:
+
+- Add Better Auth login/sign-up to a new or existing TypeScript/JavaScript app.
+- Plan auth implementation by detecting framework, DB, and existing auth stack.
+- Configure `auth.ts`, client setup, route handlers, and migrations.
+- Add OAuth providers, plugins, and auth pages based on project requirements.
+- Migrate incrementally from another auth library to Better Auth.
 
 ---
 

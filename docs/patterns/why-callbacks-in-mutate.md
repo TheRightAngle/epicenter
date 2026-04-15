@@ -57,7 +57,7 @@ Here's a real example from a file upload dialog:
 
 ```svelte
 <script lang="ts">
-	const copyToClipboard = createMutation(rpc.clipboard.copyToClipboard.options);
+	const copyToClipboard = createMutation(rpc.text.copyToClipboard.options);
 
 	let isDialogOpen = $state(false);
 	let selectedText = $state('');

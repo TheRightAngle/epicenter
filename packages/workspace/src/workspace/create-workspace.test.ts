@@ -11,15 +11,23 @@
  */
 
 import { describe, expect, test } from 'bun:test';
+import { randomBytes } from '@noble/ciphers/utils.js';
 import { type } from 'arktype';
 import * as Y from 'yjs';
+import { defineMutation, defineQuery } from '../shared/actions.js';
+import { bytesToBase64 } from '../shared/crypto/index.js';
 import { createDocuments } from './create-document.js';
 import { createTables } from './create-tables.js';
 import { createWorkspace } from './create-workspace.js';
 import { defineKv } from './define-kv.js';
 import { defineTable } from './define-table.js';
 import { defineWorkspace } from './define-workspace.js';
+import type { EncryptionKeys } from './encryption-key.js';
 
+/** Wrap a raw Uint8Array key into a single-entry EncryptionKeys for tests. */
+function toEncryptionKeys(key: Uint8Array): EncryptionKeys {
+	return [{ version: 1, userKeyBase64: bytesToBase64(key) }];
+}
 /** Creates a workspace client with two tables and one KV for testing. */
 function setup() {
 	const postsTable = defineTable(
@@ -28,7 +36,9 @@ function setup() {
 	const tagsTable = defineTable(
 		type({ id: 'string', name: 'string', _v: '1' }),
 	);
-	const themeDef = defineKv(type({ mode: "'light' | 'dark'" }));
+	const themeDef = defineKv(type({ mode: "'light' | 'dark'" }), {
+		mode: 'light',
+	});
 
 	const definition = defineWorkspace({
 		id: 'test-workspace',
@@ -285,7 +295,7 @@ describe('createWorkspace', () => {
 				id: 'ext-await-test-1',
 				tables: { files: filesTable },
 			}).withExtension('myExt', () => {
-				return { someValue: 42, destroy: () => {} };
+				return { someValue: 42, dispose: () => {} };
 			});
 
 			expect(client.extensions.myExt.someValue).toBe(42);
@@ -304,12 +314,12 @@ describe('createWorkspace', () => {
 				.withExtension('first', () => {
 					return {
 						value: 'first',
-						destroy: () => {},
+						dispose: () => {},
 					};
 				})
 				.withExtension('second', ({ extensions }) => {
 					receivedFirstExtension = extensions.first.value === 'first';
-					return { destroy: () => {} };
+					return { dispose: () => {} };
 				});
 
 			expect(receivedFirstExtension).toBe(true);
@@ -333,14 +343,14 @@ describe('createWorkspace', () => {
 					return {
 						value: 'first',
 						whenReady: firstWhenReady,
-						destroy: () => {},
+						dispose: () => {},
 					};
 				})
 				.withExtension('second', () => {
 					return {
 						value: 'second',
 						whenReady: Promise.resolve(),
-						destroy: () => {},
+						dispose: () => {},
 					};
 				});
 
@@ -378,13 +388,13 @@ describe('createWorkspace', () => {
 				.withExtension('first', () => {
 					return {
 						whenReady: firstWhenReady,
-						destroy: () => {},
+						dispose: () => {},
 					};
 				})
 				.withExtension('second', () => {
 					return {
 						whenReady: secondWhenReady,
-						destroy: () => {},
+						dispose: () => {},
 					};
 				});
 
@@ -430,14 +440,14 @@ describe('createWorkspace', () => {
 			expect(client.extensions.bare.whenReady).toBeInstanceOf(Promise);
 		});
 
-		test('extensions.X.destroy is always a function even without explicit destroy', () => {
+		test('extensions.X.dispose is always a function even without explicit dispose', () => {
 			const client = createWorkspace({
-				id: 'ext-destroy-default',
+				id: 'ext-dispose-default',
 			}).withExtension('bare', () => {
 				return { tag: 'no-lifecycle' };
 			});
 
-			expect(typeof client.extensions.bare.destroy).toBe('function');
+			expect(typeof client.extensions.bare.dispose).toBe('function');
 		});
 
 		test('surgical await: extension B chains off extensions.A.whenReady', async () => {
@@ -531,78 +541,12 @@ describe('createWorkspace', () => {
 				tables: { files: filesTable },
 			}).withDocumentExtension('test', () => {
 				hookCalled = true;
-				return { destroy: () => {} };
+				return { dispose: () => {} };
 			});
 
 			await client.documents.files.content.open('f1');
 
 			expect(hookCalled).toBe(true);
-		});
-
-		test('withDocumentExtension with tags only fires for matching documents', async () => {
-			const hookCalls: string[] = [];
-
-			const notesTable = defineTable(
-				type({
-					id: 'string',
-					name: 'string',
-					updatedAt: 'number',
-					thumbId: 'string',
-					thumbUpdatedAt: 'number',
-					_v: '1',
-				}),
-			)
-				.withDocument('content', {
-					guid: 'id',
-					onUpdate: () => ({ updatedAt: Date.now() }),
-					tags: ['persistent', 'synced'],
-				})
-				.withDocument('thumb', {
-					guid: 'thumbId',
-					onUpdate: () => ({ thumbUpdatedAt: Date.now() }),
-					tags: ['ephemeral'],
-				});
-
-			const client = createWorkspace({
-				id: 'doc-tag-test',
-				tables: { notes: notesTable },
-			})
-				.withDocumentExtension(
-					'persistent-only',
-					() => {
-						hookCalls.push('persistent-only');
-						return { destroy: () => {} };
-					},
-					{ tags: ['persistent'] },
-				)
-				.withDocumentExtension(
-					'ephemeral-only',
-					() => {
-						hookCalls.push('ephemeral-only');
-						return { destroy: () => {} };
-					},
-					{ tags: ['ephemeral'] },
-				)
-				.withDocumentExtension('universal', () => {
-					hookCalls.push('universal');
-					return { destroy: () => {} };
-				});
-
-			// Content doc has tags ['persistent', 'synced']
-			await client.documents.notes.content.open('f1');
-			// 'persistent-only' matches (shares 'persistent')
-			// 'ephemeral-only' does NOT match (no overlap)
-			// 'universal' matches (no tags = fires for all)
-			expect(hookCalls).toEqual(['persistent-only', 'universal']);
-
-			hookCalls.length = 0;
-
-			// Thumb doc has tag ['ephemeral']
-			await client.documents.notes.thumb.open('t1');
-			// 'persistent-only' does NOT match
-			// 'ephemeral-only' matches (shares 'ephemeral')
-			// 'universal' matches (no tags = fires for all)
-			expect(hookCalls).toEqual(['ephemeral-only', 'universal']);
 		});
 
 		test('withExtension registers for both workspace and document Y.Docs', async () => {
@@ -621,7 +565,7 @@ describe('createWorkspace', () => {
 			});
 
 			// withExtension fires factory for workspace Y.Doc AND registers
-			// it as a document extension (tags: [] = universal)
+			// it as a document extension
 			const client = createWorkspace({
 				id: 'three-tier-both-test',
 				tables: { files: filesTable },
@@ -629,7 +573,7 @@ describe('createWorkspace', () => {
 				factoryCallCount++;
 				return {
 					tag: 'ext',
-					destroy: () => {},
+					dispose: () => {},
 				};
 			});
 
@@ -666,7 +610,7 @@ describe('createWorkspace', () => {
 				factoryCallCount++;
 				return {
 					tag: 'ws-only',
-					destroy: () => {},
+					dispose: () => {},
 				};
 			});
 
@@ -681,7 +625,7 @@ describe('createWorkspace', () => {
 			expect(factoryCallCount).toBe(1);
 		});
 
-		test('workspace destroy cascades to closeAll on bindings', async () => {
+		test('workspace dispose cascades to closeAll on bindings', async () => {
 			const filesTable = defineTable(
 				type({
 					id: 'string',
@@ -695,16 +639,16 @@ describe('createWorkspace', () => {
 			});
 
 			const client = createWorkspace({
-				id: 'doc-destroy-test',
+				id: 'doc-dispose-test',
 				tables: { files: filesTable },
 			});
 
 			const doc1 = await client.documents.files.content.open('f1');
 
-			await client.destroy();
+			await client.dispose();
 
-			// After destroy, open should create a new Y.Doc (since documents were destroyed)
-			// But we can't open after workspace destroy — just verify no error occurred
+			// After dispose, open should create a new Y.Doc (since documents were disposed)
+			// But we can't open after workspace dispose — just verify no error occurred
 			expect(doc1).toBeDefined();
 		});
 
@@ -785,7 +729,7 @@ describe('createWorkspace', () => {
 				() => {
 					if (shouldThrow) throw new Error(`${name} factory failed`);
 					return {
-						destroy: async () => {
+						dispose: async () => {
 							cleanupOrder.push(name);
 						},
 					};
@@ -803,11 +747,11 @@ describe('createWorkspace', () => {
 			expect(cleanupOrder).toEqual(['second', 'first']); // LIFO, skips 'third'
 		});
 
-		test('document extension destroy order is LIFO', async () => {
-			const destroyOrder: string[] = [];
+		test('document extension dispose order is LIFO', async () => {
+			const disposeOrder: string[] = [];
 			const factory = (name: string) => () => ({
-				destroy: async () => {
-					destroyOrder.push(name);
+				dispose: async () => {
+					disposeOrder.push(name);
 				},
 			});
 
@@ -822,21 +766,24 @@ describe('createWorkspace', () => {
 			});
 
 			const documents = createDocuments({
+				id: 'test-lifo',
+				tableName: 'files',
+				documentName: 'content',
 				guidKey: 'id',
 				onUpdate: () => ({ updatedAt: Date.now() }),
 				tableHelper: tables.files,
 				ydoc: mockYdoc,
 				documentExtensions: [
-					{ key: 'first', factory: factory('first'), tags: [] },
-					{ key: 'second', factory: factory('second'), tags: [] },
-					{ key: 'third', factory: factory('third'), tags: [] },
+					{ key: 'first', factory: factory('first') },
+					{ key: 'second', factory: factory('second') },
+					{ key: 'third', factory: factory('third') },
 				],
 			});
 
 			await documents.open('doc-1');
 			await documents.close('doc-1');
 
-			expect(destroyOrder).toEqual(['third', 'second', 'first']); // LIFO
+			expect(disposeOrder).toEqual(['third', 'second', 'first']); // LIFO
 		});
 
 		test('whenReady rejection in workspace triggers cleanup', async () => {
@@ -848,13 +795,13 @@ describe('createWorkspace', () => {
 
 			const client = createWorkspace(def)
 				.withExtension('first', () => ({
-					destroy: async () => {
+					dispose: async () => {
 						cleanupCalled.add('first');
 					},
 				}))
 				.withExtension('second', () => ({
 					whenReady: whenReadyPromise,
-					destroy: async () => {
+					dispose: async () => {
 						cleanupCalled.add('second');
 					},
 				}));
@@ -890,6 +837,9 @@ describe('createWorkspace', () => {
 			});
 
 			const documents = createDocuments({
+				id: 'test-whenready-rejection',
+				tableName: 'files',
+				documentName: 'content',
 				guidKey: 'id',
 				onUpdate: () => ({ updatedAt: Date.now() }),
 				tableHelper: tables.files,
@@ -898,21 +848,19 @@ describe('createWorkspace', () => {
 					{
 						key: 'first',
 						factory: () => ({
-							destroy: async () => {
+							dispose: async () => {
 								cleanupCalled.add('first');
 							},
 						}),
-						tags: [],
 					},
 					{
 						key: 'second',
 						factory: () => ({
 							whenReady: whenReadyPromise,
-							destroy: async () => {
+							dispose: async () => {
 								cleanupCalled.add('second');
 							},
 						}),
-						tags: [],
 					},
 				],
 			});
@@ -929,5 +877,287 @@ describe('createWorkspace', () => {
 			expect(cleanupCalled.has('first')).toBe(true);
 			expect(cleanupCalled.has('second')).toBe(true);
 		});
+	});
+});
+
+// ============================================================================
+// applyEncryptionKeys()
+// ============================================================================
+
+describe('applyEncryptionKeys', () => {
+	function setupEncryptedWorkspace() {
+		const posts = defineTable(type({ id: 'string', title: 'string', _v: '1' }));
+		const client = createWorkspace(
+			defineWorkspace({ id: 'enc-test', tables: { posts } }),
+		);
+		return { client, key: randomBytes(32) };
+	}
+
+	test('applyEncryptionKeys enables encrypted writes', () => {
+		const { client, key } = setupEncryptedWorkspace();
+		client.applyEncryptionKeys(toEncryptionKeys(key));
+		client.tables.posts.set({ id: '1', title: 'Secret', _v: 1 });
+
+		const result = client.tables.posts.get('1');
+		expect(result.status).toBe('valid');
+		if (result.status === 'valid') {
+			expect(result.row.title).toBe('Secret');
+		}
+	});
+
+	test('de-dup: calling applyEncryptionKeys twice with same key preserves data', () => {
+		const { client, key } = setupEncryptedWorkspace();
+		client.applyEncryptionKeys(toEncryptionKeys(key));
+		client.tables.posts.set({ id: '1', title: 'Secret', _v: 1 });
+
+		// Apply same keys again
+		client.applyEncryptionKeys(toEncryptionKeys(key));
+
+		const result = client.tables.posts.get('1');
+		expect(result.status).toBe('valid');
+		if (result.status === 'valid') {
+			expect(result.row.title).toBe('Secret');
+		}
+	});
+
+	test('key rotation: old data readable after applying new keyring', () => {
+		const posts = defineTable(type({ id: 'string', title: 'string', _v: '1' }));
+		const client = createWorkspace(
+			defineWorkspace({ id: 'rotation-test', tables: { posts } }),
+		);
+
+		const keyV1 = randomBytes(32);
+		const keyV2 = randomBytes(32);
+
+		// Write with key v1
+		client.applyEncryptionKeys([
+			{ version: 1, userKeyBase64: bytesToBase64(keyV1) },
+		]);
+		client.tables.posts.set({ id: '1', title: 'Written with v1', _v: 1 });
+
+		// Rotate to v2 (keyring includes both versions for backward compat)
+		client.applyEncryptionKeys([
+			{ version: 2, userKeyBase64: bytesToBase64(keyV2) },
+			{ version: 1, userKeyBase64: bytesToBase64(keyV1) },
+		]);
+
+		// Old data still readable
+		const result = client.tables.posts.get('1');
+		expect(result.status).toBe('valid');
+		if (result.status === 'valid') {
+			expect(result.row.title).toBe('Written with v1');
+		}
+
+		// New writes work too
+		client.tables.posts.set({ id: '2', title: 'Written with v2', _v: 1 });
+		const result2 = client.tables.posts.get('2');
+		expect(result2.status).toBe('valid');
+		if (result2.status === 'valid') {
+			expect(result2.row.title).toBe('Written with v2');
+		}
+	});
+
+	test('plaintext data readable before keys applied', () => {
+		const { client } = setupEncryptedWorkspace();
+		// Write plaintext before applying keys
+		client.tables.posts.set({ id: '1', title: 'Plaintext', _v: 1 });
+
+		const result = client.tables.posts.get('1');
+		expect(result.status).toBe('valid');
+		if (result.status === 'valid') {
+			expect(result.row.title).toBe('Plaintext');
+		}
+	});
+
+	test('applyEncryptionKeys re-encrypts plaintext entries', () => {
+		const { client, key } = setupEncryptedWorkspace();
+		// Write plaintext first
+		client.tables.posts.set({ id: '1', title: 'Was Plaintext', _v: 1 });
+
+		// Apply keys — should re-encrypt existing plaintext
+		client.applyEncryptionKeys(toEncryptionKeys(key));
+
+		// Data still readable through encrypted wrapper
+		const result = client.tables.posts.get('1');
+		expect(result.status).toBe('valid');
+		if (result.status === 'valid') {
+			expect(result.row.title).toBe('Was Plaintext');
+		}
+	});
+
+	test('applyEncryptionKeys is synchronous', () => {
+		const { client, key } = setupEncryptedWorkspace();
+		// Should not return a Promise
+		const result = client.applyEncryptionKeys(toEncryptionKeys(key));
+		expect(result).toBeUndefined();
+	});
+
+	test('same-key dedup: second call with identical keys is a no-op', () => {
+		const { client, key } = setupEncryptedWorkspace();
+		const keys = toEncryptionKeys(key);
+		client.applyEncryptionKeys(keys);
+		client.tables.posts.set({ id: '1', title: 'Before dedup', _v: 1 });
+
+		// Second call with identical keys should be a no-op (dedup)
+		client.applyEncryptionKeys(keys);
+
+		// Data should still be readable (dedup didn't break anything)
+		const result = client.tables.posts.get('1');
+		expect(result.status).toBe('valid');
+		if (result.status === 'valid') {
+			expect(result.row.title).toBe('Before dedup');
+		}
+	});
+
+	test('same-key dedup: different order is still recognized as same keys', () => {
+		const { client } = setupEncryptedWorkspace();
+		const keyV1 = randomBytes(32);
+		const keyV2 = randomBytes(32);
+		const keysAsc: EncryptionKeys = [
+			{ version: 1, userKeyBase64: bytesToBase64(keyV1) },
+			{ version: 2, userKeyBase64: bytesToBase64(keyV2) },
+		];
+		const keysDesc: EncryptionKeys = [
+			{ version: 2, userKeyBase64: bytesToBase64(keyV2) },
+			{ version: 1, userKeyBase64: bytesToBase64(keyV1) },
+		];
+
+		client.applyEncryptionKeys(keysAsc);
+		client.tables.posts.set({ id: '1', title: 'Order test', _v: 1 });
+
+		// Reversed order should dedup (same fingerprint after sorting)
+		client.applyEncryptionKeys(keysDesc);
+
+		const result = client.tables.posts.get('1');
+		expect(result.status).toBe('valid');
+		if (result.status === 'valid') {
+			expect(result.row.title).toBe('Order test');
+		}
+	});
+});
+
+describe('withActions (non-terminal)', () => {
+	function actionsSetup() {
+		const postsTable = defineTable(
+			type({ id: 'string', title: 'string', _v: '1' }),
+		);
+		const definition = defineWorkspace({
+			id: 'actions-test',
+			tables: { posts: postsTable },
+			kv: {},
+		});
+		return { definition };
+	}
+
+	test('withActions before withExtension — actions available on final builder', () => {
+		const { definition } = actionsSetup();
+
+		const ws = createWorkspace(definition)
+			.withActions(({ tables }) => ({
+				getAllPosts: defineQuery({
+					handler: () => tables.posts.getAllValid(),
+				}),
+			}))
+			.withExtension('dummy', ({ ydoc }) => ({
+				testValue: 42,
+			}));
+
+		// Actions survive the extension chain
+		expect(ws.actions).toBeDefined();
+		expect(ws.actions.getAllPosts).toBeDefined();
+		expect(ws.actions.getAllPosts.type).toBe('query');
+
+		// Extension also exists
+		expect(ws.extensions.dummy.testValue).toBe(42);
+	});
+
+	test('multiple withActions calls merge action trees', () => {
+		const { definition } = actionsSetup();
+
+		const ws = createWorkspace(definition)
+			.withActions(({ tables }) => ({
+				getAll: defineQuery({ handler: () => tables.posts.getAllValid() }),
+			}))
+			.withActions(({ tables }) => ({
+				count: defineQuery({ handler: () => tables.posts.count() }),
+			}));
+
+		expect(ws.actions.getAll).toBeDefined();
+		expect(ws.actions.count).toBeDefined();
+		expect(ws.actions.getAll.type).toBe('query');
+		expect(ws.actions.count.type).toBe('query');
+	});
+
+	test('withActions factory receives client WITHOUT extensions when called before extensions', () => {
+		const { definition } = actionsSetup();
+		let capturedExtensions: Record<string, unknown> = {};
+
+		const ws = createWorkspace(definition)
+			.withActions((client) => {
+				capturedExtensions = client.extensions;
+				return {
+					noop: defineQuery({ handler: () => {} }),
+				};
+			})
+			.withExtension('dummy', ({ ydoc }) => ({ flag: true }));
+
+		// At the time withActions was called, no extensions existed
+		expect(Object.keys(capturedExtensions)).toHaveLength(0);
+
+		// But extensions are available on the final builder
+		expect(ws.extensions.dummy.flag).toBe(true);
+	});
+
+	test('withActions factory receives client WITH extensions when called after extensions', () => {
+		const { definition } = actionsSetup();
+		let capturedExtensions: Record<string, unknown> = {};
+
+		const ws = createWorkspace(definition)
+			.withExtension('dummy', ({ ydoc }) => ({ flag: true }))
+			.withActions((client) => {
+				capturedExtensions = client.extensions;
+				return {
+					noop: defineQuery({ handler: () => {} }),
+				};
+			});
+
+		// Extensions were available when withActions was called
+		expect(Object.keys(capturedExtensions)).toContain('dummy');
+	});
+
+	test('actions work correctly — factory closes over live tables', () => {
+		const { definition } = actionsSetup();
+
+		const ws = createWorkspace(definition).withActions(({ tables }) => ({
+			getAll: defineQuery({
+				handler: () => tables.posts.getAllValid(),
+			}),
+			create: defineMutation({
+				handler: () => {
+					tables.posts.set({ id: '1', title: 'Hello', _v: 1 });
+				},
+			}),
+		}));
+
+		// Mutation writes to tables
+		ws.actions.create();
+		const result = ws.actions.getAll();
+		expect(result).toHaveLength(1);
+		expect(result[0].title).toBe('Hello');
+	});
+
+	test('withActions after withExtension still allows more withExtension calls', () => {
+		const { definition } = actionsSetup();
+
+		const ws = createWorkspace(definition)
+			.withExtension('ext1', ({ ydoc }) => ({ a: 1 }))
+			.withActions(() => ({
+				noop: defineQuery({ handler: () => {} }),
+			}))
+			.withExtension('ext2', ({ ydoc }) => ({ b: 2 }));
+
+		expect(ws.extensions.ext1.a).toBe(1);
+		expect(ws.extensions.ext2.b).toBe(2);
+		expect(ws.actions.noop).toBeDefined();
 	});
 });

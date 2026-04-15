@@ -10,7 +10,7 @@
 	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
 	import { createQuery } from '@tanstack/svelte-query';
 	import { rpc } from '$lib/query';
-	import { settings } from '$lib/state/settings.svelte';
+	import { deviceConfig } from '$lib/state/device-config.svelte';
 	import { vadRecorder } from '$lib/state/vad-recorder.svelte';
 
 	const combobox = useCombobox();
@@ -18,7 +18,7 @@
 	// VAD always uses navigator device ID
 	const settingKey = 'recording.navigator.deviceId';
 
-	const selectedDeviceId = $derived(settings.value[settingKey]);
+	const selectedDeviceId = $derived(deviceConfig.get(settingKey));
 
 	const isDeviceSelected = $derived(!!selectedDeviceId);
 
@@ -78,7 +78,7 @@
 							value={device.id}
 							onSelect={() => {
 								const currentDeviceId = selectedDeviceId;
-								settings.updateKey(
+						deviceConfig.set(
 									settingKey,
 									currentDeviceId === device.id ? null : device.id,
 								);

@@ -2,10 +2,12 @@
  * defineTable() for creating versioned table definitions.
  *
  * All table schemas must include `_v: number` as a discriminant field.
+ * The underscore prefix signals framework metadata—see `BaseRow` in
+ * `types.ts` for the full rationale.
+ *
  * Use shorthand for single-version tables, variadic args for multiple versions with migrations.
  *
  * Optionally chain `.withDocument()` to declare named document configs on the table.
- *
  * @example
  * ```typescript
  * import { defineTable } from '@epicenter/workspace';
@@ -44,9 +46,10 @@
  */
 
 import type { StandardSchemaV1 } from '@standard-schema/spec';
-import type { CombinedStandardSchema } from '../shared/standard-schema/types.js';
+import type { CombinedStandardSchema } from '../shared/standard-schema.js';
 import { createUnionSchema } from './schema-union.js';
 import type {
+	AwarenessDefinitions,
 	BaseRow,
 	ClaimedDocumentColumns,
 	DocumentConfig,
@@ -79,7 +82,7 @@ type TableDefinitionWithDocBuilder<
 	 * a GUID column already bound to a prior document (prevents storage collisions).
 	 *
 	 * @param name - The document name (becomes `client.documents.{tableName}[name]`)
-	 * @param config - `guid` (string column), `onUpdate` (callback returning partial row), and optional `tags`
+	 * @param config - `guid` (string column) and `onUpdate` (callback returning partial row)
 	 *
 	 * @example
 	 * ```typescript
@@ -111,9 +114,7 @@ type TableDefinitionWithDocBuilder<
 			StringKeysOf<StandardSchemaV1.InferOutput<LastSchema<TVersions>>>,
 			ClaimedDocumentColumns<TDocuments>
 		>,
-		// Defaults to `never` when no tags are passed. This flows into
-		// DocumentConfig<..., never>, making `tags: readonly never[]` (only accepts `[]`).
-		const TTags extends string = never,
+		const TAwarenessDefs extends AwarenessDefinitions = Record<string, never>,
 	>(
 		name: TName,
 		config: {
@@ -121,7 +122,7 @@ type TableDefinitionWithDocBuilder<
 			onUpdate: () => Partial<
 				Omit<StandardSchemaV1.InferOutput<LastSchema<TVersions>>, 'id'>
 			>;
-			tags?: readonly TTags[];
+			awareness?: TAwarenessDefs;
 		},
 	): TableDefinitionWithDocBuilder<
 		TVersions,
@@ -131,7 +132,7 @@ type TableDefinitionWithDocBuilder<
 				DocumentConfig<
 					TGuid,
 					StandardSchemaV1.InferOutput<LastSchema<TVersions>>,
-					TTags
+					TAwarenessDefs
 				>
 			>
 	>;
@@ -150,7 +151,7 @@ type TableDefinitionWithDocBuilder<
  */
 export function defineTable<TSchema extends CombinedStandardSchema<BaseRow>>(
 	schema: TSchema,
-): TableDefinitionWithDocBuilder<[TSchema], {}>;
+): TableDefinitionWithDocBuilder<[TSchema], Record<string, never>>;
 
 /**
  * Creates a table definition for multiple schema versions with migrations.
@@ -258,7 +259,7 @@ function attachDocumentBuilder<
 					[name]: {
 						guid: config.guid,
 						onUpdate: config.onUpdate,
-						tags: config.tags ?? [],
+						awareness: config.awareness,
 					},
 				},
 			});

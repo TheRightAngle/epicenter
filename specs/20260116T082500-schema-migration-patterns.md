@@ -1026,7 +1026,7 @@ This hybrid approach minimizes coordination overhead while maintaining data inte
 
 ## References
 
-- `specs/20260108T133200-collaborative-workspace-config-ydoc-handoff.md` - Y.Doc architecture
+- `specs/20260108T133200-collaborative-workspace-config-ydoc.handoff.md` - Y.Doc architecture
 - `specs/20260111T141856-live-table-definitions.md` - Live definition access
 - `specs/20260106T000000-json-serializable-rows.md` - Row storage format
 - `packages/epicenter/src/core/docs/head-doc.ts` - Epoch implementation

@@ -1,7 +1,9 @@
+> **Status: Superseded** by `20260313T063000-workspace-architecture-decisions.md`. Workspace module loading is now defined in the main architecture spec.
+
 # Epicenter Workspace Module Redesign
 
 **Date**: 2026-02-25
-**Status**: Draft
+**Status**: Superseded
 **Author**: AI-assisted
 **Branch**: main
 

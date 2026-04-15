@@ -7,12 +7,13 @@
 		ref = $bindable(null),
 		class: className,
 		value = $bindable(''),
+		children,
 		...restProps
 	}: CommandPrimitive.InputProps = $props();
 </script>
 
 <div
-	class="flex h-9 items-center gap-2 border-b pe-8 ps-3"
+	class={cn('flex h-9 items-center gap-2 border-b ps-3', children ? 'pe-2' : 'pe-8')}
 	data-slot="command-input-wrapper"
 >
 	<SearchIcon class="size-4 shrink-0 opacity-50" />
@@ -26,4 +27,7 @@
 		{...restProps}
 		bind:value
 	/>
+	{#if children}
+		{@render children()}
+	{/if}
 </div>

@@ -86,6 +86,43 @@ export function createPersistedState({ key, schema, onParseError }) {
 
 `storage` and `focus` events on `window` for a singleton that never unmounts. The listeners are intentionally immortal because the thing they serve is immortal.
 
+## It's not just DOM events—subscription APIs work the same way
+
+The pattern extends beyond `window.addEventListener`. Here's how workspace settings sync Yjs CRDT changes into a reactive SvelteMap:
+
+```typescript
+function createWorkspaceSettings() {
+  const map = new SvelteMap<string, unknown>();
+
+  for (const key of Object.keys(KV_DEFINITIONS) as KvKey[]) {
+    map.set(key, workspace.kv.get(key));
+  }
+
+  // Observer fires on local writes AND remote sync from other devices.
+  // No unsubscribe call. Ever.
+  workspace.kv.observeAll((changes) => {
+    for (const [key, change] of changes) {
+      if (change.type === 'set') {
+        map.set(key, change.value);
+      } else if (change.type === 'delete') {
+        map.set(key, workspace.kv.get(key));
+      }
+    }
+  });
+
+  return {
+    get(key) { return map.get(key); },
+    set(key, value) { workspace.kv.set(key, value); },
+  };
+}
+
+export const settings = createSettings();
+```
+
+`observeAll` returns an unsubscribe function. We throw it away. The observer feeds the SvelteMap, the SvelteMap feeds components, and the whole chain lives exactly as long as the app does. The three patterns—`item.watch()`, `window.addEventListener`, and `kv.observeAll`—are structurally identical: subscribe once, never unsubscribe, let process exit handle teardown.
+
+For a deeper walkthrough of this pattern across different subscription APIs, see [Module-Level Singletons Don't Need removeEventListener](./module-level-singletons-dont-need-remove-event-listener.md).
+
 ## When this breaks: components that mount and unmount
 
 The one scenario where you'd actually leak is calling these functions inside a component that gets created and destroyed during navigation. Each mount adds listeners that never get removed. If you navigated back and forth 50 times, you'd have 50 `storage` listeners all firing and updating a `$state` variable that only the latest component instance reads.

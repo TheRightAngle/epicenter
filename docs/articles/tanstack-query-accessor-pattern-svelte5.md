@@ -1,12 +1,12 @@
 # The TanStack Query Accessor Pattern in Svelte 5
 
-I was building a recording list view in Svelte 5 with TanStack Query for data fetching. Everything worked on the first load, but when I clicked a different recording, the details wouldn't update. The query stayed stuck on the old recording.
+I was building a recording player in Svelte 5 with TanStack Query to fetch audio URLs. Everything worked on the first load, but when I selected a different recording, the audio URL wouldn't update. The query stayed stuck on the old recording's URL.
 
 Here's the code I wrote:
 
 ```typescript
 const recordingId = $state('abc-123');
-const query = createQuery(rpc.recordings.get(recordingId).options);
+const query = createQuery(rpc.audio.getPlaybackUrl(recordingId).options);
 ```
 
 This looks right. `recordingId` is reactive. TanStack Query should pick up the change when it updates. But it doesn't.
@@ -17,7 +17,7 @@ Wrap reactive values in accessor functions:
 
 ```typescript
 const recordingId = $state('abc-123');
-const query = createQuery(rpc.recordings.get(() => recordingId).options);
+const query = createQuery(rpc.audio.getPlaybackUrl(() => recordingId).options);
 ```
 
 That `() => recordingId` is the key. One character difference, completely different behavior.
@@ -26,7 +26,7 @@ That `() => recordingId` is the key. One character difference, completely differ
 
 Svelte 5's reactivity is based on signals and getters. When you write `recordingId` in your code, Svelte's compiler turns that into a getter call that tracks dependencies. But when you pass `recordingId` directly to a function, you're passing the current value. A snapshot. TanStack Query doesn't know it's reactive.
 
-When you pass `() => recordingId`, you're giving Query a function it can call. Every time Query calls that function, Svelte can track the dependency. Query can subscribe to changes. Now when `recordingId` updates, Query knows to re-run.
+When you pass `() => recordingId`, you're giving Query a function it can call. Every time Query calls that function, Svelte can track the dependency. Query can subscribe to changes. Now when `recordingId` updates, Query knows to refetch the audio URL.
 
 Here's the thing that took me too long to realize: Svelte's reactivity tracking happens at the call site. If you don't give TanStack Query a way to call into your reactive scope, it can't participate in reactivity tracking.
 
@@ -36,26 +36,26 @@ If the value can change during the component's lifetime, use an accessor:
 
 ```typescript
 // Props: wrap in accessor
-const query = createQuery(rpc.recordings.get(() => props.recordingId).options);
+const query = createQuery(rpc.audio.getPlaybackUrl(() => props.recordingId).options);
 
 // $state variables: wrap in accessor
 const recordingId = $state('abc-123');
-const query = createQuery(rpc.recordings.get(() => recordingId).options);
+const query = createQuery(rpc.audio.getPlaybackUrl(() => recordingId).options);
 
 // $derived values: wrap in accessor
 const computedId = $derived(props.userId + '-' + props.timestamp);
-const query = createQuery(rpc.recordings.get(() => computedId).options);
+const query = createQuery(rpc.audio.getPlaybackUrl(() => computedId).options);
 ```
 
 If the value will never change, pass it directly:
 
 ```typescript
 // String literals: pass directly
-const query = createQuery(rpc.recordings.get('static-id').options);
+const query = createQuery(rpc.audio.getPlaybackUrl('static-id').options);
 
 // Constants: pass directly
 const RECORDING_ID = 'abc-123';
-const query = createQuery(rpc.recordings.get(RECORDING_ID).options);
+const query = createQuery(rpc.audio.getPlaybackUrl(RECORDING_ID).options);
 ```
 
 ## Common Mistakes
@@ -70,18 +70,18 @@ createQuery(rpc.method.options(() => param));
 createQuery(rpc.method(() => param).options);
 ```
 
-The accessor goes in the method call, not after `.options`. That's because the method (like `rpc.recordings.get`) returns an object that has an `.options` property. You're calling the method with reactive parameters, then accessing its options.
+The accessor goes in the method call, not after `.options`. That's because the method (like `rpc.audio.getPlaybackUrl`) returns an object that has an `.options` property. You're calling the method with reactive parameters, then accessing its options.
 
 Another common mistake is forgetting the accessor for reactive values:
 
 ```typescript
 // Wrong: passing reactive value directly
 const recordingId = $state('abc-123');
-createQuery(rpc.recordings.get(recordingId).options);
+createQuery(rpc.audio.getPlaybackUrl(recordingId).options);
 
 // Right: wrapping in accessor
 const recordingId = $state('abc-123');
-createQuery(rpc.recordings.get(() => recordingId).options);
+createQuery(rpc.audio.getPlaybackUrl(() => recordingId).options);
 ```
 
 I made this mistake a lot early on because it looks so similar. The broken version even works on the first render. It only breaks when the value changes, which makes it harder to catch.

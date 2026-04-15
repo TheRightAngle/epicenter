@@ -657,7 +657,7 @@ export function createTableHelper({ ydoc, tableDefinition }) {
 
     update(partialRow) {
       if (!rows.has(partialRow.id)) {
-        return { status: 'not_found_locally' };
+        return { status: 'not_found' };
       }
       cells.batch((tx) => {
         for (const [columnId, value] of Object.entries(partialRow)) {
@@ -676,7 +676,7 @@ export function createTableHelper({ ydoc, tableDefinition }) {
     delete(id) {
       return rows.delete(id)
         ? { status: 'deleted' }
-        : { status: 'not_found_locally' };
+        : { status: 'not_found' };
     },
 
     observe(callback) {

@@ -433,8 +433,8 @@ type TableHelper<TRow extends { id: string }> = {
 	// DELETE
 	// ════════════════════════════════════════════════════════════════
 
-	/** Delete a row by ID. */
-	delete(id: string): DeleteResult;
+	/** Delete a row by ID. Fire-and-forget — no-op if missing. */
+	delete(id: string): void;
 
 	/** Delete all rows (table structure preserved). */
 	clear(): void;
@@ -1120,8 +1120,7 @@ type RowResult<TRow> = ValidRowResult<TRow> | InvalidRowResult;
 
 type GetResult<TRow> = RowResult<TRow> | NotFoundResult;
 
-// Table write results
-type DeleteResult = { status: 'deleted' } | { status: 'not_found_locally' };
+// delete() returns void — fire-and-forget, matches Y.Map.delete() semantics
 
 // KV results
 type KvGetResult<TValue> =

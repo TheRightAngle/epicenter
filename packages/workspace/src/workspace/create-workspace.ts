@@ -1,5 +1,5 @@
 /**
- * createWorkspace() - Instantiate a workspace client.
+ * createWorkspace() — Instantiate a workspace client.
  *
  * Returns a client that IS usable directly AND has `.withExtension()` for chaining.
  *
@@ -11,6 +11,20 @@
  *
  * Actions use a single `.withActions(factory)` because they don't build on each other,
  * are always defined by the app author, and benefit from being declared in one place.
+ *
+ * ## Encryption
+ *
+ * All stores are always wrapped with `createEncryptedYkvLww()` (passthrough when no
+ * key is set). After the workspace is ready, call `applyEncryptionKeys()` to activate
+ * encryption on all stores. This is synchronous — HKDF and XChaCha20 are both sync.
+ *
+ * ```
+ * workspace.applyEncryptionKeys(session.encryptionKeys);
+ * workspace.extensions.sync.connect();
+ * ```
+ *
+ * Once encryption has been activated, the stores permanently refuse plaintext writes.
+ * The only reset path is `clearLocalData()`.
  *
  * @example
  * ```typescript
@@ -36,50 +50,46 @@
  * ```
  */
 
+import { Awareness } from 'y-protocols/awareness';
 import * as Y from 'yjs';
 import type { Actions } from '../shared/actions.js';
+import { base64ToBytes, deriveWorkspaceKey } from '../shared/crypto/index.js';
+import type { YKeyValueLwwEntry } from '../shared/y-keyvalue/y-keyvalue-lww.js';
+import {
+	createEncryptedYkvLww,
+	type EncryptedYKeyValueLww,
+} from '../shared/y-keyvalue/y-keyvalue-lww-encrypted.js';
 import { createAwareness } from './create-awareness.js';
 import { createDocuments } from './create-document.js';
 import { createKv } from './create-kv.js';
-import { createTables } from './create-tables.js';
+import { createTable } from './create-table.js';
 import {
-	type DocumentContext,
+	type EncryptionKeys,
+	encryptionKeysFingerprint,
+} from './encryption-key.js';
+import {
 	defineExtension,
+	disposeLifo,
 	type MaybePromise,
+	startDisposeLifo,
 } from './lifecycle.js';
 import type {
 	AwarenessDefinitions,
 	BaseRow,
 	DocumentConfig,
+	DocumentContext,
 	DocumentExtensionRegistration,
 	Documents,
 	DocumentsHelper,
 	ExtensionContext,
 	KvDefinitions,
 	TableDefinitions,
+	TablesHelper,
 	WorkspaceClient,
 	WorkspaceClientBuilder,
-	WorkspaceClientWithActions,
 	WorkspaceDefinition,
 } from './types.js';
-
-/**
- * Run cleanups in LIFO order (last registered = first destroyed).
- * Continues on error and returns accumulated errors.
- */
-async function destroyLifo(
-	cleanups: (() => MaybePromise<void>)[],
-): Promise<unknown[]> {
-	const errors: unknown[] = [];
-	for (let i = cleanups.length - 1; i >= 0; i--) {
-		try {
-			await cleanups[i]?.();
-		} catch (err) {
-			errors.push(err);
-		}
-	}
-	return errors;
-}
+import { KV_KEY, TableKey } from './ydoc-keys.js';
 
 /**
  * Create a workspace client with chainable extension support.
@@ -117,14 +127,45 @@ export function createWorkspace<
 	TAwarenessDefinitions,
 	Record<string, never>
 > {
+	// ── Data doc ────────────────────────────────────────────────────────
 	const ydoc = new Y.Doc({ guid: id });
+
 	const tableDefs = (tablesDef ?? {}) as TTableDefinitions;
 	const kvDefs = (kvDef ?? {}) as TKvDefinitions;
 	const awarenessDefs = (awarenessDef ?? {}) as TAwarenessDefinitions;
 
-	const tables = createTables(ydoc, tableDefs);
-	const kv = createKv(ydoc, kvDefs);
-	const awareness = createAwareness(ydoc, awarenessDefs);
+	// ── Tables ───────────────────────────────────────────────────────────────
+	const tableEntries = Object.entries(tableDefs).map(([name, definition]) => {
+		const yarray = ydoc.getArray<YKeyValueLwwEntry<unknown>>(TableKey(name));
+		const store = createEncryptedYkvLww(yarray);
+		const helper = createTable(store, definition);
+		return { name, store, helper };
+	});
+
+	const tables = Object.fromEntries(
+		tableEntries.map(({ name, helper }) => [name, helper]),
+	) as TablesHelper<TTableDefinitions>;
+
+	// ── KV ──────────────────────────────────────────────────────────────────
+	const kvYarray = ydoc.getArray<YKeyValueLwwEntry<unknown>>(KV_KEY);
+	const kvStore = createEncryptedYkvLww(kvYarray);
+	const kvHelper = createKv(kvStore, kvDefs);
+
+	// ── Encrypted stores (all table stores + KV store) ─────────────────────
+	// The workspace owns this list so it can coordinate activateEncryption
+	// across all stores simultaneously via applyEncryptionKeys().
+	const encryptedStores: readonly EncryptedYKeyValueLww<unknown>[] = [
+		...tableEntries.map(({ store }) => store),
+		kvStore,
+	];
+
+	// Fingerprint of the last-applied encryption keys for same-key dedup.
+	// Token refreshes fire onLogin repeatedly with identical keys — this
+	// skips the expensive base64 decode → HKDF → per-store scan path.
+	let lastKeysFingerprint: string | undefined;
+
+	const rawAwareness = new Awareness(ydoc);
+	const awareness = createAwareness(rawAwareness, awarenessDefs);
 	const definitions = {
 		tables: tableDefs,
 		kv: kvDefs,
@@ -133,11 +174,19 @@ export function createWorkspace<
 
 	/**
 	 * Immutable builder state passed through the builder chain.
+	 *
 	 * Each `withExtension` creates new arrays instead of mutating shared state,
-	 * which fixes builder branching isolation.
+	 * which fixes builder branching isolation (two branches from the same base
+	 * builder get independent extension sets).
+	 *
+	 * Three arrays track three distinct lifecycle moments:
+	 * - `extensionCleanups` — `dispose()` shutdown: close connections, stop observers (irreversible)
+	 * - `clearLocalDataCallbacks` — `workspace.clearLocalData()` data wipe: delete IndexedDB (reversible, repeatable)
+	 * - `whenReadyPromises` — construction: composite `whenReady` waits for all extensions to init
 	 */
 	type BuilderState = {
 		extensionCleanups: (() => MaybePromise<void>)[];
+		clearLocalDataCallbacks: (() => MaybePromise<void>)[];
 		whenReadyPromises: Promise<unknown>[];
 	};
 
@@ -166,20 +215,19 @@ export function createWorkspace<
 
 		const tableDocumentsNamespace: Record<string, Documents<BaseRow>> = {};
 
-		for (const [docName, _documentConfig] of Object.entries(
-			tableDef.documents,
-		)) {
-			const documentConfig = _documentConfig as DocumentConfig;
-			const docTags: readonly string[] = documentConfig.tags ?? [];
+		for (const [docName, rawConfig] of Object.entries(tableDef.documents)) {
+			const { guid, onUpdate, awareness } = rawConfig as DocumentConfig;
 
 			const documents = createDocuments({
 				id,
-				guidKey: documentConfig.guid as keyof BaseRow & string,
-				onUpdate: documentConfig.onUpdate,
+				tableName,
+				documentName: docName,
+				guidKey: guid as keyof BaseRow & string,
+				onUpdate,
 				tableHelper,
 				ydoc,
 				documentExtensions: documentExtensionRegistrations,
-				documentTags: docTags,
+				awarenessDefinitions: awareness,
 			});
 
 			tableDocumentsNamespace[docName] = documents;
@@ -192,27 +240,44 @@ export function createWorkspace<
 	const typedDocuments =
 		documentsNamespace as unknown as DocumentsHelper<TTableDefinitions>;
 
-	function buildClient<TExtensions extends Record<string, unknown>>(
-		extensions: TExtensions,
-		state: BuilderState,
-	): WorkspaceClientBuilder<
+	/**
+	 * Build a workspace client with the given extensions and lifecycle state.
+	 *
+	 * Called once at the bottom of `createWorkspace` (empty state), then once per
+	 * `withExtension`/`withWorkspaceExtension` call (accumulated state). Each call
+	 * returns a fresh builder object — the client object itself is shared across all
+	 * builders (same `ydoc`, `tables`, `kv`), but the builder methods and extensions
+	 * map are new.
+	 */
+	function buildClient<TExtensions extends Record<string, unknown>>({
+		extensions,
+		state,
+		actions,
+	}: {
+		extensions: TExtensions;
+		state: BuilderState;
+		actions: Actions;
+	}): WorkspaceClientBuilder<
 		TId,
 		TTableDefinitions,
 		TKvDefinitions,
 		TAwarenessDefinitions,
 		TExtensions
 	> {
-		const destroy = async (): Promise<void> => {
+		const dispose = async (): Promise<void> => {
 			// Close all documents first (before extensions they depend on)
 			for (const cleanup of documentCleanups) {
 				await cleanup();
 			}
-			const errors = await destroyLifo(state.extensionCleanups);
+			const errors = await disposeLifo(state.extensionCleanups);
 			awareness.raw.destroy();
 			ydoc.destroy();
 
 			if (errors.length > 0) {
-				throw new Error(`Extension cleanup errors: ${errors.length}`);
+				throw new AggregateError(
+					errors,
+					`${errors.length} extension(s) failed during dispose`,
+				);
 			}
 		};
 
@@ -220,7 +285,7 @@ export function createWorkspace<
 			.then(() => {})
 			.catch(async (err) => {
 				// If any extension's whenReady rejects, clean up everything
-				await destroy().catch(() => {}); // idempotent
+				await dispose().catch(() => {}); // idempotent
 				throw err;
 			});
 
@@ -230,21 +295,89 @@ export function createWorkspace<
 			definitions,
 			tables,
 			documents: typedDocuments,
-			kv,
+			kv: kvHelper,
 			awareness,
 			// Each extension entry is the exports object stored by reference.
 			extensions,
+			actions,
 			batch(fn: () => void): void {
 				ydoc.transact(fn);
 			},
+			/**
+			 * Apply a binary Y.js update to the underlying document.
+			 *
+			 * Use this to hydrate the workspace from a persisted snapshot (e.g. a `.yjs`
+			 * file on disk) without exposing the raw Y.Doc to consumer code.
+			 *
+			 * @param update - A Uint8Array produced by `Y.encodeStateAsUpdate()` or equivalent
+			 */
+			loadSnapshot(update: Uint8Array): void {
+				Y.applyUpdate(ydoc, update);
+			},
+			/**
+			 * Get the encoded size of the current data doc in bytes.
+			 *
+			 * Useful for monitoring doc growth. This is the total
+			 * CRDT state including history, not just the active data.
+			 */
+			encodedSize(): number {
+				return Y.encodeStateAsUpdate(ydoc).byteLength;
+			},
+			/**
+			 * Apply encryption keys to all stores.
+			 *
+			 * Decodes base64 user keys, derives per-workspace keys via HKDF-SHA256,
+			 * and activates encryption on all stores. Once activated, stores permanently
+			 * refuse plaintext writes — the only reset path is `clearLocalData()`.
+			 *
+			 * This method is synchronous — HKDF via @noble/hashes and XChaCha20 via
+			 * @noble/ciphers are both sync. Call it after persistence is ready but
+			 * before connecting sync.
+			 *
+			 * @param keys - Non-empty array of versioned user keys from the auth session
+			 *
+			 * @example
+			 * ```typescript
+			 * await workspace.whenReady;
+			 * workspace.applyEncryptionKeys(session.encryptionKeys);
+			 * workspace.extensions.sync.connect();
+			 * ```
+			 */
+			applyEncryptionKeys(keys: EncryptionKeys): void {
+				const fingerprint = encryptionKeysFingerprint(keys);
+				if (fingerprint === lastKeysFingerprint) return;
+				lastKeysFingerprint = fingerprint;
+
+				const keyring = new Map<number, Uint8Array>();
+				for (const { version, userKeyBase64 } of keys) {
+					const userKey = base64ToBytes(userKeyBase64);
+					keyring.set(version, deriveWorkspaceKey(userKey, id));
+				}
+				for (const store of encryptedStores) {
+					store.activateEncryption(keyring);
+				}
+			},
+			async clearLocalData(): Promise<void> {
+				for (let i = state.clearLocalDataCallbacks.length - 1; i >= 0; i--) {
+					try {
+						await state.clearLocalDataCallbacks[i]?.();
+					} catch (err) {
+						console.error('Extension clearLocalData error:', err);
+					}
+				}
+			},
 			whenReady,
-			destroy,
-			[Symbol.asyncDispose]: destroy,
+			dispose,
+			[Symbol.asyncDispose]: dispose,
 		};
 
-		// Workspace extension logic — shared by withExtension and withWorkspaceExtension.
-		// Extracted to avoid duplication; both methods apply the factory to the workspace
-		// Y.Doc, the only difference is whether withExtension also registers for documents.
+		/**
+		 * Apply an extension factory to the workspace Y.Doc.
+		 *
+		 * Shared by `withExtension` and `withWorkspaceExtension` — the only
+		 * difference is whether `withExtension` also registers the factory for
+		 * document Y.Docs (fired lazily at `documents.open()` time).
+		 */
 		function applyWorkspaceExtension<
 			TKey extends string,
 			TExports extends Record<string, unknown>,
@@ -260,12 +393,13 @@ export function createWorkspace<
 				>,
 			) => TExports & {
 				whenReady?: Promise<unknown>;
-				destroy?: () => MaybePromise<void>;
+				dispose?: () => MaybePromise<void>;
+				clearLocalData?: () => MaybePromise<void>;
 			},
 		) {
 			const {
-				destroy: _destroy,
-				[Symbol.asyncDispose]: _dispose,
+				dispose: _dispose,
+				[Symbol.asyncDispose]: _asyncDispose,
 				whenReady: _whenReady,
 				...clientContext
 			} = client;
@@ -281,31 +415,27 @@ export function createWorkspace<
 				const raw = factory(ctx);
 
 				// Void return means "not installed" — skip registration
-				if (!raw) return buildClient(extensions, state);
+				if (!raw) return buildClient({ extensions, state, actions });
 
 				const resolved = defineExtension(raw);
 
-				return buildClient(
-					{
+				return buildClient({
+					extensions: {
 						...extensions,
 						[key]: resolved,
 					} as TExtensions & Record<TKey, TExports>,
-					{
-						extensionCleanups: [...state.extensionCleanups, resolved.destroy],
+					state: {
+						extensionCleanups: [...state.extensionCleanups, resolved.dispose],
+						clearLocalDataCallbacks: [
+							...state.clearLocalDataCallbacks,
+							...(resolved.clearLocalData ? [resolved.clearLocalData] : []),
+						],
 						whenReadyPromises: [...state.whenReadyPromises, resolved.whenReady],
 					},
-				);
-			} catch (err) {
-				// Fire-and-forget: withExtension is sync so we can't await
-				destroyLifo(state.extensionCleanups).then((errors) => {
-					if (errors.length > 0) {
-						console.error(
-							'Extension cleanup errors during factory failure:',
-							errors,
-						);
-					}
+					actions,
 				});
-
+			} catch (err) {
+				startDisposeLifo(state.extensionCleanups);
 				throw err;
 			}
 		}
@@ -319,27 +449,23 @@ export function createWorkspace<
 				TExports extends Record<string, unknown>,
 			>(
 				key: TKey,
-				factory: (
-					context: ExtensionContext<
-						TId,
-						TTableDefinitions,
-						TKvDefinitions,
-						TAwarenessDefinitions,
-						TExtensions
-					>,
-				) => TExports & {
+				factory: (context: {
+					ydoc: Y.Doc;
+					awareness: { raw: Awareness };
+					whenReady: Promise<void>;
+				}) => TExports & {
 					whenReady?: Promise<unknown>;
-					destroy?: () => MaybePromise<void>;
+					dispose?: () => MaybePromise<void>;
+					clearLocalData?: () => MaybePromise<void>;
 				},
 			) {
-				// Register for document Y.Docs (fires lazily at documents.open() time)
+				// Registers for both workspace and document scopes.
+				// The factory only receives SharedExtensionContext (ydoc + awareness + whenReady),
+				// which is a structural subset of both ExtensionContext and DocumentContext.
 				documentExtensionRegistrations.push({
 					key,
-					factory:
-						factory as unknown as DocumentExtensionRegistration['factory'],
-					tags: [],
+					factory,
 				});
-				// Register for workspace Y.Doc (fires now, synchronously)
 				return applyWorkspaceExtension(key, factory);
 			},
 
@@ -358,7 +484,8 @@ export function createWorkspace<
 					>,
 				) => TExports & {
 					whenReady?: Promise<unknown>;
-					destroy?: () => MaybePromise<void>;
+					dispose?: () => MaybePromise<void>;
+					clearLocalData?: () => MaybePromise<void>;
 				},
 			) {
 				return applyWorkspaceExtension(key, factory);
@@ -369,20 +496,19 @@ export function createWorkspace<
 				factory: (context: DocumentContext) =>
 					| (Record<string, unknown> & {
 							whenReady?: Promise<unknown>;
-							destroy?: () => MaybePromise<void>;
+							dispose?: () => MaybePromise<void>;
+							clearLocalData?: () => MaybePromise<void>;
 					  })
 					| void,
-				options?: { tags?: string[] },
 			) {
 				documentExtensionRegistrations.push({
 					key,
 					factory,
-					tags: options?.tags ?? [],
 				});
-				return buildClient(extensions, state);
+				return buildClient({ extensions, state, actions });
 			},
 
-			withActions<TActions extends Actions>(
+			withActions(
 				factory: (
 					client: WorkspaceClient<
 						TId,
@@ -391,20 +517,24 @@ export function createWorkspace<
 						TAwarenessDefinitions,
 						TExtensions
 					>,
-				) => TActions,
+				) => Actions,
 			) {
-				const actions = factory(client);
-				return {
-					...client,
-					actions,
-				} as WorkspaceClientWithActions<
-					TId,
-					TTableDefinitions,
-					TKvDefinitions,
-					TAwarenessDefinitions,
-					TExtensions,
-					TActions
-				>;
+				const newActions = factory(client);
+				const allActions = { ...actions, ...newActions };
+
+				// Wire actions into the sync extension for inbound RPC dispatch.
+				// The sync extension is registered before actions (it needs to connect
+				// first), so we push actions to it after the fact.
+				const sync = (extensions as Record<string, any>).sync;
+				if (typeof sync?.registerActions === 'function') {
+					sync.registerActions(allActions);
+				}
+
+				return buildClient({
+					extensions,
+					state,
+					actions: allActions,
+				});
 			},
 		});
 
@@ -417,10 +547,13 @@ export function createWorkspace<
 		>;
 	}
 
-	return buildClient({} as Record<string, never>, {
-		extensionCleanups: [],
-		whenReadyPromises: [],
+	return buildClient({
+		extensions: {} as Record<string, never>,
+		state: {
+			extensionCleanups: [],
+			clearLocalDataCallbacks: [],
+			whenReadyPromises: [],
+		},
+		actions: {},
 	});
 }
-
-export type { WorkspaceClient, WorkspaceClientBuilder };

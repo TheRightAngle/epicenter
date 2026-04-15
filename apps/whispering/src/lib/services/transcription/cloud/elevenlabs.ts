@@ -1,7 +1,6 @@
 import { ElevenLabsClient } from 'elevenlabs';
 import { type Result, tryAsync } from 'wellcrafted/result';
 import { WhisperingErr, type WhisperingError } from '$lib/result';
-import type { Settings } from '$lib/settings';
 
 export const ElevenlabsTranscriptionServiceLive = {
 	transcribe: async (
@@ -9,7 +8,7 @@ export const ElevenlabsTranscriptionServiceLive = {
 		options: {
 			prompt: string;
 			temperature: string;
-			outputLanguage: Settings['transcription.outputLanguage'];
+			outputLanguage: string;
 			apiKey: string;
 			modelName: string;
 		},

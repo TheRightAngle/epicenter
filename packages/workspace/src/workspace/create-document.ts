@@ -27,6 +27,9 @@
  * const tables = createTables(ydoc, { files: filesTable });
  *
  * const contentDocuments = createDocuments({
+ *   id: 'my-workspace',
+ *   tableName: 'files',
+ *   documentName: 'content',
  *   guidKey: 'id',
  *   onUpdate: () => ({ updatedAt: Date.now() }),
  *   tableHelper: tables.files,
@@ -34,20 +37,28 @@
  * });
  *
  * const handle = await contentDocuments.open(someRow);
- * const text = handle.read();
+ * handle.tableName;    // 'files'
+ * handle.documentName; // 'content'
+ * handle.read();       // read content
  * handle.write('new content');
  * ```
  *
  * @module
  */
 
+import { Awareness } from 'y-protocols/awareness';
 import * as Y from 'yjs';
+import { createTimeline } from '../timeline/timeline.js';
+import { createAwareness } from './create-awareness.js';
 import {
 	defineExtension,
+	disposeLifo,
 	type Extension,
 	type MaybePromise,
+	startDisposeLifo,
 } from './lifecycle.js';
 import type {
+	AwarenessDefinitions,
 	BaseRow,
 	DocumentExtensionRegistration,
 	DocumentHandle,
@@ -57,15 +68,15 @@ import type {
 
 /**
  * Sentinel symbol used as the Y.js transaction origin when the documents manager
- * bumps `updatedAt` on a row. Consumers can check `transaction.origin === DOCUMENTS_ORIGIN`
+ * bumps `updatedAt` on a row. Consumers can check `origin === DOCUMENTS_ORIGIN`
  * to distinguish auto-bumps from user-initiated row changes.
  *
  * @example
  * ```typescript
  * import { DOCUMENTS_ORIGIN } from '@epicenter/workspace';
  *
- * client.tables.files.observe((changedIds, transaction) => {
- *   if (transaction.origin === DOCUMENTS_ORIGIN) {
+ * client.tables.files.observe((changedIds, origin) => {
+ *   if (origin === DOCUMENTS_ORIGIN) {
  *     // This was an auto-bump from a content doc edit
  *     return;
  *   }
@@ -77,59 +88,49 @@ export const DOCUMENTS_ORIGIN = Symbol('documents');
 
 /**
  * Internal entry for an open document.
- * Tracks the Y.Doc, resolved extensions (with required whenReady/destroy),
+ * Tracks the Y.Doc, resolved extensions (with required whenReady/dispose),
  * the updatedAt observer teardown, and the composite whenReady promise.
  */
-type DocEntry = {
+type DocEntry<
+	TDocExtensions extends Record<string, unknown>,
+	TAwarenessDefinitions extends AwarenessDefinitions,
+> = {
 	ydoc: Y.Doc;
 	// biome-ignore lint/suspicious/noExplicitAny: runtime storage uses wide type
 	extensions: Record<string, Extension<any>>;
 	unobserve: () => void;
-	whenReady: Promise<DocumentHandle>;
+	whenReady: Promise<DocumentHandle<TDocExtensions, TAwarenessDefinitions>>;
 };
-
-/**
- * Create a lightweight handle wrapping an open Y.Doc and its resolved extensions.
- *
- * Handles are cheap (4 properties). The Y.Doc underneath is the expensive
- * shared resource. Calling `open()` twice returns fresh handles backed
- * by the same cached Y.Doc.
- *
- * The `exports` property on the handle surfaces the resolved extensions map
- * (each entry is `Extension<T>` with `whenReady`/`destroy` alongside custom exports).
- */
-function makeHandle(
-	ydoc: Y.Doc,
-	// biome-ignore lint/suspicious/noExplicitAny: runtime storage uses wide type
-	extensions: Record<string, Extension<any>>,
-): DocumentHandle {
-	return {
-		ydoc,
-		exports: extensions,
-		read() {
-			return ydoc.getText('content').toString();
-		},
-		write(text: string) {
-			const ytext = ydoc.getText('content');
-			ydoc.transact(() => {
-				ytext.delete(0, ytext.length);
-				ytext.insert(0, text);
-			});
-		},
-	};
-}
 
 /**
  * Configuration for `createDocuments()`.
  *
  * @typeParam TRow - The row type of the bound table
  */
-export type CreateDocumentsConfig<TRow extends BaseRow> = {
-	/** The workspace identifier. Passed through to `DocumentContext.id`. */
-	id?: string;
+export type CreateDocumentsConfig<
+	TRow extends BaseRow,
+	TAwarenessDefinitions extends AwarenessDefinitions = Record<string, never>,
+> = {
+	/**
+	 * The workspace identifier. Passed through to `DocumentContext.id`.
+	 *
+	 * Extensions use this for persistence paths, sync room names, and other
+	 * workspace-scoped identifiers. An empty string may cause
+	 * collisions or silent failures in extensions.
+	 */
+	id: string;
+	/** The table this document belongs to (e.g., 'files', 'notes'). */
+	tableName: string;
+	/** The document name from `.withDocument()` (e.g., 'content', 'body'). */
+	documentName: string;
 	/** Column name storing the Y.Doc GUID. */
 	guidKey: keyof TRow & string;
-	/** Called when the content Y.Doc changes. Return the fields to write to the row. */
+	/**
+	 * Called on every content Y.Doc change (local and remote). Return the
+	 * fields to write to the table row. The row write fires `table.observe`,
+	 * which is how materializers and other consumers react to content changes.
+	 * Return at least one field -- returning `{}` is a silent no-op.
+	 */
 	onUpdate: () => Partial<Omit<TRow, 'id'>>;
 	/** The table helper — needed to update the row and observe row deletions. */
 	tableHelper: TableHelper<TRow>;
@@ -137,22 +138,11 @@ export type CreateDocumentsConfig<TRow extends BaseRow> = {
 	ydoc: Y.Doc;
 	/**
 	 * Document extension registrations (from `withDocumentExtension()` calls).
-	 * Each registration has a key, factory, and optional tags for filtering.
-	 * At open time, registrations are filtered by tag matching before firing.
+	 * Each registration has a key and factory.
 	 */
 	documentExtensions?: DocumentExtensionRegistration[];
-	/**
-	 * Tags declared on this documents instance (from `withDocument(..., { tags })`).
-	 * Used for tag matching against document extension registrations.
-	 */
-	documentTags?: readonly string[];
-
-	/**
-	 * Called when a row is deleted from the table.
-	 * Receives the GUID of the associated document.
-	 * Default: close (free memory, preserve persisted data).
-	 */
-	onRowDeleted?: (documents: Documents<TRow>, guid: string) => void;
+	/** Optional typed awareness schemas for this document scope. */
+	awarenessDefinitions?: TAwarenessDefinitions;
 };
 
 /**
@@ -168,79 +158,66 @@ export type CreateDocumentsConfig<TRow extends BaseRow> = {
  * @param config - Documents configuration
  * @returns A `Documents<TRow>` with open/close/closeAll/guidOf methods
  */
-export function createDocuments<TRow extends BaseRow>(
-	config: CreateDocumentsConfig<TRow>,
-): Documents<TRow> {
+export function createDocuments<
+	TRow extends BaseRow,
+	TDocExtensions extends Record<string, unknown> = Record<string, unknown>,
+	TAwarenessDefinitions extends AwarenessDefinitions = Record<string, never>,
+>(
+	config: CreateDocumentsConfig<TRow, TAwarenessDefinitions>,
+): Documents<TRow, TDocExtensions, TAwarenessDefinitions> {
 	const {
-		id = '',
+		id,
+		tableName,
+		documentName,
 		guidKey,
 		onUpdate,
 		tableHelper,
 		ydoc: workspaceYdoc,
 		documentExtensions = [],
-		documentTags = [],
-		onRowDeleted,
+		awarenessDefinitions,
 	} = config;
 
-	const openDocuments = new Map<string, DocEntry>();
-
-	/**
-	 * Extract the GUID from a row or use the string directly.
-	 */
-	function resolveGuid(input: TRow | string): string {
-		if (typeof input === 'string') return input;
-		return String(input[guidKey]);
-	}
+	const openDocuments = new Map<
+		string,
+		DocEntry<TDocExtensions, TAwarenessDefinitions>
+	>();
 
 	/**
 	 * Set up the table observer for row deletion cleanup.
-	 * Fires the `onRowDeleted` callback when a row is deleted.
+	 * Closes the associated document when a row is deleted from the table.
+	 *
+	 * When guidKey is 'id' (common case), the document GUID is the row ID,
+	 * so a direct Map lookup finds it. When guidKey is a different column,
+	 * the row is already deleted so we can't reverse-map row ID → GUID.
+	 * The fallback check (openDocuments.has(deletedId)) only catches the
+	 * case where the GUID happens to equal the row ID.
 	 */
 	const unobserveTable = tableHelper.observe((changedIds) => {
-		for (const id of changedIds) {
-			const result = tableHelper.get(id);
+		for (const deletedId of changedIds) {
+			const result = tableHelper.get(deletedId);
 			if (result.status !== 'not_found') continue;
+			if (!openDocuments.has(deletedId)) continue;
 
-			// Row was deleted — find the matching open document by searching
-			// all open documents where the guid matches. For most tables, the
-			// guid IS the row id, but it could be a different column.
-			for (const [guid] of openDocuments) {
-				// Check if this guid corresponds to the deleted row.
-				// Since we can't reverse-map guid→rowId without scanning,
-				// we check if the deleted row ID matches any open doc's guid
-				// OR if the guid key IS 'id' (common case).
-				if (guid === id || guidKey === 'id') {
-					const targetGuid = guidKey === 'id' ? id : guid;
-					if (!openDocuments.has(targetGuid)) continue;
-
-					if (onRowDeleted) {
-						onRowDeleted(documents, targetGuid);
-					} else {
-						// Default: close (free memory, preserve data)
-						documents.close(targetGuid);
-					}
-					break;
-				}
-			}
+			documents.close(deletedId);
 		}
 	});
 
-	const documents: Documents<TRow> = {
-		async open(input: TRow | string): Promise<DocumentHandle> {
-			const guid = resolveGuid(input);
+	const documents: Documents<TRow, TDocExtensions, TAwarenessDefinitions> = {
+		async open(
+			input: TRow | string,
+		): Promise<DocumentHandle<TDocExtensions, TAwarenessDefinitions>> {
+			const guid = typeof input === 'string' ? input : String(input[guidKey]);
 
 			const existing = openDocuments.get(guid);
 			if (existing) return existing.whenReady;
 
 			const contentYdoc = new Y.Doc({ guid, gc: false });
-
-			// Filter document extensions by tag matching:
-			// - No tags on extension → fire for all documents (universal)
-			// - Has tags → fire only if document tags and extension tags share ANY value
-			const applicableExtensions = documentExtensions.filter((reg) => {
-				if (reg.tags.length === 0) return true;
-				return reg.tags.some((tag) => documentTags.includes(tag));
-			});
+			const contentAwareness = new Awareness(contentYdoc);
+			const awareness = createAwareness(
+				contentAwareness,
+				(awarenessDefinitions ?? {}) as TAwarenessDefinitions,
+			);
+			const timeline = createTimeline(contentYdoc);
 
 			// Call document extension factories synchronously.
 			// IMPORTANT: No await between openDocuments.get() and openDocuments.set() — ensures
@@ -249,14 +226,18 @@ export function createDocuments<TRow extends BaseRow>(
 			// extensions' resolved form.
 			// biome-ignore lint/suspicious/noExplicitAny: runtime storage uses wide type
 			const resolvedExtensions: Record<string, Extension<any>> = {};
-			const destroys: (() => MaybePromise<void>)[] = [];
+			const disposers: (() => MaybePromise<void>)[] = [];
 			const whenReadyPromises: Promise<unknown>[] = [];
 
 			try {
-				for (const { key, factory } of applicableExtensions) {
+				for (const { key, factory } of documentExtensions) {
 					const ctx = {
 						id,
+						tableName,
+						documentName,
 						ydoc: contentYdoc,
+						timeline,
+						awareness: { raw: contentAwareness },
 						whenReady:
 							whenReadyPromises.length === 0
 								? Promise.resolve()
@@ -268,49 +249,42 @@ export function createDocuments<TRow extends BaseRow>(
 
 					const resolved = defineExtension(raw);
 					resolvedExtensions[key] = resolved;
-					destroys.push(resolved.destroy);
+					disposers.push(resolved.dispose);
 					whenReadyPromises.push(resolved.whenReady);
 				}
 			} catch (err) {
-				// LIFO cleanup of accumulated extensions
-				const errors: unknown[] = [];
-				for (let i = destroys.length - 1; i >= 0; i--) {
-					try {
-						const result = destroys[i]?.();
-						if (result instanceof Promise) {
-							result.catch(() => {}); // Fire and forget in sync context
-						}
-					} catch (cleanupErr) {
-						errors.push(cleanupErr);
-					}
-				}
-
-				if (errors.length > 0) {
-					console.error(
-						'Extension cleanup errors during factory failure:',
-						errors,
-					);
-				}
-
+				startDisposeLifo(disposers);
+				// ydoc.destroy() auto-destroys the Awareness via doc.on('destroy')
 				contentYdoc.destroy();
 				throw err;
 			}
 
-			// Attach onUpdate observer — fires when content doc changes.
-			// The Y.Doc 'update' handler receives (update, origin, doc, transaction).
-			// We use transaction.local to skip remote sync updates — only local edits
-			// should trigger the callback. Remote devices receive the updated values via
-			// workspace ydoc sync; redundant writes would cause unnecessary churn.
+			// Attach onUpdate observer — fires on LOCAL content doc changes only.
+			//
+			// When a user types in ProseMirror, this fires and bumps metadata
+			// (e.g., updatedAt). That change syncs to other tabs via the workspace
+			// Y.Doc. Remote edits arriving via sync/broadcast are skipped — the
+			// originating tab already bumped metadata, and we receive it via
+			// workspace table sync.
+			//
+			// Without this guard, every tab independently calls onUpdate() with
+			// DateTimeString.now(), producing distinct timestamps that ping-pong
+			// between tabs and never converge.
 			const updateHandler = (
 				_update: Uint8Array,
 				origin: unknown,
 				_doc: Y.Doc,
-				transaction: Y.Transaction,
+				_transaction: Y.Transaction,
 			) => {
 				// Skip updates from the documents manager itself to avoid loops
 				if (origin === DOCUMENTS_ORIGIN) return;
-				// Skip remote updates — only local edits trigger onUpdate
-				if (!transaction.local) return;
+
+				// Skip transport-originated updates (sync, broadcast channel).
+				// Convention: all transport origins are Symbols (SYNC_ORIGIN,
+				// BC_ORIGIN). Local edits use non-Symbol origins (e.g., y-prosemirror's
+				// ySyncPluginKey is a PluginKey object; direct mutations use null).
+				// If a new transport is added, it MUST use a Symbol origin.
+				if (typeof origin === 'symbol') return;
 
 				// Call the user's onUpdate callback and write the returned fields
 				workspaceYdoc.transact(() => {
@@ -322,23 +296,28 @@ export function createDocuments<TRow extends BaseRow>(
 			const unobserve = () => contentYdoc.off('update', updateHandler);
 
 			// Cache entry SYNCHRONOUSLY before any promise resolution
+			const compositeWhenReady: Promise<void> =
+				whenReadyPromises.length === 0
+					? Promise.resolve()
+					: Promise.all(whenReadyPromises).then(() => {});
+			const handle = Object.assign(timeline, {
+				id,
+				tableName,
+				documentName,
+				timeline,
+				awareness,
+				extensions: resolvedExtensions,
+				whenReady: compositeWhenReady,
+			}) as DocumentHandle<TDocExtensions, TAwarenessDefinitions>;
 			const whenReady =
 				whenReadyPromises.length === 0
-					? Promise.resolve(makeHandle(contentYdoc, resolvedExtensions))
-					: Promise.all(whenReadyPromises)
-							.then(() => makeHandle(contentYdoc, resolvedExtensions))
+					? Promise.resolve(handle)
+					: compositeWhenReady
+							.then(() => handle)
 							.catch(async (err) => {
-								// If any provider's whenReady rejects, clean up everything (LIFO)
-								const errors: unknown[] = [];
-								for (let i = destroys.length - 1; i >= 0; i--) {
-									try {
-										await destroys[i]?.();
-									} catch (cleanupErr) {
-										errors.push(cleanupErr);
-									}
-								}
-
+								const errors = await disposeLifo(disposers);
 								unobserve();
+								// ydoc.destroy() auto-destroys the Awareness via doc.on('destroy')
 								contentYdoc.destroy();
 								openDocuments.delete(guid);
 
@@ -358,7 +337,7 @@ export function createDocuments<TRow extends BaseRow>(
 		},
 
 		async close(input: TRow | string): Promise<void> {
-			const guid = resolveGuid(input);
+			const guid = typeof input === 'string' ? input : String(input[guidKey]);
 			const entry = openDocuments.get(guid);
 			if (!entry) return;
 
@@ -367,17 +346,11 @@ export function createDocuments<TRow extends BaseRow>(
 			openDocuments.delete(guid);
 			entry.unobserve();
 
-			// Destroy in LIFO order (reverse creation), continue on error
-			const errors: unknown[] = [];
-			const extensions = Object.values(entry.extensions);
-			for (let i = extensions.length - 1; i >= 0; i--) {
-				try {
-					await extensions[i]?.destroy();
-				} catch (err) {
-					errors.push(err);
-				}
-			}
+			const errors = await disposeLifo(
+				Object.values(entry.extensions).map((e) => e.dispose),
+			);
 
+			// ydoc.destroy() auto-destroys the Awareness via doc.on('destroy')
 			entry.ydoc.destroy();
 
 			if (errors.length > 0) {
@@ -394,16 +367,11 @@ export function createDocuments<TRow extends BaseRow>(
 			for (const [, entry] of entries) {
 				entry.unobserve();
 
-				const errors: unknown[] = [];
-				const extensions = Object.values(entry.extensions);
-				for (let i = extensions.length - 1; i >= 0; i--) {
-					try {
-						await extensions[i]?.destroy();
-					} catch (err) {
-						errors.push(err);
-					}
-				}
+				const errors = await disposeLifo(
+					Object.values(entry.extensions).map((e) => e.dispose),
+				);
 
+				// ydoc.destroy() auto-destroys the Awareness via doc.on('destroy')
 				entry.ydoc.destroy();
 
 				if (errors.length > 0) {

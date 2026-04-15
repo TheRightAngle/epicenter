@@ -220,7 +220,7 @@ TableHelper<TRow>
 ├── getAllValid(): TRow[]
 ├── getAllInvalid(): InvalidRowResult[]
 ├── update(partial: PartialRow<TRow>): UpdateResult
-├── delete(id: Id): DeleteResult
+├── delete(id: Id): void
 ├── filter(pred: (row: TRow) => boolean): TRow[]
 ├── find(pred: (row: TRow) => boolean): TRow | null
 ├── observe(callback): () => void

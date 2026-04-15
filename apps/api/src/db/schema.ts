@@ -1,12 +1,17 @@
 import { relations } from 'drizzle-orm';
 import {
+	bigint,
 	boolean,
 	index,
+	integer,
 	jsonb,
 	pgTable,
 	text,
 	timestamp,
 } from 'drizzle-orm/pg-core';
+
+/** Discriminator for the type of Durable Object instance. */
+export type DoType = 'workspace' | 'document';
 
 export const user = pgTable('user', {
 	id: text('id').primaryKey(),
@@ -86,6 +91,19 @@ export const jwks = pgTable('jwks', {
 	privateKey: text('private_key').notNull(),
 	createdAt: timestamp('created_at').notNull(),
 	expiresAt: timestamp('expires_at'),
+});
+
+export const deviceCode = pgTable('device_code', {
+	id: text('id').primaryKey(),
+	deviceCode: text('device_code').notNull(),
+	userCode: text('user_code').notNull(),
+	userId: text('user_id'),
+	expiresAt: timestamp('expires_at').notNull(),
+	status: text('status').notNull(),
+	lastPolledAt: timestamp('last_polled_at'),
+	pollingInterval: integer('polling_interval'),
+	clientId: text('client_id'),
+	scope: text('scope'),
 });
 
 export const oauthClient = pgTable('oauth_client', {
@@ -171,6 +189,38 @@ export const oauthConsent = pgTable('oauth_consent', {
 	updatedAt: timestamp('updated_at'),
 });
 
+export const durableObjectInstance = pgTable(
+	'durable_object_instance',
+	{
+		userId: text('user_id')
+			.notNull()
+			.references(() => user.id, { onDelete: 'cascade' }),
+		doType: text('do_type').notNull().$type<DoType>(),
+		resourceName: text('resource_name').notNull(),
+		doName: text('do_name').primaryKey(),
+		storageBytes: bigint('storage_bytes', { mode: 'number' }),
+		createdAt: timestamp('created_at').defaultNow().notNull(),
+		lastAccessedAt: timestamp('last_accessed_at').defaultNow().notNull(),
+		storageMeasuredAt: timestamp('storage_measured_at'),
+	},
+	(table) => [index('doi_user_id_idx').on(table.userId)],
+);
+
+export const asset = pgTable(
+	'asset',
+	{
+		id: text('id').primaryKey(),
+		userId: text('user_id')
+			.notNull()
+			.references(() => user.id, { onDelete: 'cascade' }),
+		contentType: text('content_type').notNull(),
+		sizeBytes: bigint('size_bytes', { mode: 'number' }).notNull(),
+		originalName: text('original_name').notNull(),
+		uploadedAt: timestamp('uploaded_at').defaultNow().notNull(),
+	},
+	(table) => [index('asset_user_id_idx').on(table.userId)],
+);
+
 export const userRelations = relations(user, ({ many }) => ({
 	sessions: many(session),
 	accounts: many(account),
@@ -178,6 +228,8 @@ export const userRelations = relations(user, ({ many }) => ({
 	oauthRefreshTokens: many(oauthRefreshToken),
 	oauthAccessTokens: many(oauthAccessToken),
 	oauthConsents: many(oauthConsent),
+	durableObjectInstances: many(durableObjectInstance),
+	assets: many(asset),
 }));
 
 export const sessionRelations = relations(session, ({ one, many }) => ({
@@ -254,6 +306,23 @@ export const oauthConsentRelations = relations(oauthConsent, ({ one }) => ({
 	}),
 	user: one(user, {
 		fields: [oauthConsent.userId],
+		references: [user.id],
+	}),
+}));
+
+export const durableObjectInstanceRelations = relations(
+	durableObjectInstance,
+	({ one }) => ({
+		user: one(user, {
+			fields: [durableObjectInstance.userId],
+			references: [user.id],
+		}),
+	}),
+);
+
+export const assetRelations = relations(asset, ({ one }) => ({
+	user: one(user, {
+		fields: [asset.userId],
 		references: [user.id],
 	}),
 }));

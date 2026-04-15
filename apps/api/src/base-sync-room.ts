@@ -87,10 +87,11 @@ type SyncRoomConfig = {
  * before calling RPC methods or forwarding fetch. The DO itself does not
  * re-validate — it trusts the Worker boundary.
  *
- * DO names are user-scoped: the Worker prefixes `user:{userId}:` to the
- * client-provided workspace or document name before calling `idFromName()`.
+ * DO names are user-scoped: the Worker constructs
+ * `user:{userId}:{type}:{name}` before calling `idFromName()`, where
+ * `{type}` is `workspace` or `document`.
  * This ensures each user's data is isolated in separate DO instances, even
- * if multiple users create workspaces with the same name (e.g., "tab-manager").
+ * if multiple users create workspaces with the same name (e.g., "epicenter.tab-manager").
  *
  * We chose user-scoped DO names (Google Docs model) over org-scoped names
  * (Vercel/Supabase model) because most workspaces hold personal data.
@@ -241,7 +242,9 @@ export class BaseSyncRoom extends DurableObject {
 	 *    maps to 304).
 	 * 3. Otherwise returns the binary diff the client is missing.
 	 */
-	async sync(body: Uint8Array): Promise<Uint8Array | null> {
+	async sync(
+		body: Uint8Array,
+	): Promise<{ diff: Uint8Array | null; storageBytes: number }> {
 		const { stateVector: clientSV, update } = decodeSyncRequest(body);
 
 		if (update.byteLength > 0) {
@@ -249,11 +252,11 @@ export class BaseSyncRoom extends DurableObject {
 		}
 
 		const serverSV = Y.encodeStateVector(this.doc);
-		if (stateVectorsEqual(serverSV, clientSV)) {
-			return null;
-		}
+		const diff = stateVectorsEqual(serverSV, clientSV)
+			? null
+			: Y.encodeStateAsUpdateV2(this.doc, clientSV);
 
-		return Y.encodeStateAsUpdateV2(this.doc, clientSV);
+		return { diff, storageBytes: this.ctx.storage.sql.databaseSize };
 	}
 
 	/**
@@ -263,8 +266,16 @@ export class BaseSyncRoom extends DurableObject {
 	 * this with `Y.applyUpdateV2` to hydrate their local doc before opening a
 	 * WebSocket, reducing the initial sync payload size.
 	 */
-	async getDoc(): Promise<Uint8Array> {
-		return Y.encodeStateAsUpdateV2(this.doc);
+	async getDoc(): Promise<{ data: Uint8Array; storageBytes: number }> {
+		return {
+			data: Y.encodeStateAsUpdateV2(this.doc),
+			storageBytes: this.ctx.storage.sql.databaseSize,
+		};
+	}
+
+	/** Delete all storage for this DO. Used for cleanup of renamed/orphaned rooms. */
+	async deleteStorage(): Promise<void> {
+		await this.ctx.storage.deleteAll();
 	}
 
 	// --- WebSocket lifecycle ---
@@ -274,11 +285,11 @@ export class BaseSyncRoom extends DurableObject {
 	 *
 	 * Validates payload size against {@link MAX_PAYLOAD_BYTES}, converts the
 	 * raw message to a `Uint8Array`, then delegates to `applyMessage` from
-	 * `sync-handlers.ts` for protocol decoding. Checks the returned fields:
+	 * `sync-handlers.ts` for protocol decoding. Routes the result:
 	 *
-	 * - `response` — send data back to the sender only
-	 * - `broadcast` — fan out to all other connected peers
-	 * - `persistAttachment` — serialize connection metadata to survive hibernation
+	 * - `reply`: Send data back to the sender only.
+	 * - `broadcast`: Fan out to all other connections, optionally persist attachment.
+	 * - `forward`: Route to a specific peer by clientId, with optional miss reply.
 	 */
 	override async webSocketMessage(
 		ws: WebSocket,
@@ -308,29 +319,39 @@ export class BaseSyncRoom extends DurableObject {
 			console.error(error.message);
 			return;
 		}
+		if (!result) return;
 
-		if (result.response) {
-			ws.send(result.response);
-		}
-
-		if (result.broadcast) {
-			for (const [peer] of this.connections) {
-				if (peer !== ws && peer.readyState === WebSocket.OPEN) {
-					try {
-						peer.send(result.broadcast);
-					} catch {
-						/* Socket may have died between readyState check and send.
-						   Safe to ignore — the close event will fire and trigger
-						   proper cleanup via webSocketClose(). */
+		switch (result.action) {
+			case 'reply':
+				ws.send(result.data);
+				break;
+			case 'broadcast':
+				for (const [peer] of this.connections) {
+					if (peer !== ws && peer.readyState === WebSocket.OPEN) {
+						try {
+							peer.send(result.data);
+						} catch {
+							/* Socket may have died between readyState check and send.
+							   Safe to ignore — the close event will fire and trigger
+							   proper cleanup via webSocketClose(). */
+						}
 					}
 				}
+				if (result.shouldPersistAttachment) {
+					ws.serializeAttachment({
+						controlledClientIds: [...connection.controlledClientIds],
+					} satisfies WsAttachment);
+				}
+				break;
+			case 'forward': {
+				const target = this.findConnectionByClientId(result.targetClientId);
+				if (target) {
+					target.ws.send(result.data);
+				} else if (result.onMissReply) {
+					ws.send(result.onMissReply);
+				}
+				break;
 			}
-		}
-
-		if (result.persistAttachment) {
-			ws.serializeAttachment({
-				controlledClientIds: [...connection.controlledClientIds],
-			} satisfies WsAttachment);
 		}
 	}
 
@@ -380,6 +401,22 @@ export class BaseSyncRoom extends DurableObject {
 	 */
 	override async webSocketError(ws: WebSocket, _error: unknown): Promise<void> {
 		await this.webSocketClose(ws, 1011, 'WebSocket error', false);
+	}
+
+	/**
+	 * Find the connection that controls a given awareness clientId.
+	 *
+	 * Iterates all active connections and returns the first whose
+	 * `controlledClientIds` set contains the target. Single-client
+	 * connections are the norm—each browser tab is one awareness client.
+	 *
+	 * @returns The matching connection, or undefined if the client is not connected.
+	 */
+	private findConnectionByClientId(clientId: number): Connection | undefined {
+		for (const [, connection] of this.connections) {
+			if (connection.controlledClientIds.has(clientId)) return connection;
+		}
+		return undefined;
 	}
 
 	/**

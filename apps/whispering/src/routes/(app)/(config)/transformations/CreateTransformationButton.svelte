@@ -4,17 +4,17 @@
 	import * as Modal from '@epicenter/ui/modal';
 	import { Separator } from '@epicenter/ui/separator';
 	import PlusIcon from '@lucide/svelte/icons/plus';
-	import { createMutation } from '@tanstack/svelte-query';
 	import { Editor } from '$lib/components/transformations-editor';
 	import { rpc } from '$lib/query';
-	import { generateDefaultTransformation } from '$lib/services/db';
-
-	const createTransformation = createMutation(
-		() => rpc.db.transformations.create.options,
-	);
+	import { type TransformationStep } from '$lib/state/transformation-steps.svelte';
+	import {
+		generateDefaultTransformation,
+		saveTransformationWithSteps,
+	} from '$lib/state/transformations.svelte';
 
 	let isModalOpen = $state(false);
 	let transformation = $state(generateDefaultTransformation());
+	let steps = $state<TransformationStep[]>([]);
 
 	function promptUserConfirmLeave() {
 		confirmationDialog.open({
@@ -24,6 +24,21 @@
 			onConfirm: () => {
 				isModalOpen = false;
 			},
+		});
+	}
+
+	function createTransformation() {
+		saveTransformationWithSteps(
+			$state.snapshot(transformation),
+			$state.snapshot(steps),
+		);
+
+		isModalOpen = false;
+		transformation = generateDefaultTransformation();
+		steps = [];
+		rpc.notify.success({
+			title: 'Created transformation!',
+			description: 'Your transformation has been created successfully.',
 		});
 	}
 </script>
@@ -58,36 +73,13 @@
 			<Separator />
 		</Modal.Header>
 
-		<Editor bind:transformation />
+		<Editor bind:transformation bind:steps />
 
 		<Modal.Footer>
 			<Button variant="outline" onclick={() => (isModalOpen = false)}>
 				Cancel
 			</Button>
-			<Button
-				type="submit"
-				onclick={() =>
-					createTransformation.mutate($state.snapshot(transformation), {
-						onSuccess: () => {
-							isModalOpen = false;
-							transformation = generateDefaultTransformation();
-							rpc.notify.success({
-								title: 'Created transformation!',
-								description:
-									'Your transformation has been created successfully.',
-							});
-						},
-						onError: (error) => {
-							rpc.notify.error({
-								title: 'Failed to create transformation!',
-								description: 'Your transformation could not be created.',
-								action: { type: 'more-details', error },
-							});
-						},
-					})}
-			>
-				Create
-			</Button>
+			<Button onclick={() => createTransformation()}> Create </Button>
 		</Modal.Footer>
 	</Modal.Content>
 </Modal.Root>

@@ -1,4 +1,4 @@
-import { desktopServices } from '$lib/services';
+import { desktopServices } from '$lib/services/desktop';
 
 export const load = async () => {
 	const { data: isAccessibilityGranted } =

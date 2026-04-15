@@ -1,14 +1,17 @@
 import { nanoid } from 'nanoid/non-secure';
 import { Ok } from 'wellcrafted/result';
+import { rpc } from '$lib/query';
 import { defineMutation } from '$lib/query/client';
 import { WhisperingErr } from '$lib/result';
+import { services } from '$lib/services';
 import { DbError } from '$lib/services/db';
 import { desktopServices } from '$lib/services';
+import { deviceConfig } from '$lib/state/device-config.svelte';
+import { recordings } from '$lib/state/recordings.svelte';
 import { settings } from '$lib/state/settings.svelte';
+import { transformations } from '$lib/state/transformations.svelte';
 import { vadRecorder } from '$lib/state/vad-recorder.svelte';
 import * as transformClipboardWindow from '$routes/transform-clipboard/transformClipboardWindow.tauri';
-import { rpc } from './index';
-import { db } from './db';
 import { delivery } from './delivery';
 import { notify } from './notify';
 import { recorder } from './recorder';
@@ -55,7 +58,7 @@ const startManualRecording = defineMutation({
 		}
 		isRecordingOperationBusy = true;
 
-		await settings.switchRecordingMode('manual');
+		settings.set('recording.mode', 'manual');
 
 		const toastId = nanoid();
 		notify.loading({
@@ -85,8 +88,8 @@ const startManualRecording = defineMutation({
 				break;
 			}
 			case 'fallback': {
-				const method = settings.value['recording.method'];
-				settings.updateKey(
+				const method = deviceConfig.get('recording.method');
+				deviceConfig.set(
 					`recording.${method}.deviceId`,
 					deviceAcquisitionOutcome.deviceId,
 				);
@@ -201,7 +204,7 @@ const stopManualRecording = defineMutation({
 const startVadRecording = defineMutation({
 	mutationKey: ['commands', 'startVadRecording'] as const,
 	mutationFn: async () => {
-		await settings.switchRecordingMode('vad');
+		settings.set('recording.mode', 'vad');
 
 		const toastId = nanoid();
 		console.info('Starting voice activated capture');
@@ -260,7 +263,7 @@ const startVadRecording = defineMutation({
 				break;
 			}
 			case 'fallback': {
-				settings.updateKey(
+				deviceConfig.set(
 					'recording.navigator.deviceId',
 					deviceAcquisitionOutcome.deviceId,
 				);
@@ -327,7 +330,7 @@ const stopVadRecording = defineMutation({
 	},
 });
 
-export const commands = {
+export const actions = {
 	startManualRecording,
 	stopManualRecording,
 	startVadRecording,
@@ -424,7 +427,7 @@ export const commands = {
 	uploadRecordings: defineMutation({
 		mutationKey: ['recordings', 'uploadRecordings'] as const,
 		mutationFn: async ({ files }: { files: File[] }) => {
-			await settings.switchRecordingMode('upload');
+			settings.set('recording.mode', 'upload');
 			// Partition files into valid and invalid in a single pass
 			const { valid: validFiles, invalid: invalidFiles } = files.reduce<{
 				valid: File[];
@@ -494,8 +497,7 @@ export const commands = {
 		mutationKey: ['commands', 'runTransformationOnClipboard'] as const,
 		mutationFn: async () => {
 			// Get selected transformation from settings
-			const transformationId =
-				settings.value['transformations.selectedTransformationId'];
+			const transformationId = settings.get('transformation.selectedId');
 
 			if (!transformationId) {
 				return WhisperingErr({
@@ -509,19 +511,11 @@ export const commands = {
 				});
 			}
 
-			// Get the transformation
-			const { data: transformation, error: getTransformationError } =
-				await db.transformations.getById(() => transformationId).fetch();
-
-			if (getTransformationError) {
-				return WhisperingErr({
-					title: '❌ Failed to get transformation',
-					serviceError: getTransformationError,
-				});
-			}
+			// Get the transformation from workspace state
+			const transformation = transformations.get(transformationId);
 
 			if (!transformation) {
-				settings.updateKey('transformations.selectedTransformationId', null);
+				settings.set('transformation.selectedId', null);
 				return WhisperingErr({
 					title: '⚠️ Transformation not found',
 					description:
@@ -645,10 +639,12 @@ async function processRecordingPipeline({
 		description: 'Your recording is being transcribed...',
 	});
 
-	// Start both operations in parallel
-	const savePromise = persistRecording
-		? db.recordings.create({ recording, audio: blob })
-		: Promise.resolve(Ok(undefined));
+	// Save metadata to workspace (instant) and audio blob to DbService (async)
+	recordings.set(recording);
+	const saveAudioPromise = services.db.recordings.create({
+		recording,
+		audio: blob,
+	});
 	const sourceCleanupPromise =
 		!persistRecording && window.__TAURI_INTERNALS__ && sourceFilePath
 			? desktopServices.fs.deletePath(sourceFilePath)
@@ -660,14 +656,8 @@ async function processRecordingPipeline({
 		await transcribePromise;
 
 	if (transcribeError) {
-		// Transcription failed - still check save for proper cleanup
-		const { error: saveError } = await savePromise;
-		if (persistRecording && !saveError) {
-			await db.recordings.update({
-				...recording,
-				transcriptionStatus: 'FAILED',
-			});
-		}
+		// Transcription failed - update status
+		recordings.update(recording.id, { transcriptionStatus: 'FAILED' });
 		const { error: sourceCleanupError } = await sourceCleanupPromise;
 		if (sourceCleanupError) {
 			notify.warning({
@@ -683,19 +673,30 @@ async function processRecordingPipeline({
 		}
 		notify.error({
 			id: transcribeToastId,
-			title: '❌ Failed to transcribe recording',
+			title: '\u274C Failed to transcribe recording',
 			description: 'Your recording could not be transcribed.',
 			action: { type: 'more-details', error: transcribeError },
 		});
 		return;
 	}
 
-	// Transcription succeeded - deliver text immediately (don't wait for save)
+	// Transcription succeeded - deliver text immediately
 	sound.playSoundIfEnabled('transcriptionComplete');
 	await delivery.deliverTranscriptionResult({
 		text: transcribedText,
 		toastId: transcribeToastId,
 	});
+
+	// Check audio save result (best-effort)
+	const { error: saveAudioError } = await saveAudioPromise;
+	if (saveAudioError) {
+		notify.warning({
+			id: toastId,
+			title: '\u26A0\uFE0F Audio not saved',
+			description: 'Transcription delivered but audio blob was not saved.',
+			action: { type: 'more-details', error: saveAudioError },
+		});
+	}
 
 	const { error: sourceCleanupError } = await sourceCleanupPromise;
 	if (sourceCleanupError) {
@@ -713,61 +714,21 @@ async function processRecordingPipeline({
 		description: completionDescription,
 	});
 
-	if (persistRecording) {
-		// Now check save result (best-effort)
-		const { error: saveError } = await savePromise;
-		if (saveError) {
-			notify.warning({
-				id: toastId,
-				title: '⚠️ Recording not saved',
-				description:
-					'Your text was delivered but the recording was not saved to history.',
-				action: { type: 'more-details', error: saveError },
-			});
-			// Can't update recording since it wasn't saved - skip transformation too
-			return;
-		}
+	recordings.update(recording.id, {
+		transcribedText,
+		transcriptionStatus: 'DONE',
+	});
 
-		const { error: updateError } = await db.recordings.update({
-			...recording,
-			transcribedText,
-			transcriptionStatus: 'DONE',
-		});
-
-		if (updateError) {
-			notify.warning({
-				title: '⚠️ Unable to save transcription',
-				description: "Transcription completed but couldn't save to database",
-				action: { type: 'more-details', error: updateError },
-			});
-		}
-	}
 
 	// Determine if we need to chain to transformation
-	const transformationId =
-		settings.value['transformations.selectedTransformationId'];
+	const transformationId = settings.get('transformation.selectedId');
 
 	// Check if transformation is valid if specified
 	if (!transformationId) return;
-	const { data: transformation, error: getTransformationError } =
-		await db.transformations.getById(() => transformationId).fetch();
+	const transformation = transformations.get(transformationId);
 
-	const transformationNoLongerExists = !transformation;
-
-	if (getTransformationError) {
-		notify.error({
-			title: '❌ Failed to get transformation',
-			description: getTransformationError.message,
-			action: {
-				type: 'more-details',
-				error: getTransformationError,
-			},
-		});
-		return;
-	}
-
-	if (transformationNoLongerExists) {
-		settings.updateKey('transformations.selectedTransformationId', null);
+	if (!transformation) {
+		settings.set('transformation.selectedId', null);
 		notify.warning({
 			title: '⚠️ No matching transformation found',
 			description:

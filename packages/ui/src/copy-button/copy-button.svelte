@@ -3,7 +3,7 @@
 	import CopyIcon from '@lucide/svelte/icons/copy';
 	import XIcon from '@lucide/svelte/icons/x';
 	import { scale } from 'svelte/transition';
-	import { buttonVariants } from '#/button';
+	import { Button } from '#/button';
 	import { UseClipboard } from '#/hooks/use-clipboard.svelte';
 	import { cn } from '#/utils.js';
 	import type { CopyButtonProps } from './types';
@@ -23,20 +23,19 @@
 		...rest
 	}: CopyButtonProps = $props();
 
-	// svelte-ignore state_referenced_locally - intentional one-time size adjustment based on initial children
-	if (size === 'icon' && children) {
-		size = 'default';
-	}
+	let effectiveSize = $derived(size === 'icon' && children ? 'default' : size);
 
 	// svelte-ignore state_referenced_locally - clipboard instance created once with initial copyFn
 	const clipboard = new UseClipboard({ copyFn });
 </script>
 
-<button
+<Button
 	{...rest}
-		bind:this={ref}
+	bind:ref
+	{variant}
+	size={effectiveSize}
 	{tabindex}
-	class={cn(buttonVariants({ variant, size }), 'flex items-center gap-2', className)}
+	class={cn('flex items-center gap-2', className)}
 	type="button"
 	name="copy"
 	onclick={async () => {
@@ -66,4 +65,4 @@
 		</div>
 	{/if}
 	{@render children?.()}
-</button>
+</Button>

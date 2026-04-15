@@ -1,11 +1,16 @@
 ---
 name: incremental-commits
-description: Break multi-file changes into atomic commits ordered by dependency. Use for refactors, breaking API changes, or features touching 3+ files.
+description: Break multi-file changes into atomic commits ordered by dependency. Use when the user says "split this into commits", "commit strategy", "break this up", or when making refactors, breaking API changes, or features touching 3+ files that need clean git history.
+metadata:
+  author: epicenter
+  version: '1.0'
 ---
 
 # Incremental Commits
 
 When a feature touches multiple files, implement in **waves**. Each wave is one logical concern, one commit. This creates a clean git history that tells a story.
+
+> **Related Skills**: See `git` for commit message conventions and PR guidelines.
 
 ## The Pattern
 

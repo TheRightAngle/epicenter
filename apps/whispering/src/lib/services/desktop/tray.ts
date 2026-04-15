@@ -33,14 +33,18 @@ const TrayError = defineErrors({
 });
 export type TrayError = InferErrors<typeof TrayError>;
 
-const trayPromise = initTray();
+let trayPromise: ReturnType<typeof initTray> | null = null;
+function getTray() {
+	if (!trayPromise) trayPromise = initTray();
+	return trayPromise;
+}
 
 export const TrayIconServiceLive = {
 	setTrayIcon: (recorderState: WhisperingRecordingState) =>
 		tryAsync({
 			try: async () => {
 				const iconPath = await getIconPath(recorderState);
-				const tray = await trayPromise;
+				const tray = await getTray();
 				return tray.setIcon(iconPath);
 			},
 			catch: (error) =>

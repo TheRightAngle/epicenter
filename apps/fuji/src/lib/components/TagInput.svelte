@@ -15,20 +15,6 @@
 	} = $props();
 
 	let inputValue = $state('');
-
-	function handleKeydown(e: KeyboardEvent) {
-		if (e.key === 'Enter' && inputValue.trim()) {
-			e.preventDefault();
-			const value = inputValue.trim().toLowerCase();
-			if (!values.includes(value)) {
-				onAdd(value);
-			}
-			inputValue = '';
-		}
-		if (e.key === 'Backspace' && !inputValue && values.length > 0) {
-			onRemove(values[values.length - 1]!);
-		}
-	}
 </script>
 
 <div
@@ -51,6 +37,18 @@
 		class="flex-1 bg-transparent outline-none placeholder:text-muted-foreground"
 		placeholder={values.length === 0 ? placeholder : ''}
 		bind:value={inputValue}
-		onkeydown={handleKeydown}
+		onkeydown={(e) => {
+		if (e.key === 'Enter' && inputValue.trim()) {
+			e.preventDefault();
+			const value = inputValue.trim();
+			if (!values.includes(value)) {
+				onAdd(value);
+			}
+			inputValue = '';
+		}
+		if (e.key === 'Backspace' && !inputValue && values.length > 0) {
+			onRemove(values[values.length - 1]!);
+		}
+	}}
 	>
 </div>

@@ -1,15 +1,3 @@
 {
-	"extends": ["../../tsconfig.base.json"],
-	"compilerOptions": {
-		"module": "NodeNext",
-		"moduleResolution": "NodeNext",
-		"outDir": "dist",
-		"sourceMap": true,
-
-		"declaration": true,
-		"composite": true,
-		"declarationMap": true,
-
-		"lib": ["es2022", "dom", "dom.iterable"]
-	}
+	"extends": ["../../tsconfig.base.dom.json"]
 }

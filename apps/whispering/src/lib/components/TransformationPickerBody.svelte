@@ -3,17 +3,15 @@
 	import * as Command from '@epicenter/ui/command';
 	import { Kbd } from '@epicenter/ui/kbd';
 	import LayersIcon from '@lucide/svelte/icons/layers';
-	import { createQuery } from '@tanstack/svelte-query';
 	import { onMount } from 'svelte';
 	import { PLATFORM_TYPE } from '$lib/constants/platform';
 	import { rpc } from '$lib/query';
-	import type { Transformation } from '$lib/services/db';
+	import {
+		type Transformation,
+		transformations,
+	} from '$lib/state/transformations.svelte';
 
-	const transformationsQuery = createQuery(
-		() => rpc.db.transformations.getAll.options,
-	);
-
-	const transformations = $derived(transformationsQuery.data ?? []);
+	const sortedTransformations = $derived(transformations.sorted);
 
 	const isMac = PLATFORM_TYPE === 'macos';
 	const modifierKey = isMac ? '⌘' : 'Ctrl';
@@ -60,8 +58,8 @@
 				e.preventDefault();
 				const index = e.key === '0' ? 9 : parseInt(e.key, 10) - 1; // 0 maps to 10th item
 
-				if (transformations[index]) {
-					onSelect(transformations[index]);
+				if (sortedTransformations[index]) {
+					onSelect(sortedTransformations[index]);
 				}
 			}
 		}
@@ -84,7 +82,7 @@
 	<Command.Input {placeholder} bind:ref={inputElement} />
 	<Command.Empty>No transformation found.</Command.Empty>
 	<Command.Group class="overflow-y-auto max-h-[400px]">
-		{#each transformations as transformation, index (transformation.id)}
+		{#each sortedTransformations as transformation, index (transformation.id)}
 			<Command.Item
 				value="${transformation.id} - ${transformation.title} - ${transformation.description}"
 				onSelect={() => onSelect(transformation)}

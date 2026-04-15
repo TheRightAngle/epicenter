@@ -1,4 +1,6 @@
 # The Accessor Pattern: Why Your Svelte 5 Queries Need Functions, Not Values
+> **Note**: The code examples below use `rpc.db.recordings.getById` and `dbKeys`, which were removed when recordings migrated to Yjs workspace state modules. The accessor pattern itself is still essential—it applies to all remaining TanStack Query usage (e.g., `rpc.audio.getPlaybackUrl(() => id)`).
+
 
 You change `recordingId` from `'abc'` to `'xyz'`, but the audio player doesn't update. The UI is stuck showing the old recording. You've just hit the accessor pattern problem.
 

@@ -7,18 +7,25 @@
 	import { Spinner } from '@epicenter/ui/spinner';
 	import { Textarea } from '@epicenter/ui/textarea';
 	import EditIcon from '@lucide/svelte/icons/pencil';
-	import { createMutation, createQuery } from '@tanstack/svelte-query';
+	import { createQuery } from '@tanstack/svelte-query';
 	import { onDestroy } from 'svelte';
 	import { rpc } from '$lib/query';
 	import { services } from '$lib/services';
-	import type { Recording } from '$lib/services/db';
+	import { type Recording, recordings } from '$lib/state/recordings.svelte';
 	import { recordingActions } from '$lib/utils/recording-actions';
 
-	const updateRecording = createMutation(
-		() => rpc.db.recordings.update.options,
-	);
-
 	let { recording }: { recording: Recording } = $props();
+
+	/**
+	 * Capture the recording ID at setup time for use in cleanup.
+	 *
+	 * Reactive props ($props) can become undefined during Svelte's teardown
+	 * when the parent's data source is deleted (e.g. deleting a recording
+	 * causes the table row—and this component—to unmount). If onDestroy
+	 * reads the prop directly, it may see undefined and throw. Capturing
+	 * the ID here sidesteps the reactive teardown race entirely.
+	 */
+	const recordingIdForCleanup = recording.id;
 
 	let isDialogOpen = $state(false);
 
@@ -65,12 +72,12 @@
 	});
 
 	/**
-	 * Fetch audio playback URL using TanStack Query.
-	 * The URL is cached and managed by the DbService implementation.
-	 * Uses accessor pattern for reactive updates.
+	 * Audio playback URL via TanStack Query.
+	 * Audio blobs are too large for Yjs CRDTs, so they're still served
+	 * from DbService. Uses accessor pattern for reactive updates.
 	 */
 	const audioPlaybackUrlQuery = createQuery(
-		() => rpc.db.recordings.getAudioPlaybackUrl(() => recording.id).options,
+		() => rpc.audio.getPlaybackUrl(() => recording.id).options,
 	);
 
 	const audioUrl = $derived(audioPlaybackUrlQuery.data);
@@ -96,7 +103,7 @@
 	}
 
 	onDestroy(() => {
-		services.db.recordings.revokeAudioUrl(recording.id);
+		services.db.recordings.revokeAudioUrl(recordingIdForCleanup);
 	});
 </script>
 
@@ -203,28 +210,15 @@
 			</Button>
 			<Button
 				onclick={() => {
-					updateRecording.mutate($state.snapshot(workingCopy), {
-						onSuccess: () => {
-							rpc.notify.success({
-								title: 'Updated recording!',
-								description: 'Your recording has been updated successfully.',
-							});
-							isDialogOpen = false;
-						},
-						onError: (error) => {
-							rpc.notify.error({
-								title: 'Failed to update recording!',
-								description: 'Your recording could not be updated.',
-								action: { type: 'more-details', error: error },
-							});
-						},
-					});
-				}}
-				disabled={updateRecording.isPending || !isWorkingCopyDirty}
+				recordings.set($state.snapshot(workingCopy));
+				rpc.notify.success({
+					title: 'Updated recording!',
+					description: 'Your recording has been updated successfully.',
+				});
+				isDialogOpen = false;
+			}}
+				disabled={!isWorkingCopyDirty}
 			>
-				{#if updateRecording.isPending}
-					<Spinner />
-				{/if}
 				Save
 			</Button>
 		</Modal.Footer>
