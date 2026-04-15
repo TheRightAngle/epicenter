@@ -117,10 +117,15 @@ export const Settings = type({
 	 */
 	'ui.layoutMode': type.enumerated(...LAYOUT_MODES).default('sidebar'),
 
+	// Defaults restored to match upstream — the prior 'limit-count' + '0'
+	// combination silently dropped every recording on fresh installs (the
+	// limit-count strategy with maxCount=0 means "keep zero recordings"),
+	// which was a data-loss footgun for new users who expected the app to
+	// keep their history. Power users can still flip to limit-count.
 	'database.recordingRetentionStrategy': type
 		.enumerated('keep-forever', 'limit-count')
-		.default('limit-count'),
-	'database.maxRecordingCount': type('string.digits').default('0'),
+		.default('keep-forever'),
+	'database.maxRecordingCount': type('string.digits').default('100'),
 
 	// Recording mode settings
 	'recording.mode': type.enumerated(...RECORDING_MODES).default('manual'),
