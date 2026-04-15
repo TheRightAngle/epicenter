@@ -110,7 +110,11 @@ beforeEach(() => {
 				'recording.cpal.outputFolder': '/tmp/out',
 				'recording.cpal.deviceId': null,
 				'recording.cpal.sampleRate': '16000',
-				'recording.cpal.bufferedCapture': false,
+				// bufferedCapture is no longer read from settings —
+				// it's auto-computed from retention settings. Include
+				// retention keys so shouldPersistRecordings can resolve.
+				'database.recordingRetentionStrategy': 'keep-forever',
+				'database.maxRecordingCount': '100',
 				'recording.ffmpeg.deviceId': null,
 				'recording.ffmpeg.globalOptions': '',
 				'recording.ffmpeg.inputOptions': '',

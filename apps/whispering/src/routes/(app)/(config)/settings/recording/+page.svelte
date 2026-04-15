@@ -418,26 +418,15 @@
 					</Field.Description>
 				</Field.Field>
 
-				<Field.Field orientation="horizontal">
-					<Switch
-						id="recording.cpal.bufferedCapture"
-						bind:checked={() =>
-							settings.value['recording.cpal.bufferedCapture'],
-							(v) =>
-								settings.updateKey('recording.cpal.bufferedCapture', v)}
-					/>
-					<div class="space-y-1">
-						<Field.Label for="recording.cpal.bufferedCapture">
-							In-memory capture
-						</Field.Label>
-						<Field.Description>
-							Capture directly to memory instead of writing a WAV file to
-							disk. Use for short ephemeral recordings where the disk write
-							is wasted work. Audio callback performance is unaffected either
-							way — the hot path is channel-based and never blocks.
-						</Field.Description>
-					</div>
-				</Field.Field>
+				<!--
+					The In-memory capture toggle was removed — the app now
+					auto-decides based on your retention settings. If
+					you've chosen to keep 0 recordings (ephemeral mode),
+					we skip the disk write. If you keep recordings, we
+					write a WAV file so crash-recovery and history work.
+					No user-facing knob is needed; the right behavior
+					falls out of whether the recording is kept.
+				-->
 
 				<Field.Field>
 					<Field.Label for="output-folder">Recording Output Folder</Field.Label>

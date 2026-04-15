@@ -130,7 +130,7 @@ const DEVICE_DEFINITIONS = {
 	'shortcuts.global.stopVadRecording': defineEntry(type('string | null'), null),
 	'shortcuts.global.pushToTalk': defineEntry(
 		type('string | null'),
-		`${CommandOrAlt}+Shift+D` as string | null,
+		`${CommandOrAlt}+Shift+Q` as string | null,
 	),
 	'shortcuts.global.openTransformationPicker': defineEntry(
 		type('string | null'),

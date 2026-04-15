@@ -201,15 +201,19 @@ const ui = {
  * the semantically correct numeric type.
  */
 const dataRetention = {
+	// Fork default: limit-count + 0 = ephemeral recording. Most users
+	// of this fork don't want a growing recording history — they dictate
+	// into the cursor and move on. Flip to keep-forever or raise the
+	// count to opt into history.
 	'retention.strategy': defineKv(
 		type("'keep-forever' | 'limit-count'"),
-		'keep-forever',
+		'limit-count',
 	),
 	// >= 0 rather than >= 1 so "limit-count + 0" means "keep zero
 	// recordings" rather than being rejected by arktype validation and
 	// silently reverting to the default. shouldPersistRecordings handles
 	// the 0 case explicitly (skip the save entirely).
-	'retention.maxCount': defineKv(type('number.integer >= 0'), 100),
+	'retention.maxCount': defineKv(type('number.integer >= 0'), 0),
 } as const;
 
 /** User's preferred recording mode — manual trigger vs voice activity detection. */
@@ -276,9 +280,10 @@ const transformation = {
 	),
 } as const;
 
-/** Anonymized event logging toggle (Aptabase). */
+/** Anonymized event logging toggle (Aptabase). Default off on this fork —
+ * users who want telemetry can opt in via Settings → Privacy & Analytics. */
 const analytics = {
-	'analytics.enabled': defineKv(type('boolean'), true),
+	'analytics.enabled': defineKv(type('boolean'), false),
 } as const;
 
 /**

@@ -117,15 +117,14 @@ export const Settings = type({
 	 */
 	'ui.layoutMode': type.enumerated(...LAYOUT_MODES).default('sidebar'),
 
-	// Defaults restored to match upstream — the prior 'limit-count' + '0'
-	// combination silently dropped every recording on fresh installs (the
-	// limit-count strategy with maxCount=0 means "keep zero recordings"),
-	// which was a data-loss footgun for new users who expected the app to
-	// keep their history. Power users can still flip to limit-count.
+	// Fork default: limit-count + 0 = ephemeral recording. Intentional on
+	// this fork — users who want history can flip to keep-forever or
+	// set maxRecordingCount > 0. shouldPersistRecordings reads the pair
+	// and skips persistence cleanly when count is 0.
 	'database.recordingRetentionStrategy': type
 		.enumerated('keep-forever', 'limit-count')
-		.default('keep-forever'),
-	'database.maxRecordingCount': type('string.digits').default('100'),
+		.default('limit-count'),
+	'database.maxRecordingCount': type('string.digits').default('0'),
 
 	// Recording mode settings
 	'recording.mode': type.enumerated(...RECORDING_MODES).default('manual'),
@@ -294,7 +293,7 @@ export const Settings = type({
 	'shortcuts.global.startVadRecording': 'string | null = null',
 	'shortcuts.global.stopVadRecording': 'string | null = null',
 	'shortcuts.global.pushToTalk': type('string | null').default(
-		`${CommandOrAlt}+Shift+D`,
+		`${CommandOrAlt}+Shift+Q`,
 	),
 	'shortcuts.global.openTransformationPicker': type('string | null').default(
 		`${CommandOrControl}+Shift+X`,

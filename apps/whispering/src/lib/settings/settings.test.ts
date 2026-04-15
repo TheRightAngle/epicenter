@@ -29,15 +29,15 @@ describe('settings schema', () => {
 		expect(settingsSource).toContain("'analytics.enabled': 'boolean = false'");
 	});
 
-	test('defaults recording retention to keep-forever with a 100-recording cap', () => {
+	test('defaults recording retention to ephemeral (limit-count + 0)', () => {
 		const settingsSource = readFileSync(new URL('./settings.ts', import.meta.url), 'utf8');
 
-		// Restored to upstream defaults — the prior 'limit-count' + '0'
-		// silently dropped every recording. Users who explicitly want
-		// limit-count can flip the setting in the UI.
-		expect(settingsSource).toContain(".default('keep-forever')");
+		// Fork default — users of this fork dictate into the cursor and
+		// don't want a growing recording history. shouldPersistRecordings
+		// treats count=0 as "skip save entirely", which is the intent.
+		expect(settingsSource).toContain(".default('limit-count')");
 		expect(settingsSource).toContain(
-			"'database.maxRecordingCount': type('string.digits').default('100')",
+			"'database.maxRecordingCount': type('string.digits').default('0')",
 		);
 	});
 

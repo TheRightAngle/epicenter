@@ -14,6 +14,7 @@ import { deviceConfig } from '$lib/state/device-config.svelte';
 import { settings } from '$lib/state/settings.svelte';
 import { disambiguateDeviceLabels } from '../services/device-labels';
 import { notify } from './notify';
+import { shouldPersistRecordings } from './recording-persistence';
 
 type RecordingMethod = 'cpal' | 'ffmpeg' | 'navigator';
 
@@ -198,9 +199,20 @@ export const recorder = {
 						),
 						outputFolder,
 						sampleRate: deviceConfig.get('recording.cpal.sampleRate'),
-						bufferedCapture: deviceConfig.get(
-							'recording.cpal.bufferedCapture',
-						),
+						// Auto-decide: if we're not going to persist the
+						// recording, skip the disk write entirely — there's
+						// no point producing a WAV file that will be
+						// deleted on stop. Users don't pick this directly;
+						// it falls out of the retention settings they
+						// already have.
+						bufferedCapture: !shouldPersistRecordings({
+							recordingRetentionStrategy: settings.value[
+								'database.recordingRetentionStrategy'
+							] as never,
+							maxRecordingCount: settings.value[
+								'database.maxRecordingCount'
+							] as never,
+						}),
 					},
 				} as const;
 
