@@ -205,7 +205,11 @@ const dataRetention = {
 		type("'keep-forever' | 'limit-count'"),
 		'keep-forever',
 	),
-	'retention.maxCount': defineKv(type('number.integer >= 1'), 100),
+	// >= 0 rather than >= 1 so "limit-count + 0" means "keep zero
+	// recordings" rather than being rejected by arktype validation and
+	// silently reverting to the default. shouldPersistRecordings handles
+	// the 0 case explicitly (skip the save entirely).
+	'retention.maxCount': defineKv(type('number.integer >= 0'), 100),
 } as const;
 
 /** User's preferred recording mode — manual trigger vs voice activity detection. */

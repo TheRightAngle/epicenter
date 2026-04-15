@@ -86,9 +86,27 @@ function createSettings() {
 		}
 	});
 
+	/**
+	 * Keys that cross a string↔number type boundary between the legacy
+	 * fork settings schema (dominated by `string.digits`) and upstream's
+	 * workspace.kv schema (uses `number.integer`). When the shim routes
+	 * through, coerce values so arktype doesn't reject on write or
+	 * return the wrong type on read.
+	 */
+	const NUMERIC_KV_KEYS = new Set<string>(['retention.maxCount']);
+
 	function readValue(rawKey: string): unknown {
 		const key = canonicalKey(rawKey);
-		if (isKvKey(key)) return map.get(key);
+		if (isKvKey(key)) {
+			const value = map.get(key);
+			// Fork code expects a string for these; upstream stores as
+			// number. Stringify on read so `settings.value[...] === '0'`
+			// continues to work in legacy call sites.
+			if (NUMERIC_KV_KEYS.has(key) && typeof value === 'number') {
+				return String(value);
+			}
+			return value;
+		}
 		if (isDeviceKey(key)) return deviceConfig.get(key as never);
 		return undefined;
 	}
@@ -96,7 +114,15 @@ function createSettings() {
 	function writeValue(rawKey: string, value: unknown): void {
 		const key = canonicalKey(rawKey);
 		if (isKvKey(key)) {
-			workspace.kv.set(key, value as never);
+			let coerced = value;
+			// Fork UI writes a string; upstream schema is number. Parse
+			// before hitting arktype so `type('number.integer >= 0')`
+			// doesn't reject and silently revert to the default.
+			if (NUMERIC_KV_KEYS.has(key) && typeof value === 'string') {
+				const parsed = Number.parseInt(value, 10);
+				if (Number.isFinite(parsed)) coerced = parsed;
+			}
+			workspace.kv.set(key, coerced as never);
 			return;
 		}
 		if (isDeviceKey(key)) {

@@ -40,6 +40,21 @@ enum RecorderCmd {
     Shutdown,
 }
 
+/// Messages flowing into the writer thread on a single bounded channel.
+///
+/// The audio callback sends `Samples` variants (high-frequency). The main
+/// thread sends `Finalize` on stop and `Shutdown` on teardown. Because
+/// everything arrives on one channel, a `Finalize` sent *after* the
+/// callback's last `Samples` is guaranteed to be processed *after* all
+/// those samples have been ingested — no risk of finalizing before the
+/// last batch has been written.
+#[derive(Debug)]
+enum WriterMsg {
+    Samples(CaptureBatch),
+    Finalize(SyncSender<WriterFinalizeResult>),
+    Shutdown,
+}
+
 /// Sample batches handed from the audio callback to the writer thread.
 /// Each batch owns its own heap allocation so the callback can drop the
 /// CPAL borrow immediately after cloning.
@@ -48,15 +63,6 @@ enum CaptureBatch {
     F32(Box<[f32]>),
     I16(Box<[i16]>),
     U16(Box<[u16]>),
-}
-
-/// Control messages sent to the writer thread by the main state — used to
-/// drain the pipeline and hand back the final buffer on stop.
-#[derive(Debug)]
-enum WriterControl {
-    /// Finalize whatever we've written so far. Writer replies on `reply_tx`
-    /// with the final buffered samples (if any) and metadata.
-    Finalize(SyncSender<WriterFinalizeResult>),
 }
 
 #[derive(Debug)]
@@ -341,21 +347,25 @@ impl WriterModeState {
 /// Simplified recorder state.
 ///
 /// Ownership model:
-/// - The audio callback (on CPAL's own thread) holds a `SyncSender` and
-///   sends `CaptureBatch` values when recording is active. It never takes
-///   a lock, never touches the WAV writer, never does I/O. One heap
-///   allocation per batch (to copy the CPAL borrow).
+/// - The audio callback (on CPAL's own thread) holds a `SyncSender<WriterMsg>`
+///   and sends `WriterMsg::Samples(batch)` when recording is active. It
+///   never takes a lock, never touches the WAV writer, never does I/O.
+///   One heap allocation per batch (to copy the CPAL borrow).
 /// - The stream-owner thread holds the `Stream` (required on macOS), and
 ///   blocks on `cmd_rx.recv()` for start/stop/shutdown commands. It
 ///   toggles `is_recording` and replies to confirm command reception.
 /// - The writer thread owns the `WriterModeState` exclusively. It blocks
-///   on `capture_rx.recv()` and drains batches as they arrive. On
-///   finalize it takes out the final buffer / WAV file.
+///   on the unified `WriterMsg` channel, handling Samples, Finalize, and
+///   Shutdown on the same queue. Because control messages ride the same
+///   channel as sample batches, a Finalize sent after the last Samples
+///   is guaranteed to see those samples ingested first.
 pub struct RecorderState {
     cmd_tx: Option<mpsc::Sender<RecorderCmd>>,
     worker_handle: Option<JoinHandle<()>>,
     writer_handle: Option<JoinHandle<()>>,
-    writer_control_tx: Option<Sender<WriterControl>>,
+    /// Main-thread handle to the writer channel — used to send Finalize
+    /// and Shutdown. The callback holds its own clone for Samples.
+    writer_msg_tx: Option<SyncSender<WriterMsg>>,
     capture_diagnostics: Option<Arc<CaptureDiagnostics>>,
     is_recording: Arc<AtomicBool>,
     sample_rate: u32,
@@ -371,7 +381,7 @@ impl RecorderState {
             cmd_tx: None,
             worker_handle: None,
             writer_handle: None,
-            writer_control_tx: None,
+            writer_msg_tx: None,
             capture_diagnostics: None,
             is_recording: Arc::new(AtomicBool::new(false)),
             sample_rate: 0,
@@ -466,26 +476,24 @@ impl RecorderState {
         let capture_diagnostics = Arc::new(CaptureDiagnostics::default());
 
         // Channels:
-        //   cmd_tx/cmd_rx        — main → stream worker (start/stop/shutdown)
-        //   capture_tx/capture_rx — callback → writer thread (audio samples)
-        //   writer_control_tx/rx — main → writer thread (finalize)
+        //   cmd_tx/cmd_rx       — main → stream worker (start/stop/shutdown)
+        //   writer_msg_tx/rx    — callback (Samples) + main (Finalize/Shutdown) → writer thread
+        //
+        // Using a single channel for samples + control messages means
+        // Finalize arrives strictly AFTER all Samples queued before it —
+        // the writer drains samples first, then finalizes. No risk of
+        // the old bug where the writer was blocked reading samples
+        // while the main thread waited on a separate control channel.
         let (cmd_tx, cmd_rx) = mpsc::channel::<RecorderCmd>();
-        let (capture_tx, capture_rx) = mpsc::sync_channel::<CaptureBatch>(CAPTURE_CHANNEL_SLOTS);
-        let (writer_control_tx, writer_control_rx) = mpsc::channel::<WriterControl>();
+        let (writer_msg_tx, writer_msg_rx) =
+            mpsc::sync_channel::<WriterMsg>(CAPTURE_CHANNEL_SLOTS);
 
-        // Spawn the writer thread. Drains capture_rx until it closes, then
-        // blocks on writer_control_rx for the finalize message.
-        let writer_handle = spawn_writer_thread(
-            mode_state,
-            capture_rx,
-            writer_control_rx,
-            capture_channels,
-        );
+        let writer_handle = spawn_writer_thread(mode_state, writer_msg_rx, capture_channels);
 
         // Clones for the stream-owner thread closure.
         let is_recording_for_stream = is_recording.clone();
         let capture_diagnostics_for_stream = capture_diagnostics.clone();
-        let capture_tx_for_stream = capture_tx.clone();
+        let writer_msg_tx_for_stream = writer_msg_tx.clone();
 
         let worker_handle = thread::spawn(move || {
             info!(
@@ -498,7 +506,7 @@ impl RecorderState {
                 &stream_config,
                 sample_format,
                 is_recording_for_stream,
-                capture_tx_for_stream,
+                writer_msg_tx_for_stream,
                 capture_diagnostics_for_stream,
             ) {
                 Ok(s) => s,
@@ -533,19 +541,17 @@ impl RecorderState {
                     }
                 }
             }
-            // Dropping `stream` here closes the CPAL stream, which stops
-            // the callback. `capture_tx` is also dropped (the callback
-            // closure held the only other clone), which closes the
-            // capture channel and signals the writer thread to drain and
-            // exit.
+            // Shutdown: drop the stream first so the callback stops
+            // immediately, then the callback's writer_msg_tx clone drops
+            // naturally. Writer thread still ends via an explicit
+            // WriterMsg::Shutdown or Finalize sent by the main thread.
             drop(stream);
-            drop(capture_tx);
         });
 
         self.cmd_tx = Some(cmd_tx);
         self.worker_handle = Some(worker_handle);
         self.writer_handle = Some(writer_handle);
-        self.writer_control_tx = Some(writer_control_tx);
+        self.writer_msg_tx = Some(writer_msg_tx);
         self.capture_diagnostics = Some(capture_diagnostics);
         self.sample_rate = sample_rate;
         self.channels = output_channels;
@@ -670,9 +676,8 @@ impl RecorderState {
     pub fn close_session(&mut self) -> Result<()> {
         let mut cleanup_errors = Vec::new();
 
-        // Tell the stream-owner thread to shut down. Its drop impl will
-        // close the CPAL stream AND drop the last capture_tx clone it
-        // holds, which signals the writer thread to drain and exit.
+        // 1. Tell the stream-owner thread to shut down. It drops the
+        //    stream, which stops the callback immediately.
         if let Some(tx) = self.cmd_tx.take() {
             if let Err(e) = tx.send(RecorderCmd::Shutdown) {
                 cleanup_errors.push(format!("Failed to send shutdown command: {}", e));
@@ -687,11 +692,12 @@ impl RecorderState {
             }
         }
 
-        // Drop the writer control sender. The writer thread ignores any
-        // further control messages after the capture channel closes, but
-        // we clean up cleanly regardless.
-        drop(self.writer_control_tx.take());
-
+        // 2. Signal the writer thread to exit. Shutdown is benign if
+        //    the writer already exited via a Finalize — the send will
+        //    just fail silently (channel disconnected).
+        if let Some(tx) = self.writer_msg_tx.take() {
+            let _ = tx.send(WriterMsg::Shutdown);
+        }
         if let Some(handle) = self.writer_handle.take() {
             if let Err(panic) = handle.join() {
                 cleanup_errors.push(format!(
@@ -701,7 +707,6 @@ impl RecorderState {
             }
         }
 
-        // Reset state
         self.capture_diagnostics = None;
         self.sample_rate = 0;
         self.channels = 0;
@@ -726,18 +731,22 @@ impl RecorderState {
     }
 
     /// Send a Finalize request to the writer thread and await its reply.
-    /// After this returns, the writer thread is still alive (waiting to
-    /// be joined during `close_session`) but has flushed all pending
-    /// samples.
+    /// Because the message travels on the same channel as Samples, the
+    /// writer processes every in-flight sample before finalizing — no
+    /// race between "last sample" and "finalize".
+    ///
+    /// After this returns, the writer thread has exited (finalize path
+    /// is terminal by design — the session is done). The stream-owner
+    /// thread is still alive until `close_session` tears it down.
     fn request_finalize(&mut self) -> Result<WriterFinalizeResult> {
-        let control_tx = self
-            .writer_control_tx
+        let msg_tx = self
+            .writer_msg_tx
             .as_ref()
             .ok_or_else(|| "No writer thread initialized".to_string())?;
 
         let (reply_tx, reply_rx) = mpsc::sync_channel::<WriterFinalizeResult>(1);
-        control_tx
-            .send(WriterControl::Finalize(reply_tx))
+        msg_tx
+            .send(WriterMsg::Finalize(reply_tx))
             .map_err(|e| format!("Failed to send finalize to writer: {}", e))?;
         reply_rx
             .recv()
@@ -786,8 +795,7 @@ impl RecorderState {
 
 fn spawn_writer_thread(
     mut mode_state: WriterModeState,
-    capture_rx: Receiver<CaptureBatch>,
-    control_rx: Receiver<WriterControl>,
+    msg_rx: Receiver<WriterMsg>,
     capture_channels: u16,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
@@ -796,27 +804,35 @@ fn spawn_writer_thread(
             current_os_thread_id()
         );
 
-        // Drain the capture channel until it closes. This blocks
-        // efficiently (`recv()` parks the thread) and does all the disk
-        // I/O / buffer appends off the audio callback thread.
-        for batch in capture_rx.iter() {
-            if let Err(e) = mode_state.ingest(batch, capture_channels) {
-                error!("Writer thread error: {}", e);
+        // Single `recv()` loop handling both sample batches and control
+        // messages. Because they share a channel, a Finalize queued
+        // after the last Samples is guaranteed to be processed AFTER
+        // those samples — no lost-audio race at stop.
+        let mut finalize_reply: Option<SyncSender<WriterFinalizeResult>> = None;
+        loop {
+            match msg_rx.recv() {
+                Ok(WriterMsg::Samples(batch)) => {
+                    if let Err(e) = mode_state.ingest(batch, capture_channels) {
+                        error!("Writer thread error: {}", e);
+                    }
+                }
+                Ok(WriterMsg::Finalize(reply)) => {
+                    finalize_reply = Some(reply);
+                    break;
+                }
+                Ok(WriterMsg::Shutdown) | Err(_) => {
+                    // Channel closed (stream-owner dropped all senders)
+                    // or explicit Shutdown without a Finalize. Finalize
+                    // anyway so the WAV file isn't left truncated.
+                    break;
+                }
             }
         }
 
-        // Capture channel closed. Wait for the finalize control message
-        // from the main state, if one arrives. If the control channel
-        // was dropped first (cancel path), just finalize immediately.
-        let reply_tx = match control_rx.recv() {
-            Ok(WriterControl::Finalize(tx)) => Some(tx),
-            Err(_) => None,
-        };
-
         let result = mode_state.finalize_and_take();
-        if let Some(tx) = reply_tx {
+        if let Some(tx) = finalize_reply {
             let _ = tx.send(result);
-        } else if let Some(err) = result.err {
+        } else if let Some(err) = &result.err {
             error!("Writer thread finalize error (no listener): {}", err);
         }
 
@@ -825,14 +841,15 @@ fn spawn_writer_thread(
 }
 
 /// Build the CPAL input stream. Callback is a **single non-blocking
-/// producer**: check is_recording, clone the CPAL slice into a Box, and
-/// try_send onto the capture channel. No lock, no I/O, no syscalls.
+/// producer**: check is_recording, clone the CPAL slice into a Box,
+/// wrap in WriterMsg::Samples, and try_send onto the writer channel.
+/// No lock, no I/O, no syscalls.
 fn build_input_stream(
     device: &Device,
     config: &cpal::StreamConfig,
     sample_format: SampleFormat,
     is_recording: Arc<AtomicBool>,
-    capture_tx: SyncSender<CaptureBatch>,
+    writer_msg_tx: SyncSender<WriterMsg>,
     capture_diagnostics: Arc<CaptureDiagnostics>,
 ) -> Result<Stream> {
     let err_fn = |err| error!("Audio stream error: {}", err);
@@ -840,7 +857,7 @@ fn build_input_stream(
     macro_rules! build_stream {
         ($sample_ty:ty, $variant:path) => {{
             let is_recording = is_recording.clone();
-            let capture_tx = capture_tx.clone();
+            let writer_msg_tx = writer_msg_tx.clone();
             let capture_diagnostics = capture_diagnostics.clone();
             device
                 .build_input_stream(
@@ -851,7 +868,7 @@ fn build_input_stream(
                         }
                         let started = Instant::now();
                         let batch = $variant(Box::<[$sample_ty]>::from(data));
-                        match capture_tx.try_send(batch) {
+                        match writer_msg_tx.try_send(WriterMsg::Samples(batch)) {
                             Ok(()) => {
                                 capture_diagnostics.record_callback(
                                     data.len(),
