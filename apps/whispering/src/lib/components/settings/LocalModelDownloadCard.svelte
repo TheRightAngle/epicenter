@@ -99,11 +99,16 @@
 		}),
 	);
 
+	// Track deviceConfig reads so Svelte re-runs this effect whenever the
+	// engine's model-path setting changes (e.g., another tab activates a
+	// different model, or the user clears the path). $derived guarantees
+	// the read is registered as a dependency even though we don't use the
+	// value directly — refreshStatus() inspects the file system itself.
+	const trackedModelPath = $derived(
+		deviceConfig.get(`transcription.${model.engine}.modelPath` as const),
+	);
 	$effect(() => {
-		// React to settings changes for this engine
-		const settingsKey = `transcription.${model.engine}.modelPath` as const;
-		const currentPath = deviceConfig.get(settingsKey);
-		// Trigger refresh when settings change (currentPath is a dependency)
+		void trackedModelPath; // dependency only
 		refreshStatus();
 	});
 
