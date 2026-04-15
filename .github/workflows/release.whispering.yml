@@ -122,12 +122,30 @@ jobs:
           # For other platforms: empty string (uses default target)
           targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
 
-      # Cache Rust dependencies for faster builds
+      # Cache Rust dependencies for faster builds.
+      #
+      # Defaults are tuned for the wrong tradeoffs in our case:
+      #  * cache-on-failure=false → failed builds throw away an hour of
+      #    compile work. We've had many failed builds in this branch;
+      #    each one needs ~10 min of cargo time only to be discarded.
+      #  * cache-all-crates=false → only non-workspace crates get cached.
+      #    transcribe-rs (vendored workspace member, ~80 crates of deps)
+      #    gets recompiled even when its source hasn't changed.
+      #
+      # Both flipped here. Worst case for cache-on-failure=true is we
+      # save a cache after a partial-compile build that wasn't quite
+      # right; cargo's fingerprint system still detects source changes
+      # correctly, so subsequent builds will recompile what's needed.
       - name: Rust cache
         uses: swatinem/rust-cache@v2
         with:
-          # Point to the Rust project directory
           workspaces: './apps/whispering/src-tauri -> target'
+          cache-on-failure: true
+          cache-all-crates: true
+          # Bump this when you suspect cache poisoning to invalidate
+          # everything wholesale. Cheaper than waiting for individual
+          # entries to age out.
+          prefix-key: v1-rust-tauri
 
       # Install all JavaScript dependencies
       - name: install frontend dependencies
