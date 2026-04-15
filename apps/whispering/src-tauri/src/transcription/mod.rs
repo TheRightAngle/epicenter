@@ -617,7 +617,7 @@ pub async fn transcribe_audio_whisper(
     model_path: String,
     language: Option<String>,
     initial_prompt: Option<String>,
-    model_manager: tauri::State<'_, ModelManager>,
+    model_manager: tauri::State<'_, std::sync::Arc<ModelManager>>,
 ) -> Result<String, TranscriptionError> {
     info!(
         "[Transcription] starting Whisper transcription: audio_bytes={} model_path={}",
@@ -625,84 +625,68 @@ pub async fn transcribe_audio_whisper(
         model_path
     );
 
-    // Convert audio to 16kHz mono format that whisper requires
-    let wav_data = convert_audio_for_whisper(audio_data)?;
-    debug!(
-        "[Transcription] audio conversion complete: wav_bytes={}",
-        wav_data.len()
-    );
+    // Move the entire pipeline (audio conversion, sample extraction,
+    // model load, inference) onto Tauri's blocking pool so the async
+    // runtime stays responsive while the GPU/CPU is busy. Without this,
+    // each transcribe call blocks one tokio worker thread for the full
+    // duration of inference (often seconds).
+    let model_manager = std::sync::Arc::clone(model_manager.inner());
+    tauri::async_runtime::spawn_blocking(move || -> Result<String, TranscriptionError> {
+        let wav_data = convert_audio_for_whisper(audio_data)?;
+        debug!(
+            "[Transcription] audio conversion complete: wav_bytes={}",
+            wav_data.len()
+        );
 
-    // Extract samples from WAV
-    let samples = extract_samples_from_wav(wav_data)?;
-    debug!(
-        "[Transcription] extracted {} PCM samples for Whisper engine",
-        samples.len()
-    );
+        let samples = extract_samples_from_wav(wav_data)?;
+        debug!(
+            "[Transcription] extracted {} PCM samples for Whisper engine",
+            samples.len()
+        );
 
-    // Return early if audio is empty
-    if samples.is_empty() {
-        warn!("[Transcription] no samples extracted, returning empty transcription");
-        return Ok(String::new());
-    }
+        if samples.is_empty() {
+            warn!("[Transcription] no samples extracted, returning empty transcription");
+            return Ok(String::new());
+        }
 
-    // Get or load the model using the persistent model manager
-    let engine_arc = model_manager
-        .get_or_load_whisper(PathBuf::from(&model_path))
-        .map_err(|e| TranscriptionError::ModelLoadError { message: e })?;
-    debug!("[Transcription] Whisper model ready: {}", model_path);
+        model_manager
+            .get_or_load_whisper(PathBuf::from(&model_path))
+            .map_err(|e| TranscriptionError::ModelLoadError { message: e })?;
+        debug!("[Transcription] Whisper model ready: {}", model_path);
 
-    // Configure inference parameters
-    let mut params = WhisperInferenceParams::default();
-    params.language = language;
-    params.initial_prompt = initial_prompt;
-    params.print_special = false;
-    params.print_progress = false;
-    params.print_realtime = false;
-    params.print_timestamps = false;
-    params.suppress_blank = true;
-    params.suppress_non_speech_tokens = true;
-    params.no_speech_thold = 0.2;
+        let mut params = WhisperInferenceParams::default();
+        params.language = language;
+        params.initial_prompt = initial_prompt;
+        params.print_special = false;
+        params.print_progress = false;
+        params.print_realtime = false;
+        params.print_timestamps = false;
+        params.suppress_blank = true;
+        params.suppress_non_speech_tokens = true;
+        params.no_speech_thold = 0.2;
 
-    // Run transcription with the persistent engine
-    // Use into_inner() to recover from poisoned mutex, but clear state to force fresh reload
-    let result = {
-        let mut engine_guard = engine_arc.lock().unwrap_or_else(|poisoned| {
-            warn!(
-                "[Transcription] Engine mutex was poisoned from previous panic, clearing state to force reload..."
-            );
-            let mut recovered = poisoned.into_inner();
-            *recovered = None; // Clear potentially corrupted state
-            recovered
-        });
-        let engine = engine_guard
-            .as_mut()
-            .ok_or_else(|| TranscriptionError::ModelLoadError {
-                message: "Model not loaded (may have been cleared after previous error). Please try again.".to_string(),
-            })?;
+        let result = model_manager.with_engine(|engine| {
+            let whisper_engine = match engine {
+                model_manager::Engine::Whisper(e) => e,
+                _ => return Err("Expected Whisper engine but got different type".to_string()),
+            };
+            whisper_engine
+                .transcribe_with(&samples, &params)
+                .map_err(|e| e.to_string())
+        })
+        .map_err(|e| TranscriptionError::TranscriptionError { message: e })?;
 
-        // Extract the WhisperEngine from the enum
-        let whisper_engine = match engine {
-            model_manager::Engine::Whisper(e) => e,
-            _ => {
-                return Err(TranscriptionError::ModelLoadError {
-                    message: "Expected Whisper engine but got different type".to_string(),
-                })
-            }
-        };
-
-        whisper_engine
-            .transcribe_with(&samples, &params)
-            .map_err(|e| TranscriptionError::TranscriptionError {
-                message: e.to_string(),
-            })?
-    };
-
-    let transcript = result.text.trim().to_string();
-    info!(
-        "[Transcription] Whisper transcription complete: characters={}",
-        transcript.len()
-    );
-    Ok(transcript)
+        let transcript = result.text.trim().to_string();
+        info!(
+            "[Transcription] Whisper transcription complete: characters={}",
+            transcript.len()
+        );
+        Ok(transcript)
+    })
+    .await
+    .map_err(|e| TranscriptionError::TranscriptionError {
+        message: format!("Transcription task panicked or was cancelled: {}", e),
+    })?
 }
 
 #[cfg(target_os = "windows")]
@@ -712,7 +696,7 @@ pub async fn transcribe_audio_whisper(
     _model_path: String,
     _language: Option<String>,
     _initial_prompt: Option<String>,
-    _model_manager: tauri::State<'_, ModelManager>,
+    _model_manager: tauri::State<'_, std::sync::Arc<ModelManager>>,
 ) -> Result<String, TranscriptionError> {
     Err(TranscriptionError::TranscriptionError {
         message: "Whisper C++ is not available on Windows due to build compatibility issues. Please use Parakeet for local transcription.".to_string(),
@@ -730,7 +714,7 @@ pub async fn transcribe_audio_parakeet(
     model_path: String,
     acceleration_mode: String,
     device_id: Option<i32>,
-    model_manager: tauri::State<'_, ModelManager>,
+    model_manager: tauri::State<'_, std::sync::Arc<ModelManager>>,
 ) -> Result<String, TranscriptionError> {
     info!(
         "[Transcription] starting Parakeet transcription: audio_bytes={} model_path={} acceleration_mode={} device_id={:?}",
@@ -740,85 +724,71 @@ pub async fn transcribe_audio_parakeet(
         device_id,
     );
 
-    // Convert audio to 16kHz mono format
-    let wav_data = convert_audio_for_whisper(audio_data)?;
-    debug!(
-        "[Transcription] audio conversion complete: wav_bytes={}",
-        wav_data.len()
-    );
-
-    // Extract samples from WAV
-    let samples = extract_samples_from_wav(wav_data)?;
-    debug!(
-        "[Transcription] extracted {} PCM samples for Parakeet engine",
-        samples.len()
-    );
-
-    // Return early if audio is empty
-    if samples.is_empty() {
-        warn!("[Transcription] no samples extracted, returning empty transcription");
-        return Ok(String::new());
-    }
-
     let acceleration_mode = ParakeetAccelerationMode::parse(&acceleration_mode, device_id)
         .map_err(|e| TranscriptionError::GpuError { message: e })?;
 
-    // Get or load the model using the persistent model manager
-    let engine_arc = model_manager
-        .get_or_load_parakeet(PathBuf::from(&model_path), acceleration_mode)
-        .map_err(|e| match acceleration_mode {
-            ParakeetAccelerationMode::DirectML { .. } => {
-                TranscriptionError::GpuError { message: e }
-            }
-            ParakeetAccelerationMode::Cpu => TranscriptionError::ModelLoadError { message: e },
-        })?;
-    debug!("[Transcription] Parakeet model ready: {}", model_path);
+    // Whole pipeline runs on the blocking pool. ParakeetModel::load_with_provider
+    // initializes a DirectML device on first call, which can take 1–2s on a
+    // cold GPU driver — far too long for the async runtime. Subsequent
+    // calls reuse the loaded model and return quickly.
+    let model_manager = std::sync::Arc::clone(model_manager.inner());
+    tauri::async_runtime::spawn_blocking(move || -> Result<String, TranscriptionError> {
+        let wav_data = convert_audio_for_whisper(audio_data)?;
+        debug!(
+            "[Transcription] audio conversion complete: wav_bytes={}",
+            wav_data.len()
+        );
 
-    let params = ParakeetParams {
-        timestamp_granularity: Some(TimestampGranularity::Segment),
-        ..Default::default()
-    };
+        let samples = extract_samples_from_wav(wav_data)?;
+        debug!(
+            "[Transcription] extracted {} PCM samples for Parakeet engine",
+            samples.len()
+        );
 
-    // Run transcription with the persistent engine
-    // Use into_inner() to recover from poisoned mutex, but clear state to force fresh reload
-    let result = {
-        let mut engine_guard = engine_arc.lock().unwrap_or_else(|poisoned| {
-            warn!(
-                "[Transcription] Engine mutex was poisoned from previous panic, clearing state to force reload..."
-            );
-            let mut recovered = poisoned.into_inner();
-            *recovered = None; // Clear potentially corrupted state
-            recovered
-        });
-        let engine = engine_guard
-            .as_mut()
-            .ok_or_else(|| TranscriptionError::ModelLoadError {
-                message: "Model not loaded (may have been cleared after previous error). Please try again.".to_string(),
+        if samples.is_empty() {
+            warn!("[Transcription] no samples extracted, returning empty transcription");
+            return Ok(String::new());
+        }
+
+        model_manager
+            .get_or_load_parakeet(PathBuf::from(&model_path), acceleration_mode)
+            .map_err(|e| match acceleration_mode {
+                ParakeetAccelerationMode::DirectML { .. } => {
+                    TranscriptionError::GpuError { message: e }
+                }
+                ParakeetAccelerationMode::Cpu => {
+                    TranscriptionError::ModelLoadError { message: e }
+                }
             })?;
+        debug!("[Transcription] Parakeet model ready: {}", model_path);
 
-        // Extract the ParakeetEngine from the enum
-        let parakeet_engine = match engine {
-            model_manager::Engine::Parakeet(e) => e,
-            _ => {
-                return Err(TranscriptionError::ModelLoadError {
-                    message: "Expected Parakeet engine but got different type".to_string(),
-                })
-            }
+        let params = ParakeetParams {
+            timestamp_granularity: Some(TimestampGranularity::Segment),
+            ..Default::default()
         };
 
-        parakeet_engine
-            .transcribe_with(&samples, &params)
-            .map_err(|e| TranscriptionError::TranscriptionError {
-                message: e.to_string(),
-            })?
-    };
+        let result = model_manager.with_engine(|engine| {
+            let parakeet_engine = match engine {
+                model_manager::Engine::Parakeet(e) => e,
+                _ => return Err("Expected Parakeet engine but got different type".to_string()),
+            };
+            parakeet_engine
+                .transcribe_with(&samples, &params)
+                .map_err(|e| e.to_string())
+        })
+        .map_err(|e| TranscriptionError::TranscriptionError { message: e })?;
 
-    let transcript = result.text.trim().to_string();
-    info!(
-        "[Transcription] Parakeet transcription complete: characters={}",
-        transcript.len()
-    );
-    Ok(transcript)
+        let transcript = result.text.trim().to_string();
+        info!(
+            "[Transcription] Parakeet transcription complete: characters={}",
+            transcript.len()
+        );
+        Ok(transcript)
+    })
+    .await
+    .map_err(|e| TranscriptionError::TranscriptionError {
+        message: format!("Transcription task panicked or was cancelled: {}", e),
+    })?
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -826,7 +796,7 @@ pub async fn transcribe_audio_parakeet(
 pub async fn transcribe_audio_moonshine(
     audio_data: Vec<u8>,
     model_path: String,
-    model_manager: tauri::State<'_, ModelManager>,
+    model_manager: tauri::State<'_, std::sync::Arc<ModelManager>>,
 ) -> Result<String, TranscriptionError> {
     info!(
         "[Transcription] starting Moonshine transcription: audio_bytes={} model_path={}",
@@ -834,78 +804,56 @@ pub async fn transcribe_audio_moonshine(
         model_path
     );
 
-    // Convert audio to 16kHz mono format
-    let wav_data = convert_audio_for_whisper(audio_data)?;
-    debug!(
-        "[Transcription] audio conversion complete: wav_bytes={}",
-        wav_data.len()
-    );
-
-    // Extract samples from WAV
-    let samples = extract_samples_from_wav(wav_data)?;
-    debug!(
-        "[Transcription] extracted {} PCM samples for Moonshine engine",
-        samples.len()
-    );
-
-    // Return early if audio is empty
-    if samples.is_empty() {
-        warn!("[Transcription] no samples extracted, returning empty transcription");
-        return Ok(String::new());
-    }
-
-    // Extract variant from model path directory name
-    // Expected format: moonshine-{variant}-{lang} (e.g., "moonshine-tiny-en", "moonshine-base-en")
     let model_params = extract_moonshine_variant_from_model_path(&model_path);
 
-    // Get or load the model using the persistent model manager
-    let engine_arc = model_manager
-        .get_or_load_moonshine(PathBuf::from(&model_path), model_params)
-        .map_err(|e| TranscriptionError::ModelLoadError { message: e })?;
-    debug!("[Transcription] Moonshine model ready: {}", model_path);
+    let model_manager = std::sync::Arc::clone(model_manager.inner());
+    tauri::async_runtime::spawn_blocking(move || -> Result<String, TranscriptionError> {
+        let wav_data = convert_audio_for_whisper(audio_data)?;
+        debug!(
+            "[Transcription] audio conversion complete: wav_bytes={}",
+            wav_data.len()
+        );
 
-    // Run transcription with the persistent engine
-    // Use into_inner() to recover from poisoned mutex, but clear state to force fresh reload
-    let result = {
-        let mut engine_guard = engine_arc.lock().unwrap_or_else(|poisoned| {
-            warn!(
-                "[Transcription] Engine mutex was poisoned from previous panic, clearing state to force reload..."
-            );
-            let mut recovered = poisoned.into_inner();
-            *recovered = None; // Clear potentially corrupted state
-            recovered
-        });
-        let engine = engine_guard
-            .as_mut()
-            .ok_or_else(|| TranscriptionError::ModelLoadError {
-                message: "Model not loaded (may have been cleared after previous error). Please try again.".to_string(),
-            })?;
+        let samples = extract_samples_from_wav(wav_data)?;
+        debug!(
+            "[Transcription] extracted {} PCM samples for Moonshine engine",
+            samples.len()
+        );
 
-        // Extract the MoonshineEngine from the enum
-        let moonshine_engine = match engine {
-            model_manager::Engine::Moonshine(e) => e,
-            _ => {
-                return Err(TranscriptionError::ModelLoadError {
-                    message: "Expected Moonshine engine but got different type".to_string(),
-                })
-            }
-        };
+        if samples.is_empty() {
+            warn!("[Transcription] no samples extracted, returning empty transcription");
+            return Ok(String::new());
+        }
+
+        model_manager
+            .get_or_load_moonshine(PathBuf::from(&model_path), model_params)
+            .map_err(|e| TranscriptionError::ModelLoadError { message: e })?;
+        debug!("[Transcription] Moonshine model ready: {}", model_path);
 
         let params = MoonshineParams::default();
 
-        moonshine_engine
-            .transcribe_with(&samples, &params)
-            .map_err(|e| TranscriptionError::TranscriptionError {
-                message: e.to_string(),
-            })?
-    };
+        let result = model_manager.with_engine(|engine| {
+            let moonshine_engine = match engine {
+                model_manager::Engine::Moonshine(e) => e,
+                _ => return Err("Expected Moonshine engine but got different type".to_string()),
+            };
+            moonshine_engine
+                .transcribe_with(&samples, &params)
+                .map_err(|e| e.to_string())
+        })
+        .map_err(|e| TranscriptionError::TranscriptionError { message: e })?;
 
-    let transcript = result.text.trim().to_string();
-    info!(
-        "[Transcription] Moonshine transcription complete: characters={}",
-        transcript.len()
-    );
-    Ok(transcript)
+        let transcript = result.text.trim().to_string();
+        info!(
+            "[Transcription] Moonshine transcription complete: characters={}",
+            transcript.len()
+        );
+        Ok(transcript)
+    })
+    .await
+    .map_err(|e| TranscriptionError::TranscriptionError {
+        message: format!("Transcription task panicked or was cancelled: {}", e),
+    })?
 }
 
 #[cfg(target_os = "windows")]
@@ -913,7 +861,7 @@ pub async fn transcribe_audio_moonshine(
 pub async fn transcribe_audio_moonshine(
     _audio_data: Vec<u8>,
     _model_path: String,
-    _model_manager: tauri::State<'_, ModelManager>,
+    _model_manager: tauri::State<'_, std::sync::Arc<ModelManager>>,
 ) -> Result<String, TranscriptionError> {
     Err(TranscriptionError::TranscriptionError {
         message: "Moonshine is not available on Windows due to build compatibility issues. Please use Parakeet for local transcription.".to_string(),

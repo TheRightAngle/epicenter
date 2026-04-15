@@ -1,9 +1,11 @@
-use log::warn;
+use log::{debug, info};
+use parking_lot::Mutex;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 #[cfg(not(target_os = "windows"))]
 use transcribe_rs::onnx::moonshine::MoonshineModel;
+#[cfg(not(target_os = "windows"))]
 use transcribe_rs::onnx::moonshine::MoonshineVariant;
 use transcribe_rs::onnx::parakeet::ParakeetModel;
 use transcribe_rs::onnx::session::OnnxExecutionProvider;
@@ -11,19 +13,18 @@ use transcribe_rs::onnx::Quantization;
 #[cfg(not(target_os = "windows"))]
 use transcribe_rs::whisper_cpp::WhisperEngine;
 
-/// Engine type for managing different transcription engines
+/// Engine type for managing different transcription engines.
+///
+/// Moonshine and Whisper.cpp are unavailable on Windows due to upstream
+/// build issues in their native dependencies (whisper.cpp MSVC runtime
+/// conflict with ort; tokenizers esaxx-rs CRT conflict). Parakeet is the
+/// only local option on Windows and supports CPU + DirectML.
 pub enum Engine {
     #[cfg(not(target_os = "windows"))]
     Whisper(WhisperEngine),
     Parakeet(ParakeetModel),
     #[cfg(not(target_os = "windows"))]
     Moonshine(MoonshineModel),
-}
-
-impl Engine {
-    fn unload(&mut self) {
-        // transcribe-rs 0.3.0 drops loaded models directly; there is no explicit unload API.
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,7 +42,6 @@ impl ParakeetAccelerationMode {
                 {
                     Ok(Self::DirectML { device_id })
                 }
-
                 #[cfg(not(target_os = "windows"))]
                 {
                     let _ = device_id;
@@ -62,7 +62,6 @@ impl ParakeetAccelerationMode {
                         device_id: *device_id,
                     })
                 }
-
                 #[cfg(not(target_os = "windows"))]
                 {
                     let _ = device_id;
@@ -73,182 +72,132 @@ impl ParakeetAccelerationMode {
     }
 }
 
-pub struct ModelManager {
-    engine: Arc<Mutex<Option<Engine>>>,
-    current_model_path: Arc<Mutex<Option<PathBuf>>>,
-    current_parakeet_mode: Arc<Mutex<Option<ParakeetAccelerationMode>>>,
-    last_activity: Arc<Mutex<SystemTime>>,
-    idle_timeout: Duration,
+/// Tracks which model+config combo is currently resident. Kept in a
+/// single struct so swapping models only takes one lock (matches the
+/// "load new model, forget old model" atomicity the public API promises).
+#[derive(Default)]
+struct LoadedModel {
+    engine: Option<Engine>,
+    model_path: Option<PathBuf>,
+    parakeet_mode: Option<ParakeetAccelerationMode>,
+    last_activity: Option<Instant>,
 }
 
-fn recover_lock<'a, T, F>(
-    mutex: &'a Mutex<T>,
-    context: &str,
-    recover: F,
-) -> std::sync::MutexGuard<'a, T>
-where
-    F: FnOnce(&mut T),
-{
-    mutex.lock().unwrap_or_else(|poisoned| {
-        warn!(
-            "{} mutex poisoned from previous panic, recovering state before continuing",
-            context
-        );
-        let mut recovered = poisoned.into_inner();
-        recover(&mut recovered);
-        recovered
-    })
+/// Persistent model cache for transcription engines.
+///
+/// ## Thread safety
+///
+/// Uses `parking_lot::Mutex` — non-poisoning, so panics during inference
+/// don't leave the manager wedged. Prior std::sync::Mutex required
+/// boilerplate `recover_lock(..., |engine| *engine = None)` at every call
+/// site to handle poisoning; parking_lot makes that unnecessary because a
+/// panicked thread simply unlocks.
+///
+/// ## Blocking model loads
+///
+/// `get_or_load_*` is synchronous and can block for hundreds of
+/// milliseconds (CPU) to multiple seconds (DirectML cold GPU init).
+/// Callers from async Tauri commands must wrap the call in
+/// `tauri::async_runtime::spawn_blocking` or `block_in_place` — otherwise
+/// the command freezes whatever async worker it was scheduled on. See
+/// the `transcribe_audio_*` command handlers for the correct pattern.
+pub struct ModelManager {
+    state: Mutex<LoadedModel>,
+    idle_timeout: Duration,
 }
 
 impl ModelManager {
     pub fn new() -> Self {
+        Self::with_idle_timeout(Duration::from_secs(5 * 60))
+    }
+
+    pub fn with_idle_timeout(idle_timeout: Duration) -> Self {
         Self {
-            engine: Arc::new(Mutex::new(None)),
-            current_model_path: Arc::new(Mutex::new(None)),
-            current_parakeet_mode: Arc::new(Mutex::new(None)),
-            last_activity: Arc::new(Mutex::new(SystemTime::now())),
-            idle_timeout: Duration::from_secs(5 * 60), // 5 minutes default
+            state: Mutex::new(LoadedModel::default()),
+            idle_timeout,
         }
     }
 
+    /// Load (or reuse) a Parakeet model. Blocks for the duration of
+    /// ONNX + DirectML initialization on a cold load.
     pub fn get_or_load_parakeet(
         &self,
         model_path: PathBuf,
         acceleration_mode: ParakeetAccelerationMode,
-    ) -> Result<Arc<Mutex<Option<Engine>>>, String> {
-        let mut engine_guard = recover_lock(&self.engine, "Engine", |engine| *engine = None);
-        let mut current_path_guard = recover_lock(&self.current_model_path, "Model path", |path| {
-            *path = None;
-        });
-        let mut current_parakeet_mode_guard =
-            recover_lock(&self.current_parakeet_mode, "Parakeet mode", |mode| {
-                *mode = None;
-            });
+    ) -> Result<(), String> {
+        let mut state = self.state.lock();
 
-        // Check if we need to load a new model
-        let needs_load = match (
-            &*engine_guard,
-            &*current_path_guard,
-            &*current_parakeet_mode_guard,
-        ) {
-            (None, _, _) => true,
-            (Some(_), Some(path), _) if path != &model_path => {
-                // Different model requested, unload current one
-                if let Some(mut engine) = engine_guard.take() {
-                    engine.unload();
-                }
-                true
-            }
-            (Some(Engine::Parakeet(_)), _, None) => {
-                if let Some(mut engine) = engine_guard.take() {
-                    engine.unload();
-                }
-                true
-            }
-            (Some(Engine::Parakeet(_)), _, Some(current_mode))
-                if current_mode != &acceleration_mode =>
-            {
-                if let Some(mut engine) = engine_guard.take() {
-                    engine.unload();
-                }
-                true
-            }
-            #[cfg(not(target_os = "windows"))]
-            (Some(Engine::Whisper(_)), _, _) => {
-                // Wrong engine type, unload and reload
-                if let Some(mut engine) = engine_guard.take() {
-                    engine.unload();
-                }
-                true
-            }
-            #[cfg(not(target_os = "windows"))]
-            (Some(Engine::Moonshine(_)), _, _) => {
-                if let Some(mut engine) = engine_guard.take() {
-                    engine.unload();
-                }
-                true
-            }
-            _ => false,
-        };
+        // Reuse if it's the same model AND the same acceleration mode.
+        let can_reuse = matches!(&state.engine, Some(Engine::Parakeet(_)))
+            && state.model_path.as_deref() == Some(&model_path)
+            && state.parakeet_mode == Some(acceleration_mode);
 
-        if needs_load {
-            let provider = acceleration_mode.to_execution_provider()?;
-            let engine =
-                ParakeetModel::load_with_provider(&model_path, &Quantization::Int8, &provider)
-                    .map_err(|e| format!("Failed to load Parakeet model: {}", e))?;
-
-            *engine_guard = Some(Engine::Parakeet(engine));
-            *current_path_guard = Some(model_path);
-            *current_parakeet_mode_guard = Some(acceleration_mode);
+        if can_reuse {
+            state.last_activity = Some(Instant::now());
+            return Ok(());
         }
 
-        // Update last activity
-        let mut last_activity_guard =
-            recover_lock(&self.last_activity, "Last activity", |last_activity| {
-                *last_activity = SystemTime::now();
-            });
-        *last_activity_guard = SystemTime::now();
+        // Drop whatever's currently loaded before loading the new one —
+        // we don't want two ONNX sessions resident simultaneously.
+        state.engine = None;
+        state.model_path = None;
+        state.parakeet_mode = None;
 
-        Ok(self.engine.clone())
+        let provider = acceleration_mode.to_execution_provider()?;
+        let load_started = Instant::now();
+        let engine =
+            ParakeetModel::load_with_provider(&model_path, &Quantization::Int8, &provider)
+                .map_err(|e| format!("Failed to load Parakeet model: {}", e))?;
+        info!(
+            "Loaded Parakeet model ({:?}, mode={:?}) in {:?}",
+            model_path,
+            acceleration_mode,
+            load_started.elapsed()
+        );
+
+        state.engine = Some(Engine::Parakeet(engine));
+        state.model_path = Some(model_path);
+        state.parakeet_mode = Some(acceleration_mode);
+        state.last_activity = Some(Instant::now());
+        Ok(())
     }
 
     #[cfg(not(target_os = "windows"))]
-    pub fn get_or_load_whisper(
-        &self,
-        model_path: PathBuf,
-    ) -> Result<Arc<Mutex<Option<Engine>>>, String> {
-        let mut engine_guard = recover_lock(&self.engine, "Engine", |engine| *engine = None);
-        let mut current_path_guard = recover_lock(&self.current_model_path, "Model path", |path| {
-            *path = None;
-        });
+    pub fn get_or_load_whisper(&self, model_path: PathBuf) -> Result<(), String> {
+        let mut state = self.state.lock();
 
-        // Check if we need to load a new model
-        let needs_load = match (&*engine_guard, &*current_path_guard) {
-            (None, _) => true,
-            (Some(_), Some(path)) if path != &model_path => {
-                // Different model requested, unload current one
-                if let Some(mut engine) = engine_guard.take() {
-                    engine.unload();
-                }
-                true
-            }
-            (Some(Engine::Parakeet(_)), _) => {
-                // Wrong engine type, unload and reload
-                if let Some(mut engine) = engine_guard.take() {
-                    engine.unload();
-                }
-                true
-            }
-            _ => false,
-        };
+        let can_reuse = matches!(&state.engine, Some(Engine::Whisper(_)))
+            && state.model_path.as_deref() == Some(&model_path);
 
-        if needs_load {
-            let engine = WhisperEngine::load(&model_path)
-                .map_err(|e| format!("Failed to load Whisper model: {}", e))?;
-
-            *engine_guard = Some(Engine::Whisper(engine));
-            *current_path_guard = Some(model_path);
-            if let Ok(mut current_parakeet_mode_guard) = self.current_parakeet_mode.lock() {
-                *current_parakeet_mode_guard = None;
-            }
+        if can_reuse {
+            state.last_activity = Some(Instant::now());
+            return Ok(());
         }
 
-        // Update last activity
-        let mut last_activity_guard =
-            recover_lock(&self.last_activity, "Last activity", |last_activity| {
-                *last_activity = SystemTime::now();
-            });
-        *last_activity_guard = SystemTime::now();
+        state.engine = None;
+        state.model_path = None;
+        state.parakeet_mode = None;
 
-        Ok(self.engine.clone())
+        let load_started = Instant::now();
+        let engine = WhisperEngine::load(&model_path)
+            .map_err(|e| format!("Failed to load Whisper model: {}", e))?;
+        info!(
+            "Loaded Whisper model ({:?}) in {:?}",
+            model_path,
+            load_started.elapsed()
+        );
+
+        state.engine = Some(Engine::Whisper(engine));
+        state.model_path = Some(model_path);
+        state.last_activity = Some(Instant::now());
+        Ok(())
     }
 
     #[cfg(target_os = "windows")]
-    pub fn get_or_load_whisper(
-        &self,
-        _model_path: PathBuf,
-    ) -> Result<Arc<Mutex<Option<Engine>>>, String> {
-        Err("Whisper C++ is not available on Windows due to build compatibility issues. Please use Parakeet for local transcription.".to_string())
+    pub fn get_or_load_whisper(&self, _model_path: PathBuf) -> Result<(), String> {
+        Err("Whisper C++ is not available on Windows due to build compatibility issues. \
+             Please use Parakeet for local transcription."
+            .to_string())
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -256,105 +205,94 @@ impl ModelManager {
         &self,
         model_path: PathBuf,
         variant: MoonshineVariant,
-    ) -> Result<Arc<Mutex<Option<Engine>>>, String> {
-        let mut engine_guard = recover_lock(&self.engine, "Engine", |engine| *engine = None);
-        let mut current_path_guard = recover_lock(&self.current_model_path, "Model path", |path| {
-            *path = None;
-        });
+    ) -> Result<(), String> {
+        let mut state = self.state.lock();
 
-        // Check if we need to load a new model
-        let needs_load = match (&*engine_guard, &*current_path_guard) {
-            (None, _) => true,
-            (Some(_), Some(path)) if path != &model_path => {
-                // Different model requested, unload current one
-                if let Some(mut engine) = engine_guard.take() {
-                    engine.unload();
-                }
-                true
-            }
-            (Some(Engine::Whisper(_)), _) => {
-                // Wrong engine type, unload and reload
-                if let Some(mut engine) = engine_guard.take() {
-                    engine.unload();
-                }
-                true
-            }
-            (Some(Engine::Parakeet(_)), _) => {
-                // Wrong engine type, unload and reload
-                if let Some(mut engine) = engine_guard.take() {
-                    engine.unload();
-                }
-                true
-            }
-            _ => false,
-        };
+        let can_reuse = matches!(&state.engine, Some(Engine::Moonshine(_)))
+            && state.model_path.as_deref() == Some(&model_path);
 
-        if needs_load {
-            let engine = MoonshineModel::load(&model_path, variant, &Quantization::FP32)
-                .map_err(|e| format!("Failed to load Moonshine model: {}", e))?;
-
-            *engine_guard = Some(Engine::Moonshine(engine));
-            *current_path_guard = Some(model_path);
-            if let Ok(mut current_parakeet_mode_guard) = self.current_parakeet_mode.lock() {
-                *current_parakeet_mode_guard = None;
-            }
+        if can_reuse {
+            state.last_activity = Some(Instant::now());
+            return Ok(());
         }
 
-        // Update last activity
-        let mut last_activity_guard =
-            recover_lock(&self.last_activity, "Last activity", |last_activity| {
-                *last_activity = SystemTime::now();
-            });
-        *last_activity_guard = SystemTime::now();
+        state.engine = None;
+        state.model_path = None;
+        state.parakeet_mode = None;
 
-        Ok(self.engine.clone())
+        let load_started = Instant::now();
+        let engine = MoonshineModel::load(&model_path, variant, &Quantization::FP32)
+            .map_err(|e| format!("Failed to load Moonshine model: {}", e))?;
+        info!(
+            "Loaded Moonshine model ({:?}) in {:?}",
+            model_path,
+            load_started.elapsed()
+        );
+
+        state.engine = Some(Engine::Moonshine(engine));
+        state.model_path = Some(model_path);
+        state.last_activity = Some(Instant::now());
+        Ok(())
     }
 
-    #[cfg(target_os = "windows")]
-    pub fn get_or_load_moonshine(
+    // Moonshine is intentionally not exposed on Windows — the
+    // `cfg(not(target_os = "windows"))` `get_or_load_moonshine` above is
+    // the only public version. The Windows `transcribe_audio_moonshine`
+    // command returns an error directly without calling into the model
+    // manager, so no Windows stub is needed here.
+
+    /// Run a closure with exclusive access to the currently loaded engine.
+    ///
+    /// This is the only way to actually use the model — callers load the
+    /// model, then call `with_engine` to run inference. The lock is held
+    /// for the duration of the closure, so callers should assume
+    /// inference serialization (which is what ONNX Runtime wants anyway —
+    /// sessions are not thread-safe for concurrent inference).
+    pub fn with_engine<T>(
         &self,
-        _model_path: PathBuf,
-        _variant: MoonshineVariant,
-    ) -> Result<Arc<Mutex<Option<Engine>>>, String> {
-        Err("Moonshine is not available on Windows due to build compatibility issues. Please use Parakeet for local transcription.".to_string())
+        f: impl FnOnce(&mut Engine) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let mut state = self.state.lock();
+        state.last_activity = Some(Instant::now());
+        let engine = state
+            .engine
+            .as_mut()
+            .ok_or_else(|| "No model loaded; call get_or_load_* first".to_string())?;
+        f(engine)
     }
 
+    /// Unload the model if it hasn't been touched within `idle_timeout`.
+    /// Intended to be called on a timer from a background task — gives
+    /// the GPU back to the system after the user stops transcribing.
     pub fn unload_if_idle(&self) {
-        let last_activity = *recover_lock(&self.last_activity, "Last activity", |last_activity| {
-            *last_activity = SystemTime::now();
-        });
-        let elapsed = SystemTime::now()
-            .duration_since(last_activity)
-            .unwrap_or(Duration::from_secs(0));
-
+        let mut state = self.state.lock();
+        let Some(last_activity) = state.last_activity else {
+            return;
+        };
+        let elapsed = last_activity.elapsed();
         if elapsed > self.idle_timeout {
-            let mut engine_guard = recover_lock(&self.engine, "Engine", |engine| *engine = None);
-            if let Some(mut engine) = engine_guard.take() {
-                engine.unload();
-            }
-            let mut current_path_guard =
-                recover_lock(&self.current_model_path, "Model path", |path| *path = None);
-            *current_path_guard = None;
-            let mut current_parakeet_mode_guard =
-                recover_lock(&self.current_parakeet_mode, "Parakeet mode", |mode| {
-                    *mode = None
-                });
-            *current_parakeet_mode_guard = None;
+            debug!(
+                "Unloading idle model (idle for {:?}, threshold {:?})",
+                elapsed, self.idle_timeout
+            );
+            state.engine = None;
+            state.model_path = None;
+            state.parakeet_mode = None;
+            state.last_activity = None;
         }
     }
 
     pub fn unload_model(&self) {
-        let mut engine_guard = recover_lock(&self.engine, "Engine", |engine| *engine = None);
-        if let Some(mut engine) = engine_guard.take() {
-            engine.unload();
-        }
-        let mut current_path_guard =
-            recover_lock(&self.current_model_path, "Model path", |path| *path = None);
-        *current_path_guard = None;
-        let mut current_parakeet_mode_guard =
-            recover_lock(&self.current_parakeet_mode, "Parakeet mode", |mode| {
-                *mode = None
-            });
-        *current_parakeet_mode_guard = None;
+        let mut state = self.state.lock();
+        state.engine = None;
+        state.model_path = None;
+        state.parakeet_mode = None;
+        state.last_activity = None;
+    }
+}
+
+impl Default for ModelManager {
+    fn default() -> Self {
+        Self::new()
     }
 }

@@ -54,6 +54,11 @@ regex = "1"
 rayon = "1.11.0"
 log = "0.4"
 tauri-plugin-log = "2.8.0"
+# Non-poisoning mutexes for the transcription model manager. Prior std::sync
+# Mutex required boilerplate `recover_lock` wrappers at every call site to
+# handle poisoning; parking_lot makes that unnecessary because a panicked
+# thread simply unlocks.
+parking_lot = "0.12"
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.31.2", features = ["signal"] }

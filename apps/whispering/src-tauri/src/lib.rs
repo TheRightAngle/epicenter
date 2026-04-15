@@ -132,7 +132,9 @@ pub async fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
         .manage(AppData::new())
-        .manage(ModelManager::new());
+        // Wrap in Arc so transcribe commands can clone a handle into
+        // tauri::async_runtime::spawn_blocking without lifetime issues.
+        .manage(std::sync::Arc::new(ModelManager::new()));
 
     #[cfg(desktop)]
     {
