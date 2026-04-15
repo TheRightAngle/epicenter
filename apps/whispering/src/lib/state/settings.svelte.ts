@@ -89,24 +89,20 @@ function createSettings() {
 	/**
 	 * Keys that cross a string↔number type boundary between the legacy
 	 * fork settings schema (dominated by `string.digits`) and upstream's
-	 * workspace.kv schema (uses `number.integer`). When the shim routes
-	 * through, coerce values so arktype doesn't reject on write or
-	 * return the wrong type on read.
+	 * workspace.kv schema (uses `number.integer`).
+	 *
+	 * Writes always coerce string → number so arktype doesn't reject.
+	 * Reads only stringify on the legacy `settings.value[key]` proxy
+	 * path — never on the modern `settings.get(key)` path. The modern
+	 * API returns the native type straight from storage so UI
+	 * components (dropdowns, `$derived` comparisons against numeric
+	 * catalog entries) see the real number and match correctly.
 	 */
 	const NUMERIC_KV_KEYS = new Set<string>(['retention.maxCount']);
 
 	function readValue(rawKey: string): unknown {
 		const key = canonicalKey(rawKey);
-		if (isKvKey(key)) {
-			const value = map.get(key);
-			// Fork code expects a string for these; upstream stores as
-			// number. Stringify on read so `settings.value[...] === '0'`
-			// continues to work in legacy call sites.
-			if (NUMERIC_KV_KEYS.has(key) && typeof value === 'number') {
-				return String(value);
-			}
-			return value;
-		}
+		if (isKvKey(key)) return map.get(key);
 		if (isDeviceKey(key)) return deviceConfig.get(key as never);
 		return undefined;
 	}
@@ -132,13 +128,21 @@ function createSettings() {
 
 	/**
 	 * Proxy that emulates the fork's legacy `settings.value[key]` read/write API.
-	 * Each access routes through readValue/writeValue, which handle key renames
-	 * and device/synced storage routing transparently.
+	 * Only this path stringifies numeric KV values for backwards compat with
+	 * fork-era callers that compare strings; modern `settings.get(k)` returns
+	 * native types.
 	 */
 	const valueProxy = new Proxy({} as Record<string, unknown>, {
 		get: (_target, prop) => {
 			if (typeof prop !== 'string') return undefined;
-			return readValue(prop);
+			const value = readValue(prop);
+			if (
+				NUMERIC_KV_KEYS.has(canonicalKey(prop)) &&
+				typeof value === 'number'
+			) {
+				return String(value);
+			}
+			return value;
 		},
 		set: (_target, prop, value) => {
 			if (typeof prop !== 'string') return false;
