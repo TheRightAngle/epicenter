@@ -5,6 +5,7 @@ import { extractErrorMessage } from 'wellcrafted/error';
 import { Ok, type Result, tryAsync } from 'wellcrafted/result';
 import { WhisperingErr, type WhisperingError } from '$lib/result';
 import type {
+	AcceleratorAvailability,
 	DirectMlAdapter,
 	ParakeetAccelerationMode,
 	ParakeetModelConfig,
@@ -71,6 +72,41 @@ export const ParakeetTranscriptionServiceLive = {
 			catch: (unknownError) =>
 				WhisperingErr({
 					title: '🖥️ Unable to list GPU adapters',
+					description: extractErrorMessage(unknownError),
+					action: { type: 'more-details', error: unknownError },
+				}),
+		});
+	},
+
+	/**
+	 * Probe which Parakeet acceleration modes actually work on this box.
+	 * Used by the settings UI to disable radio options the user can't run
+	 * (no DX12 adapter → DirectML unavailable; no CUDA+TensorRT libs →
+	 * TensorRT unavailable). CPU is always reported available.
+	 */
+	async probeAccelerators(): Promise<
+		Result<AcceleratorAvailability, WhisperingError>
+	> {
+		if (!window.__TAURI_INTERNALS__) {
+			return Ok({
+				cpu: true,
+				directml: {
+					available: false,
+					reason: 'DirectML requires a desktop Windows build.',
+				},
+				tensorrt: {
+					available: false,
+					reason: 'TensorRT requires a desktop Windows build.',
+				},
+			});
+		}
+
+		return await tryAsync({
+			try: () =>
+				invoke<AcceleratorAvailability>('probe_parakeet_accelerators'),
+			catch: (unknownError) =>
+				WhisperingErr({
+					title: '🖥️ Unable to probe acceleration support',
 					description: extractErrorMessage(unknownError),
 					action: { type: 'more-details', error: unknownError },
 				}),

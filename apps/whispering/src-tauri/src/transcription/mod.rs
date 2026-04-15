@@ -105,6 +105,141 @@ fn enumerate_directml_adapters() -> Result<Vec<DirectMlAdapterInfo>, String> {
     Ok(vec![])
 }
 
+// ── Accelerator availability probe ─────────────────────────────────────────
+//
+// We compile in DirectML + TensorRT (which pulls CUDA), but whether they
+// actually *work* on the user's machine depends on the installed runtime
+// libraries and hardware. DirectML is part of Windows 10 1709+ so it's
+// essentially always present if the user has a DX12-capable GPU.
+// TensorRT requires a NEON-of-dependencies: NVIDIA driver + CUDA
+// runtime + cuDNN + TensorRT libs — on Linux and Windows these arrive
+// separately and need to be discoverable via the DLL search path.
+
+/// Report for the frontend: which Parakeet accelerators actually work on
+/// this machine. UI uses this to disable (rather than silently fail) the
+/// accelerator options the user can't run.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcceleratorAvailability {
+    /// Always true (CPU path is compiled in unconditionally).
+    pub cpu: bool,
+    pub directml: AcceleratorStatus,
+    pub tensorrt: AcceleratorStatus,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcceleratorStatus {
+    pub available: bool,
+    /// Short user-facing reason when not available.
+    /// `None` when available is `true`.
+    pub reason: Option<String>,
+}
+
+#[cfg(target_os = "windows")]
+fn probe_directml_status() -> AcceleratorStatus {
+    match enumerate_directml_adapters() {
+        Ok(adapters) if !adapters.is_empty() => AcceleratorStatus {
+            available: true,
+            reason: None,
+        },
+        Ok(_) => AcceleratorStatus {
+            available: false,
+            reason: Some(
+                "No DirectX 12 hardware adapter detected. DirectML requires a \
+                 DX12-capable GPU (most GPUs from 2015 onward)."
+                    .to_string(),
+            ),
+        },
+        Err(error) => AcceleratorStatus {
+            available: false,
+            reason: Some(format!("DXGI adapter enumeration failed: {}", error)),
+        },
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn probe_directml_status() -> AcceleratorStatus {
+    AcceleratorStatus {
+        available: false,
+        reason: Some("DirectML is a Windows-only API.".to_string()),
+    }
+}
+
+/// TensorRT requires the CUDA runtime AND TensorRT's own dynamic
+/// libraries to be present on the DLL search path. We probe by trying
+/// to load the entry-point DLLs. If any are missing, ort will fall back
+/// to CPU with a log warning — we prefer to surface that up-front.
+#[cfg(target_os = "windows")]
+fn probe_tensorrt_status() -> AcceleratorStatus {
+    use windows_sys::Win32::Foundation::HMODULE;
+    use windows_sys::Win32::System::LibraryLoader::{FreeLibrary, LoadLibraryW};
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+
+    fn can_load(name: &str) -> bool {
+        let wide: Vec<u16> = OsStr::new(name).encode_wide().chain(std::iter::once(0)).collect();
+        // SAFETY: LoadLibraryW is a safe system call; we pass a NUL-terminated
+        // wide string. We free the handle on success to avoid leaking.
+        let handle: HMODULE = unsafe { LoadLibraryW(wide.as_ptr()) };
+        if handle.is_null() {
+            false
+        } else {
+            unsafe { FreeLibrary(handle) };
+            true
+        }
+    }
+
+    // CUDA runtime — required; TensorRT builds on top of it. Check several
+    // common CUDA major versions; ORT rc.12 was built against CUDA 12.
+    let cuda_available = ["cudart64_12.dll", "cudart64_11.dll", "cudart64_120.dll"]
+        .iter()
+        .any(|name| can_load(name));
+    if !cuda_available {
+        return AcceleratorStatus {
+            available: false,
+            reason: Some(
+                "CUDA runtime not found (expected cudart64_12.dll on the PATH). \
+                 Install the NVIDIA CUDA Toolkit 12.x to enable TensorRT."
+                    .to_string(),
+            ),
+        };
+    }
+
+    // TensorRT core. Same version rule applies — TensorRT 10.x ships
+    // nvinfer_10.dll.
+    let trt_available = ["nvinfer_10.dll", "nvinfer.dll"]
+        .iter()
+        .any(|name| can_load(name));
+    if !trt_available {
+        return AcceleratorStatus {
+            available: false,
+            reason: Some(
+                "TensorRT libraries not found (expected nvinfer_10.dll on the PATH). \
+                 Install NVIDIA TensorRT 10.x and ensure its bin directory is on PATH."
+                    .to_string(),
+            ),
+        };
+    }
+
+    AcceleratorStatus {
+        available: true,
+        reason: None,
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn probe_tensorrt_status() -> AcceleratorStatus {
+    AcceleratorStatus {
+        available: false,
+        reason: Some(
+            "TensorRT integration in this build is Windows-only. \
+             Linux users can still use CPU or (unimplemented here) ROCm paths."
+                .to_string(),
+        ),
+    }
+}
+
 /// Convert audio to whisper-compatible format using pure Rust (no FFmpeg required)
 ///
 /// This function converts audio from various formats to 16kHz mono 16-bit PCM WAV.
@@ -700,6 +835,19 @@ pub async fn transcribe_audio_whisper(
 #[tauri::command]
 pub async fn list_directml_adapters() -> Result<Vec<DirectMlAdapterInfo>, String> {
     enumerate_directml_adapters()
+}
+
+/// Report which Parakeet acceleration modes actually work on this
+/// machine. The frontend uses this to disable unavailable radio
+/// options with a tooltip explaining why, rather than letting the user
+/// pick something that will silently fall back to CPU at runtime.
+#[tauri::command]
+pub async fn probe_parakeet_accelerators() -> Result<AcceleratorAvailability, String> {
+    Ok(AcceleratorAvailability {
+        cpu: true,
+        directml: probe_directml_status(),
+        tensorrt: probe_tensorrt_status(),
+    })
 }
 
 #[tauri::command]

@@ -103,6 +103,23 @@ export type DirectMlAdapter = {
 	isDefault: boolean;
 };
 
+export type AcceleratorStatus = {
+	available: boolean;
+	reason?: string | null;
+};
+
+/**
+ * Result of probing which Parakeet acceleration modes the host can
+ * actually run. UI uses this to grey out radio options that would
+ * silently fall back to CPU — and surface the reason (missing CUDA,
+ * no DX12 GPU, etc.) in a tooltip.
+ */
+export type AcceleratorAvailability = {
+	cpu: boolean;
+	directml: AcceleratorStatus;
+	tensorrt: AcceleratorStatus;
+};
+
 /**
  * Configuration for Moonshine models, which consist of ONNX encoder/decoder files in a directory.
  * Moonshine is optimized for fast, efficient transcription with support for 8 languages.

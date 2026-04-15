@@ -123,6 +123,17 @@
 	let directmlAdapters = $state<DirectMlAdapter[]>([]);
 	let directmlAdapterError = $state<string | null>(null);
 
+	// Probe which Parakeet acceleration modes actually work on this host.
+	// Seed with a permissive default so the radio group is interactive
+	// until the probe returns. The probe runs on mount.
+	let acceleratorAvailability = $state<
+		import('$lib/services/transcription/local/types').AcceleratorAvailability
+	>({
+		cpu: true,
+		directml: { available: true },
+		tensorrt: { available: true },
+	});
+
 	const parakeetDirectmlAdapterItems = $derived.by(() => {
 		const adapterItems = directmlAdapters.map((adapter) => ({
 			value: String(adapter.deviceId),
@@ -148,7 +159,16 @@
 		}
 
 		void loadDirectmlAdapters();
+		void loadAcceleratorAvailability();
 	});
+
+	async function loadAcceleratorAvailability() {
+		const result =
+			await services.transcriptions.parakeet.probeAccelerators();
+		if (result.data) {
+			acceleratorAvailability = result.data;
+		}
+	}
 
 	async function loadDirectmlAdapters() {
 		const result = await services.transcriptions.parakeet.listDirectMLAdapters();
@@ -593,32 +613,55 @@
 						>
 							{#each [
 								{
-									value: 'cpu',
+									value: 'cpu' as const,
 									label: 'CPU',
 									description: 'Standard local CPU execution. Works on any hardware.',
+									availability: { available: acceleratorAvailability.cpu },
 								},
 								{
-									value: 'directml',
+									value: 'directml' as const,
 									label: 'GPU (DirectML)',
 									description:
 										'Universal Windows GPU path via DirectML. Works on any DX12-capable adapter (NVIDIA, AMD, Intel).',
+									availability: acceleratorAvailability.directml,
 								},
 								{
-									value: 'tensorrt',
+									value: 'tensorrt' as const,
 									label: 'GPU (TensorRT, NVIDIA)',
 									description:
 										'NVIDIA-optimised path via TensorRT with a CUDA fallback. Typically 1.5–3× faster than DirectML on NVIDIA GPUs. Requires the CUDA runtime installed on this system; falls back to CPU otherwise. First run compiles the model (~5–15s).',
+									availability: acceleratorAvailability.tensorrt,
 								},
 							] as option (option.value)}
+								{@const unavailable = option.availability && option.availability.available === false}
 								<Field.Label for="parakeet-acceleration-{option.value}">
-									<Field.Field orientation="horizontal">
+									<Field.Field
+										orientation="horizontal"
+										class={unavailable ? 'opacity-50' : undefined}
+									>
 										<Field.Content>
-											<Field.Title>{option.label}</Field.Title>
-											<Field.Description>{option.description}</Field.Description>
+											<Field.Title>
+												{option.label}
+												{#if unavailable}
+													<span class="text-xs text-muted-foreground ml-1">
+														(unavailable on this system)
+													</span>
+												{/if}
+											</Field.Title>
+											<Field.Description>
+												{option.description}
+												{#if unavailable && option.availability && 'reason' in option.availability && option.availability.reason}
+													<br />
+													<span class="text-warning">
+														{option.availability.reason}
+													</span>
+												{/if}
+											</Field.Description>
 										</Field.Content>
 										<RadioGroup.Item
 											value={option.value}
 											id="parakeet-acceleration-{option.value}"
+											disabled={unavailable}
 										/>
 									</Field.Field>
 								</Field.Label>

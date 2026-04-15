@@ -11,8 +11,9 @@ use recorder::commands::{
 
 pub mod transcription;
 use transcription::{
-    list_directml_adapters, transcribe_audio_moonshine, transcribe_audio_parakeet,
-    transcribe_audio_whisper, validate_local_transcription_model, ModelManager,
+    list_directml_adapters, probe_parakeet_accelerators, transcribe_audio_moonshine,
+    transcribe_audio_parakeet, transcribe_audio_whisper, validate_local_transcription_model,
+    ModelManager,
 };
 
 pub mod windows_path;
@@ -166,6 +167,7 @@ pub async fn run() {
         cancel_recording,
         validate_local_transcription_model,
         list_directml_adapters,
+        probe_parakeet_accelerators,
         transcribe_audio_whisper,
         transcribe_audio_parakeet,
         transcribe_audio_moonshine,
