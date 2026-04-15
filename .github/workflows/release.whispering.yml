@@ -216,29 +216,22 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
-          # Build a markdown banner for unsigned releases. This gets
-          # prepended to the release notes so users downloading the
-          # binary can immediately see they're not getting a signed
-          # build (and which secrets were missing).
-          if [ "$enable_signing" = "true" ]; then
-            banner=""
-          else
-            missing_bullets=$(echo "$missing_list" | sed 's/^/- `/; s/$/`/')
-            banner=$(cat <<BANNER
-> [!WARNING]
-> **This is an UNSIGNED build.** Windows SmartScreen or macOS Gatekeeper will warn before launch and the auto-updater will refuse to install updates. Required secrets that were missing on this CI run:
->
-> ${missing_bullets//$'\n'/
-> }
->
-> If you're using this fork's Windows-only release pipeline, that's expected — TheRightAngle does not currently sign releases. Install with the CLI prompt or via the SmartScreen "Run anyway" button.
-
-BANNER
-)
-          fi
+          # Build a markdown banner for unsigned releases. Anyone landing
+          # on the GitHub release page should immediately see the warning
+          # before clicking Download.
           {
             echo "banner<<BANNER_EOF"
-            echo "$banner"
+            if [ "$enable_signing" != "true" ]; then
+              echo "> [!WARNING]"
+              echo "> **This is an UNSIGNED build.** Windows SmartScreen or macOS Gatekeeper will warn before launch and the auto-updater will refuse to install updates. Required secrets that were missing on this CI run:"
+              echo ">"
+              echo "$missing_list" | while IFS= read -r line; do
+                [ -n "$line" ] && echo "> - \`$line\`"
+              done
+              echo ">"
+              echo "> If you're using TheRightAngle fork, this is expected — the fork does not currently maintain code-signing certificates. Install via SmartScreen 'Run anyway' or 'gatekeeper bypass' as appropriate."
+              echo ""
+            fi
             echo "BANNER_EOF"
           } >> "$GITHUB_OUTPUT"
 
