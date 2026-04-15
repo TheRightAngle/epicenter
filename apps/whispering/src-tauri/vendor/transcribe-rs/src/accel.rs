@@ -60,6 +60,17 @@ pub enum OrtAccelerator {
 
 static ORT_ACCELERATOR: AtomicU8 = AtomicU8::new(OrtAccelerator::Auto as u8);
 
+// TheRightAngle fork addition:
+// Optional DirectML adapter selection. -1 means "use DirectML default"
+// (behaves identically to upstream); any value >= 0 is passed as
+// `DirectML::default().with_device_id(id)` when the session is built.
+// Matches the DXGI adapter index reported by IDXGIFactory1::EnumAdapters1.
+//
+// Use case: multi-GPU systems (laptop with iGPU + dGPU) where the user
+// wants to force the discrete GPU rather than letting DirectML pick the
+// primary display adapter (which is typically the iGPU).
+static DIRECTML_DEVICE_ID: AtomicI32 = AtomicI32::new(-1);
+
 /// Set the global ORT accelerator preference.
 ///
 /// Call once, early in the program, before any ORT models are loaded.
@@ -70,6 +81,24 @@ pub fn set_ort_accelerator(pref: OrtAccelerator) {
 /// Get the current ORT accelerator preference.
 pub fn get_ort_accelerator() -> OrtAccelerator {
     OrtAccelerator::from_u8(ORT_ACCELERATOR.load(Ordering::Relaxed))
+}
+
+/// Set the DirectML adapter (DXGI index) the next session will target.
+/// Pass `None` (or a negative value) to use DirectML's default adapter —
+/// the same behavior as upstream transcribe-rs. Only consulted when the
+/// active accelerator is `DirectMl`.
+pub fn set_directml_device_id(device_id: Option<i32>) {
+    DIRECTML_DEVICE_ID.store(device_id.unwrap_or(-1), Ordering::Relaxed);
+}
+
+/// Get the current DirectML adapter preference. `None` means "default".
+pub fn get_directml_device_id() -> Option<i32> {
+    let raw = DIRECTML_DEVICE_ID.load(Ordering::Relaxed);
+    if raw < 0 {
+        None
+    } else {
+        Some(raw)
+    }
 }
 
 impl OrtAccelerator {

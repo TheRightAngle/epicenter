@@ -11,7 +11,14 @@ use transcribe_rs::whisper_cpp::WhisperEngine;
 // transcribe-rs 0.3.11 moved accelerator selection to a global atomic.
 // Set it before loading a model; subsequent models pick up the setting.
 // Already-loaded sessions are frozen at their original provider.
-use transcribe_rs::accel::{set_ort_accelerator, OrtAccelerator};
+//
+// set_directml_device_id is a fork-only patch to the vendored crate
+// that lets us target a specific DXGI adapter when DirectML is
+// selected — useful on multi-GPU hosts where the default adapter
+// isn't the strongest one.
+use transcribe_rs::accel::{
+    set_directml_device_id, set_ort_accelerator, OrtAccelerator,
+};
 
 /// Engine type for managing different transcription engines.
 ///
@@ -37,39 +44,51 @@ pub enum Engine {
 pub enum ParakeetAccelerationMode {
     Cpu,
     /// Microsoft DirectML (works on any DX12 GPU on Windows).
-    DirectMl,
+    ///
+    /// `device_id` is an optional DXGI adapter index — pass `Some(id)`
+    /// to target a specific GPU (useful on multi-GPU hosts), or `None`
+    /// to let DirectML pick the default adapter. The id matches what
+    /// `enumerate_directml_adapters` returns.
+    DirectMl { device_id: Option<i32> },
     /// NVIDIA TensorRT (NVIDIA GPUs only; requires CUDA runtime installed).
     /// Falls back to CUDA for ops TensorRT doesn't natively support.
+    /// CUDA/TensorRT pick the primary NVIDIA device automatically; no
+    /// device_id selection is plumbed through because CUDA is vendor-
+    /// specific and typically there's only one NVIDIA GPU to pick from.
     TensorRt,
 }
 
 impl ParakeetAccelerationMode {
     pub fn parse(mode: &str, device_id: Option<i32>) -> Result<Self, String> {
-        // device_id was a DirectML-adapter selector in the pre-0.3.11 API.
-        // The new transcribe-rs API doesn't expose adapter selection — the
-        // runtime picks the first available DX12 adapter. We swallow the
-        // incoming value to keep the command signature stable but log it
-        // for debugging.
-        if device_id.is_some() {
-            debug!(
-                "Parakeet device_id={:?} passed but transcribe-rs 0.3.11 no longer \
-                 supports per-adapter DirectML selection; using default adapter",
-                device_id
-            );
-        }
         match mode {
-            "cpu" => Ok(Self::Cpu),
+            "cpu" => {
+                if device_id.is_some() {
+                    debug!(
+                        "Parakeet CPU mode ignores device_id={:?}",
+                        device_id
+                    );
+                }
+                Ok(Self::Cpu)
+            }
             "directml" => {
                 #[cfg(target_os = "windows")]
                 {
-                    Ok(Self::DirectMl)
+                    Ok(Self::DirectMl { device_id })
                 }
                 #[cfg(not(target_os = "windows"))]
                 {
+                    let _ = device_id;
                     Err("DirectML acceleration is only available on Windows.".to_string())
                 }
             }
             "tensorrt" | "tensor_rt" | "tensor-rt" => {
+                if device_id.is_some() {
+                    debug!(
+                        "Parakeet TensorRT mode ignores device_id={:?} — CUDA selects the \
+                         NVIDIA GPU automatically",
+                        device_id
+                    );
+                }
                 #[cfg(target_os = "windows")]
                 {
                     Ok(Self::TensorRt)
@@ -88,8 +107,18 @@ impl ParakeetAccelerationMode {
     fn to_ort_accelerator(self) -> OrtAccelerator {
         match self {
             Self::Cpu => OrtAccelerator::CpuOnly,
-            Self::DirectMl => OrtAccelerator::DirectMl,
+            Self::DirectMl { .. } => OrtAccelerator::DirectMl,
             Self::TensorRt => OrtAccelerator::TensorRt,
+        }
+    }
+
+    /// DirectML device id to apply globally before load. `None` for all
+    /// other modes (resets the DirectML selection so a subsequent
+    /// DirectML-mode load without a specific device goes back to default).
+    fn directml_device_id(self) -> Option<i32> {
+        match self {
+            Self::DirectMl { device_id } => device_id,
+            _ => None,
         }
     }
 }
@@ -158,8 +187,11 @@ impl ModelManager {
         state.parakeet_mode = None;
 
         // Configure the global ORT accelerator BEFORE load — ort sessions
-        // are immutable once created.
+        // are immutable once created. For DirectML, also apply the
+        // (optional) adapter selection so multi-GPU hosts can target a
+        // specific device.
         set_ort_accelerator(acceleration_mode.to_ort_accelerator());
+        set_directml_device_id(acceleration_mode.directml_device_id());
 
         let load_started = Instant::now();
         let engine = ParakeetModel::load(&model_path, &Quantization::Int8)

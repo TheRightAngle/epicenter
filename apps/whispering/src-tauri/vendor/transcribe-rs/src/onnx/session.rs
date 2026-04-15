@@ -51,7 +51,19 @@ fn execution_providers() -> Vec<ort::ep::ExecutionProviderDispatch> {
         }
         OrtAccelerator::DirectMl => {
             #[cfg(feature = "ort-directml")]
-            eps.push(DirectML::default().build());
+            {
+                // TheRightAngle fork addition: honor the optional global
+                // adapter selection set via set_directml_device_id().
+                // `None` preserves upstream "pick DirectML's default"
+                // behavior (typically DXGI index 0 — the primary display
+                // adapter, which is the iGPU on most laptops).
+                let builder = DirectML::default();
+                let builder = match crate::accel::get_directml_device_id() {
+                    Some(id) => builder.with_device_id(id),
+                    None => builder,
+                };
+                eps.push(builder.build());
+            }
             #[cfg(not(feature = "ort-directml"))]
             log::warn!("Accelerator set to DirectML but ort-directml feature is not enabled; falling back to CPU");
         }

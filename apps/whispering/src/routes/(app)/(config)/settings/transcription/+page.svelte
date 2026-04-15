@@ -669,17 +669,43 @@
 						</RadioGroup.Root>
 					</Field.Field>
 
-					<!--
-						GPU-adapter selection dropdown removed in transcribe-rs
-						0.3.11 — upstream stopped exposing per-adapter DirectML
-						targeting. DirectML uses the system's default DX12 adapter.
-						If you have multiple GPUs and need to target a specific
-						one, set the `DXGI_ADAPTER_VENDOR` env var or wait for
-						transcribe-rs to re-expose device selection.
-					-->
-					{#if false}
+					{#if settings.value['transcription.parakeet.acceleration'] ===
+						'directml' && acceleratorAvailability.directml.available}
 						<Field.Field>
 							<Field.Label for="parakeet-directml-adapter">GPU Adapter</Field.Label>
+							<Select.Root
+								type="single"
+								bind:value={() =>
+									settings.value['transcription.parakeet.directmlAdapter'],
+									(value) =>
+										settings.updateKey(
+											'transcription.parakeet.directmlAdapter',
+											value,
+										)}
+							>
+								<Select.Trigger id="parakeet-directml-adapter" class="w-full">
+									{parakeetDirectmlAdapterLabel ?? 'Auto (default adapter)'}
+								</Select.Trigger>
+								<Select.Content>
+									{#each parakeetDirectmlAdapterItems as item (item.value)}
+										<Select.Item value={item.value} label={item.label}>
+											{item.label}
+										</Select.Item>
+									{/each}
+								</Select.Content>
+							</Select.Root>
+							<Field.Description>
+								Choose which Windows GPU DirectML should use. Auto follows
+								the system default (typically the primary display adapter —
+								often the iGPU on laptops). If you have a discrete GPU you
+								want to use, pick it explicitly here.
+							</Field.Description>
+							{#if directmlAdapterError}
+								<Field.Description>
+									Unable to list GPU adapters right now. Auto still uses the
+									system default adapter.
+								</Field.Description>
+							{/if}
 						</Field.Field>
 					{/if}
 					{/if}
