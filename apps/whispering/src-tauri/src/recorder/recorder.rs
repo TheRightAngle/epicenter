@@ -961,9 +961,12 @@ fn get_optimal_config(
         .map_err(|e| format!("Failed to get default config: {}", e))?;
 
     if preferred_sample_rate.is_none() {
+        // cpal 0.17 returns u32 directly from sample_rate() / *_sample_rate();
+        // SampleRate is a type alias, not a tuple struct, so no `.0` and no
+        // wrapping constructor.
         debug!(
             "Using device default config: {} Hz, {} channels, {:?}",
-            default_config.sample_rate().0,
+            default_config.sample_rate(),
             default_config.channels(),
             default_config.sample_format(),
         );
@@ -979,8 +982,8 @@ fn get_optimal_config(
     let mut best_config: Option<cpal::SupportedStreamConfig> = None;
 
     for config in supported_configs {
-        let min_rate = config.min_sample_rate().0;
-        let max_rate = config.max_sample_rate().0;
+        let min_rate = config.min_sample_rate();
+        let max_rate = config.max_sample_rate();
 
         let rate = if preferred >= min_rate && preferred <= max_rate {
             preferred
@@ -989,7 +992,7 @@ fn get_optimal_config(
         } else {
             min_rate
         };
-        best_config = Some(config.with_sample_rate(cpal::SampleRate(rate)));
+        best_config = Some(config.with_sample_rate(rate));
     }
 
     best_config.ok_or_else(|| "Failed to find suitable audio configuration".to_string())

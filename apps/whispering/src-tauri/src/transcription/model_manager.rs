@@ -1,7 +1,6 @@
 use log::{debug, info};
 use parking_lot::Mutex;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 #[cfg(not(target_os = "windows"))]
 use transcribe_rs::onnx::moonshine::MoonshineModel;

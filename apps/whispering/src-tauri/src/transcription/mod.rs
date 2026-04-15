@@ -768,6 +768,11 @@ pub async fn transcribe_audio_parakeet(
         };
 
         let result = model_manager.with_engine(|engine| {
+            // On Windows, `Engine` only has the Parakeet variant — Whisper
+            // and Moonshine are cfg-gated out due to MSVC-runtime conflicts.
+            // The wildcard arm is unreachable on Windows; allow that
+            // explicitly so the build doesn't warn.
+            #[cfg_attr(target_os = "windows", allow(unreachable_patterns))]
             let parakeet_engine = match engine {
                 model_manager::Engine::Parakeet(e) => e,
                 _ => return Err("Expected Parakeet engine but got different type".to_string()),
