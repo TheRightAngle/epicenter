@@ -898,7 +898,7 @@ pub async fn transcribe_audio_parakeet(
                 | ParakeetAccelerationMode::TensorRt => {
                     TranscriptionError::GpuError { message: e }
                 }
-                ParakeetAccelerationMode::Cpu => {
+                ParakeetAccelerationMode::Cpu | ParakeetAccelerationMode::Xnnpack => {
                     TranscriptionError::ModelLoadError { message: e }
                 }
             })?;
