@@ -5,12 +5,14 @@ import { type } from 'arktype';
 
 import { RECORDING_MODES } from '$lib/constants/audio/recording-modes';
 import { INFERENCE_PROVIDER_IDS } from '$lib/constants/inference';
+import { PLATFORM_TYPE } from '$lib/constants/platform';
 import {
 	TRANSCRIPTION,
 	TRANSCRIPTION_SERVICE_IDS,
 } from '$lib/constants/transcription';
 import { ALWAYS_ON_TOP_MODES } from '$lib/constants/ui/always-on-top';
 import { FFMPEG_DEFAULT_COMPRESSION_OPTIONS } from '$lib/services/desktop/recorder/ffmpeg';
+import { getDefaultTranscriptionServiceId } from '$lib/settings/default-transcription-service';
 
 /**
  * Tables store normalized domain entities. Each row is replaced atomically via
@@ -231,9 +233,17 @@ const recording = {
  * @see {@link https://github.com/EpicenterHQ/epicenter/blob/main/specs/20260312T170000-whispering-workspace-polish-and-migration.md | Spec Decision 2}
  */
 const transcription = {
+	// Platform-aware default: on Windows, Moonshine and Whisper C++ are
+	// unavailable (MSVC runtime conflicts), so default to Parakeet. On
+	// macOS/Linux, Moonshine remains the default as upstream intended.
+	// Without this, a Windows user who picks "reset to defaults" ends up
+	// with transcription.service = 'moonshine', which the service-
+	// selector correctly filters out of the dropdown but the page body's
+	// conditional still renders — showing a Moonshine download card for
+	// a service that can't actually be used.
 	'transcription.service': defineKv(
 		type.enumerated(...TRANSCRIPTION_SERVICE_IDS),
-		'moonshine',
+		getDefaultTranscriptionServiceId(PLATFORM_TYPE),
 	),
 	'transcription.openai.model': defineKv(
 		type('string'),
