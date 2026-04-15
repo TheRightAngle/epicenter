@@ -68,4 +68,14 @@ export type TextService = {
 	 * for security reasons.
 	 */
 	simulateEnterKeystroke: () => Promise<Result<void, TextError>>;
+
+	/**
+	 * Simulates pressing the Space key.
+	 * Useful for leaving a trailing space at the cursor so successive
+	 * push-to-talk transcriptions don't run together.
+	 *
+	 * Note: This is only supported on desktop (Tauri). Web browsers cannot simulate keystrokes
+	 * for security reasons.
+	 */
+	simulateSpaceKeystroke: () => Promise<Result<void, TextError>>;
 };

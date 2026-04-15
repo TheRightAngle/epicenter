@@ -29,8 +29,15 @@
 	const clipboard = new UseClipboard({ copyFn });
 </script>
 
+<!--
+	Cast spread to `any` so the Button component's prop type (which is an
+	intersection of HTMLButtonAttributes AND HTMLAnchorAttributes — it can
+	render either an anchor or a button) doesn't explode into a "union too
+	complex" error when combined with CopyButtonProps' button-only attrs.
+	Runtime is unaffected; this component is always rendered as a <button>.
+-->
 <Button
-	{...rest}
+	{...(rest as unknown as Record<string, unknown>)}
 	bind:ref
 	{variant}
 	size={effectiveSize}

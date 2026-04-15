@@ -353,14 +353,17 @@ export function createEncryptedYkvLww<T>(
 				return;
 			}
 
+			// Capture locally so the narrowing survives into the .map() closure,
+			// where TS loses flow analysis across the function boundary.
+			const enc = encryption;
 			inner.bulkSet(
 				entries.map(({ key, val }) => ({
 					key,
 					val: encryptValue(
 						JSON.stringify(val),
-						encryption.currentKey,
+						enc.currentKey,
 						textEncoder.encode(key),
-						encryption.currentVersion,
+						enc.currentVersion,
 					),
 				})),
 			);

@@ -38,5 +38,11 @@ export function createTextServiceDesktop(): TextService {
 				try: () => invoke<void>('simulate_enter_keystroke'),
 				catch: (error) => TextError.SimulateKeystroke({ cause: error }),
 			}),
+
+		simulateSpaceKeystroke: () =>
+			tryAsync({
+				try: () => invoke<void>('simulate_space_keystroke'),
+				catch: (error) => TextError.SimulateKeystroke({ cause: error }),
+			}),
 	};
 }

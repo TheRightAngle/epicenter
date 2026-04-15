@@ -179,7 +179,9 @@ export const delivery = {
 					) {
 						copied = true;
 					}
-					// Optionally simulate Enter keystroke after successful write
+					// Trailing keystroke: Enter and Space are mutually exclusive
+					// (enforced in the settings UI). Prefer Enter if both are
+					// somehow set so behavior stays deterministic.
 					if (settings.get('output.transcription.enter')) {
 						const { error: enterError } =
 							await rpc.text.simulateEnterKeystroke();
@@ -188,6 +190,16 @@ export const delivery = {
 								title: 'Unable to simulate Enter keystroke',
 								description: enterError.message,
 								action: { type: 'more-details', error: enterError },
+							});
+						}
+					} else if (settings.get('output.transcription.space')) {
+						const { error: spaceError } =
+							await rpc.text.simulateSpaceKeystroke();
+						if (spaceError) {
+							rpc.notify.warning({
+								title: 'Unable to simulate Space keystroke',
+								description: spaceError.message,
+								action: { type: 'more-details', error: spaceError },
 							});
 						}
 					}

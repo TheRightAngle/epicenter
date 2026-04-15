@@ -187,6 +187,7 @@ const output = {
 	'output.transcription.clipboard': defineKv(type('boolean'), true),
 	'output.transcription.cursor': defineKv(type('boolean'), true),
 	'output.transcription.enter': defineKv(type('boolean'), false),
+	'output.transcription.space': defineKv(type('boolean'), false),
 	'output.transformation.clipboard': defineKv(type('boolean'), true),
 	'output.transformation.cursor': defineKv(type('boolean'), false),
 	'output.transformation.enter': defineKv(type('boolean'), false),

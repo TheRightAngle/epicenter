@@ -40,5 +40,10 @@ export function createTextServiceWeb(): TextService {
 			TextError.NotSupported({
 				operation: 'Simulating keystrokes',
 			}),
+
+		simulateSpaceKeystroke: async () =>
+			TextError.NotSupported({
+				operation: 'Simulating keystrokes',
+			}),
 	};
 }

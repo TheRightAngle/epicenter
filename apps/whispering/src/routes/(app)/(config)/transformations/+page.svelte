@@ -109,13 +109,13 @@
 
 	let sorting = createPersistedState({
 		key: 'whispering-transformations-data-table-sorting',
-		onParseError: (_error) => [{ id: 'title', desc: false }],
+		defaultValue: [{ id: 'title', desc: false }],
 		schema: type({ desc: 'boolean', id: 'string' }).array(),
 	});
 	let columnFilters = $state<ColumnFiltersState>([]);
 	let rowSelection = createPersistedState({
 		key: 'whispering-transformations-data-table-row-selection',
-		onParseError: (_error) => ({}),
+		defaultValue: {},
 		schema: type('Record<string, boolean>'),
 	});
 	let pagination = $state<PaginationState>({ pageIndex: 0, pageSize: 10 });
@@ -133,9 +133,9 @@
 		getPaginationRowModel: getPaginationRowModel(),
 		onSortingChange: (updater) => {
 			if (typeof updater === 'function') {
-				sorting.value = updater(sorting.value);
+				sorting.current = updater(sorting.current);
 			} else {
-				sorting.value = updater;
+				sorting.current = updater;
 			}
 		},
 		onColumnFiltersChange: (updater) => {
@@ -147,9 +147,9 @@
 		},
 		onRowSelectionChange: (updater) => {
 			if (typeof updater === 'function') {
-				rowSelection.value = updater(rowSelection.value);
+				rowSelection.current = updater(rowSelection.current);
 			} else {
-				rowSelection.value = updater;
+				rowSelection.current = updater;
 			}
 		},
 		onPaginationChange: (updater) => {
@@ -168,13 +168,13 @@
 		},
 		state: {
 			get sorting() {
-				return sorting.value;
+				return sorting.current;
 			},
 			get columnFilters() {
 				return columnFilters;
 			},
 			get rowSelection() {
-				return rowSelection.value;
+				return rowSelection.current;
 			},
 			get pagination() {
 				return pagination;

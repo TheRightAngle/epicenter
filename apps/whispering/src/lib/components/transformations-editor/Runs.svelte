@@ -11,12 +11,23 @@
 	import PlayIcon from '@lucide/svelte/icons/play';
 	import Trash2 from '@lucide/svelte/icons/trash-2';
 	import { format } from 'date-fns';
+	import { workspace } from '$lib/client';
 	import CopyablePre from '$lib/components/copyable/CopyablePre.svelte';
 	import TextPreviewDialog from '$lib/components/copyable/TextPreviewDialog.svelte';
 	import { rpc } from '$lib/query';
 	import type { TransformationRun } from '$lib/state/transformation-runs.svelte';
 	import { transformationRuns } from '$lib/state/transformation-runs.svelte';
 	import { viewTransition } from '$lib/utils/viewTransitions';
+
+	// Step runs moved from the nested `run.stepRuns` array to a separate
+	// workspace table keyed by transformationRunId. Look them up inline
+	// so the UI still gets the per-step timeline.
+	function getStepRuns(runId: string) {
+		return workspace.tables.transformationStepRuns
+			.getAllValid()
+			.filter((step) => step.transformationRunId === runId)
+			.sort((a, b) => a.order - b.order);
+	}
 
 	let { runs }: { runs: TransformationRun[] } = $props();
 
@@ -142,7 +153,8 @@
 										<Label class="text-sm font-medium">Error</Label>
 										<CopyablePre variant="error" copyableText={run.error} />
 									{/if}
-									{#if run.stepRuns.length > 0}
+									{@const stepRuns = getStepRuns(run.id)}
+									{#if stepRuns.length > 0}
 										<div class="flex flex-col gap-2">
 											<Label class="text-sm font-medium">Steps</Label>
 											<Card.Root>
@@ -157,10 +169,15 @@
 														</Table.Row>
 													</Table.Header>
 													<Table.Body>
-														{#each run.stepRuns as stepRun}
+														{#each stepRuns as stepRun}
 															<Table.Row>
 																<Table.Cell>
-																	<Badge variant={`status.${stepRun.status}`}>
+																	<Badge
+																		variant={`status.${stepRun.status}` as
+																			| 'status.running'
+																			| 'status.completed'
+																			| 'status.failed'}
+																	>
 																		{stepRun.status}
 																	</Badge>
 																</Table.Cell>

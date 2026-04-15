@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
-import { QueryClient } from '@tanstack/query-core';
+import { QueryClient } from '@tanstack/svelte-query';
 import { createQueryFactories } from 'wellcrafted/query';
 import { asDeviceIdentifier } from '../services/types';
 

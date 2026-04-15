@@ -11,6 +11,7 @@
 	import { onDestroy, onMount } from 'svelte';
 	import TransformationPickerBody from '$lib/components/TransformationPickerBody.svelte';
 	import { rpc } from '$lib/query';
+	import { transformationSteps } from '$lib/state/transformation-steps.svelte';
 	import * as transformClipboardWindow from './transformClipboardWindow.tauri';
 
 	const combobox = useCombobox();
@@ -127,6 +128,7 @@
 						await rpc.transformer.transformInput({
 							input: clipboardText,
 							transformation,
+							steps: transformationSteps.getByTransformationId(transformation.id),
 						});
 
 					if (transformError) {

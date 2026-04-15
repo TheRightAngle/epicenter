@@ -7,6 +7,7 @@ const textKeys = {
 	copyToClipboard: ['text', 'copyToClipboard'] as const,
 	writeToCursor: ['text', 'writeToCursor'] as const,
 	simulateEnterKeystroke: ['text', 'simulateEnterKeystroke'] as const,
+	simulateSpaceKeystroke: ['text', 'simulateSpaceKeystroke'] as const,
 } as const;
 
 export const text = {
@@ -38,5 +39,9 @@ export const text = {
 	simulateEnterKeystroke: defineMutation({
 		mutationKey: textKeys.simulateEnterKeystroke,
 		mutationFn: () => services.text.simulateEnterKeystroke(),
+	}),
+	simulateSpaceKeystroke: defineMutation({
+		mutationKey: textKeys.simulateSpaceKeystroke,
+		mutationFn: () => services.text.simulateSpaceKeystroke(),
 	}),
 };

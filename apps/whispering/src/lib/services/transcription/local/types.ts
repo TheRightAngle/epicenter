@@ -90,7 +90,12 @@ export type ParakeetModelConfig = BaseModelConfig & {
 	}>;
 };
 
-export const PARAKEET_ACCELERATION_MODES = ['cpu', 'directml'] as const;
+export const PARAKEET_ACCELERATION_MODES = [
+	'cpu',
+	'xnnpack',
+	'directml',
+	'tensorrt',
+] as const;
 
 export type ParakeetAccelerationMode =
 	(typeof PARAKEET_ACCELERATION_MODES)[number];

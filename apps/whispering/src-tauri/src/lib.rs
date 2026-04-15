@@ -172,6 +172,7 @@ pub async fn run() {
         write_text,
         write_text_fast,
         simulate_enter_keystroke,
+        simulate_space_keystroke,
         // Audio recorder commands
         get_current_recording_id,
         enumerate_recording_devices,
@@ -311,6 +312,22 @@ async fn simulate_enter_keystroke() -> Result<(), String> {
     enigo
         .key(Key::Return, Direction::Click)
         .map_err(|e| format!("Failed to simulate Enter key: {}", e))?;
+
+    Ok(())
+}
+
+/// Simulates pressing the Space key
+///
+/// Useful for continuing a PTT-style transcription session — leaves a
+/// trailing space at the cursor so the next dictation starts cleanly
+/// rather than butting up against the preceding period or word.
+#[tauri::command]
+async fn simulate_space_keystroke() -> Result<(), String> {
+    let mut enigo = Enigo::new(&Settings::default()).map_err(|e| e.to_string())?;
+
+    enigo
+        .key(Key::Space, Direction::Click)
+        .map_err(|e| format!("Failed to simulate Space key: {}", e))?;
 
     Ok(())
 }

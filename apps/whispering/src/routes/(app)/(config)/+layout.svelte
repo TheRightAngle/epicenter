@@ -119,12 +119,6 @@
 				<TranscriptionSelector />
 				<TransformationSelector />
 				<RecordingModeSelector />
-			{:else if settings.get('recording.mode') === 'live'}
-				<ManualDeviceSelector />
-				<CompressionSelector />
-				<TranscriptionSelector />
-				<TransformationSelector />
-				<RecordingModeSelector />
 			{/if}
 		</div>
 	</div>

@@ -22,6 +22,7 @@
 		getFileExtensionFromFfmpegOptions,
 	} from '$lib/services/desktop/recorder/ffmpeg';
 	import { deviceConfig } from '$lib/state/device-config.svelte';
+	import { settings } from '$lib/state/settings.svelte';
 
 	// Generate realistic recording ID for preview
 	const SAMPLE_RECORDING_ID = nanoid();

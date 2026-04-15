@@ -4,11 +4,40 @@ import { workspace } from '$lib/client';
 import {
 	DEVICE_CONFIG_KEYS,
 	deviceConfig,
+	type DeviceConfigKey,
+	type InferDeviceValue,
 } from '$lib/state/device-config.svelte';
 
 const KV_DEFINITIONS = workspace.definitions.kv;
 type KvKey = keyof typeof KV_DEFINITIONS & string;
 type KvDefs = typeof KV_DEFINITIONS;
+
+/**
+ * Union of every known setting key — KV (workspace-synced) or device-bound.
+ * Lets `settings.get`/`settings.set` infer the correct return type for either
+ * namespace without the caller having to know which side a key lives on.
+ */
+type AnySettingKey = KvKey | DeviceConfigKey;
+
+type InferSettingValue<K extends AnySettingKey> = K extends KvKey
+	? InferKvValue<KvDefs[K]>
+	: K extends DeviceConfigKey
+		? InferDeviceValue<K>
+		: never;
+
+/**
+ * Legacy `settings.value['key']` accessor shape — maps every known key to
+ * its typed value. The proxy itself still accepts arbitrary string reads (for
+ * legacy fork code that still uses old key names); unknown keys fall through
+ * to `unknown` via the runtime `canonicalKey` lookup.
+ */
+type SettingsValueMap = {
+	[K in AnySettingKey]: InferSettingValue<K>;
+} & {
+	[K in LegacyKey]: (typeof LEGACY_KEY_MAP)[K] extends AnySettingKey
+		? InferSettingValue<(typeof LEGACY_KEY_MAP)[K]>
+		: unknown;
+};
 
 /**
  * Legacy fork key → canonical upstream key.
@@ -18,7 +47,7 @@ type KvDefs = typeof KV_DEFINITIONS;
  * translates them transparently on read/write so the fork code keeps working
  * without per-call-site migration.
  */
-const LEGACY_KEY_MAP: Record<string, string> = {
+const LEGACY_KEY_MAP = {
 	'sound.playOn.manual-start': 'sound.manualStart',
 	'sound.playOn.manual-stop': 'sound.manualStop',
 	'sound.playOn.manual-cancel': 'sound.manualCancel',
@@ -55,10 +84,12 @@ const LEGACY_KEY_MAP: Record<string, string> = {
 	// channel-based writer pipeline shipped — the flag is now orthogonal
 	// to hot-path performance, so it no longer needs the scary name.
 	'recording.cpal.experimentalBufferedCapture': 'recording.cpal.bufferedCapture',
-};
+} as const satisfies Record<string, AnySettingKey>;
+
+type LegacyKey = keyof typeof LEGACY_KEY_MAP;
 
 function canonicalKey(key: string): string {
-	return LEGACY_KEY_MAP[key] ?? key;
+	return (LEGACY_KEY_MAP as Record<string, string>)[key] ?? key;
 }
 
 function isKvKey(key: string): key is KvKey {
@@ -160,20 +191,21 @@ function createSettings() {
 
 	return {
 		/**
-		 * Get a setting value. Accepts either the canonical key or a legacy
-		 * fork-era key name; routes to workspace.kv or deviceConfig.
+		 * Get a setting value. Accepts any KV or device-config key and returns
+		 * the precisely-typed value for it. Legacy fork-era key names still work
+		 * at runtime (via canonicalKey), but only canonical keys get typed.
 		 */
-		get<K extends keyof KvDefs & string>(key: K): InferKvValue<KvDefs[K]> {
-			return readValue(key) as InferKvValue<KvDefs[K]>;
+		get<K extends AnySettingKey>(key: K): InferSettingValue<K> {
+			return readValue(key) as InferSettingValue<K>;
 		},
 
 		/**
 		 * Set a setting value. Writes go to workspace.kv or deviceConfig
 		 * depending on whether the key is synced or device-bound.
 		 */
-		set<K extends keyof KvDefs & string>(
+		set<K extends AnySettingKey>(
 			key: K,
-			value: InferKvValue<KvDefs[K]>,
+			value: InferSettingValue<K>,
 		) {
 			writeValue(key, value);
 		},
@@ -191,13 +223,21 @@ function createSettings() {
 		 * Legacy fork API — preserved for backwards compatibility with the
 		 * ~60 call sites that still use `settings.value[key]` and
 		 * `settings.updateKey(key, value)`. New code should prefer `get`/`set`.
+		 *
+		 * Typed as `SettingsValueMap` so `settings.value['some.key']` returns
+		 * the correct narrowed type for known keys. Unknown keys still work at
+		 * runtime via the proxy; callers that need truly-arbitrary string reads
+		 * can cast through `as unknown as Record<string, unknown>`.
 		 */
-		get value(): Record<string, unknown> {
-			return valueProxy;
+		get value(): SettingsValueMap {
+			return valueProxy as unknown as SettingsValueMap;
 		},
 
-		updateKey(key: string, value: unknown): void {
+		updateKey: ((key: string, value: unknown): void => {
 			writeValue(key, value);
+		}) as {
+			<K extends AnySettingKey>(key: K, value: InferSettingValue<K>): void;
+			(key: string, value: unknown): void;
 		},
 	};
 }

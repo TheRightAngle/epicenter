@@ -252,24 +252,24 @@
 
 	let sorting = createPersistedState({
 		key: 'whispering-recordings-data-table-sorting',
-		onParseError: (_error) => [{ id: 'timestamp', desc: true }],
+		defaultValue: [{ id: 'timestamp', desc: true }],
 		schema: type({ desc: 'boolean', id: 'string' }).array(),
 	});
 	let columnFilters = $state<ColumnFiltersState>([]);
 	let columnVisibility = createPersistedState({
 		key: 'whispering-recordings-data-table-column-visibility',
-		onParseError: (_error) => ({
+		defaultValue: {
 			id: false,
 			title: false,
 			subtitle: false,
 			createdAt: false,
 			updatedAt: false,
-		}),
+		},
 		schema: type('Record<string, boolean>'),
 	});
 	let rowSelection = createPersistedState({
 		key: 'whispering-recordings-data-table-row-selection',
-		onParseError: (_error) => ({}),
+		defaultValue: {},
 		schema: type('Record<string, boolean>'),
 	});
 	let pagination = $state<PaginationState>({ pageIndex: 0, pageSize: 10 });
@@ -287,9 +287,9 @@
 		getPaginationRowModel: getPaginationRowModel(),
 		onSortingChange: (updater) => {
 			if (typeof updater === 'function') {
-				sorting.value = updater(sorting.value);
+				sorting.current = updater(sorting.current);
 			} else {
-				sorting.value = updater;
+				sorting.current = updater;
 			}
 		},
 		onColumnFiltersChange: (updater) => {
@@ -301,16 +301,16 @@
 		},
 		onColumnVisibilityChange: (updater) => {
 			if (typeof updater === 'function') {
-				columnVisibility.value = updater(columnVisibility.value);
+				columnVisibility.current = updater(columnVisibility.current);
 			} else {
-				columnVisibility.value = updater;
+				columnVisibility.current = updater;
 			}
 		},
 		onRowSelectionChange: (updater) => {
 			if (typeof updater === 'function') {
-				rowSelection.value = updater(rowSelection.value);
+				rowSelection.current = updater(rowSelection.current);
 			} else {
-				rowSelection.value = updater;
+				rowSelection.current = updater;
 			}
 		},
 		onPaginationChange: (updater) => {
@@ -329,16 +329,16 @@
 		},
 		state: {
 			get sorting() {
-				return sorting.value;
+				return sorting.current;
 			},
 			get columnFilters() {
 				return columnFilters;
 			},
 			get columnVisibility() {
-				return columnVisibility.value;
+				return columnVisibility.current;
 			},
 			get rowSelection() {
-				return rowSelection.value;
+				return rowSelection.current;
 			},
 			get pagination() {
 				return pagination;

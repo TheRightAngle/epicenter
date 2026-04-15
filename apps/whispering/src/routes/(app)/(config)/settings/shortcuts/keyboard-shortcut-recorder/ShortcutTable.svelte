@@ -28,9 +28,13 @@
 				(defs[`shortcut.${commandId}`]?.defaultValue as string | null) ?? null
 			);
 		}
-		return deviceConfig.getDefault(
-			`shortcuts.global.${commandId}` as DeviceConfigKey,
-		);
+		// Narrow to shortcut device keys specifically. The broader
+		// DeviceConfigKey union includes booleans/enums whose default values
+		// aren't `string | null`, which this helper promises to return.
+		type GlobalShortcutKey = Extract<DeviceConfigKey, `shortcuts.global.${string}`>;
+		return (deviceConfig.getDefault(
+			`shortcuts.global.${commandId}` as GlobalShortcutKey,
+		) ?? null) as string | null;
 	}
 
 	const filteredCommands = $derived(

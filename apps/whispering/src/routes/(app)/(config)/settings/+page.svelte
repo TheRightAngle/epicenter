@@ -105,10 +105,27 @@
 						<Switch
 							id="transcription.simulateEnterAfterOutput"
 							bind:checked={() => settings.get('output.transcription.enter'),
-								(v) => settings.set('output.transcription.enter', v)}
+								(v) => {
+									settings.set('output.transcription.enter', v);
+									if (v) settings.set('output.transcription.space', false);
+								}}
 						/>
 						<Field.Label for="transcription.simulateEnterAfterOutput">
 							Press Enter after pasting transcript
+						</Field.Label>
+					</Field.Field>
+
+					<Field.Field orientation="horizontal">
+						<Switch
+							id="transcription.simulateSpaceAfterOutput"
+							bind:checked={() => settings.get('output.transcription.space'),
+								(v) => {
+									settings.set('output.transcription.space', v);
+									if (v) settings.set('output.transcription.enter', false);
+								}}
+						/>
+						<Field.Label for="transcription.simulateSpaceAfterOutput">
+							Press Space after pasting transcript
 						</Field.Label>
 					</Field.Field>
 				{/if}

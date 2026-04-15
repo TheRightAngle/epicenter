@@ -12,7 +12,6 @@ import {
 import { asDeviceIdentifier } from '$lib/services/types';
 import { createVadStreamLifecycle } from '$lib/state/vad-stream-lifecycle';
 import { deviceConfig } from '$lib/state/device-config.svelte';
-import { settings } from '$lib/state/settings.svelte';
 
 /**
  * Creates a Voice Activity Detection (VAD) recorder with reactive state.
@@ -118,9 +117,12 @@ function createVadRecorder() {
 					_currentStream = nextStream;
 				},
 				reacquireStream: async () => {
+					const reacquiredId = deviceConfig.get('recording.navigator.deviceId');
 					const { data: resumedStreamResult, error: resumedStreamError } =
 						await getRecordingStream({
-							selectedDeviceId: settings.value['recording.navigator.deviceId'],
+							selectedDeviceId: reacquiredId
+								? asDeviceIdentifier(reacquiredId)
+								: null,
 							sendStatus: (status) => {
 								console.log(
 									'VAD resume getRecordingStream status update:',
@@ -193,11 +195,13 @@ function createVadRecorder() {
 			});
 
 			if (startError) {
-				// Clean up everything on start error
-				trySync({
-					try: () => newVad.destroy(),
-					catch: () => Ok(undefined),
-				});
+				// Clean up everything on start error. Best-effort — ignore
+				// destroy() throws since we're already in an error path.
+				try {
+					newVad.destroy();
+				} catch {
+					/* ignore */
+				}
 				cleanupRecordingStream(stream);
 				_maybeVad = null;
 				_currentStream = null;

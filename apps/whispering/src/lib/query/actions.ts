@@ -9,6 +9,7 @@ import { desktopServices } from '$lib/services/desktop';
 import { deviceConfig } from '$lib/state/device-config.svelte';
 import { recordings } from '$lib/state/recordings.svelte';
 import { settings } from '$lib/state/settings.svelte';
+import { transformationSteps } from '$lib/state/transformation-steps.svelte';
 import { transformations } from '$lib/state/transformations.svelte';
 import { vadRecorder } from '$lib/state/vad-recorder.svelte';
 import * as transformClipboardWindow from '$routes/transform-clipboard/transformClipboardWindow.tauri';
@@ -558,6 +559,7 @@ export const actions = {
 				await transformer.transformInput({
 					input: clipboardText,
 					transformation,
+					steps: transformationSteps.getByTransformationId(transformation.id),
 				});
 
 			if (transformError) {
@@ -628,7 +630,11 @@ async function processRecordingPipeline({
 	const persistRecording = shouldPersistRecordings({
 		recordingRetentionStrategy:
 			settings.value['database.recordingRetentionStrategy'],
-		maxRecordingCount: settings.value['database.maxRecordingCount'],
+		// Legacy fork shim: `database.maxRecordingCount` resolves to the
+		// workspace `retention.maxCount` (number). `shouldPersistRecordings`
+		// was authored against the old string-typed schema, so stringify here
+		// instead of widening that helper's signature.
+		maxRecordingCount: String(settings.value['database.maxRecordingCount']),
 	});
 
 	// Show transcribing toast immediately
@@ -767,6 +773,7 @@ async function processRecordingPipeline({
 			await transformer.transformInput({
 				input: transcribedText,
 				transformation,
+				steps: transformationSteps.getByTransformationId(transformation.id),
 			});
 		if (transformError) {
 			notify.error({ id: transformToastId, ...transformError });
