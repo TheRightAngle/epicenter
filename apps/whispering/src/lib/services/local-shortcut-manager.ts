@@ -94,6 +94,16 @@ export const LocalShortcutManagerLive = {
 		 * ensures callbacks only fire once per physical key press.
 		 */
 		const keydown = on(window, 'keydown', (e) => {
+			// Ignore keyboard auto-repeat. Windows fires WM_KEYDOWN at
+			// ~30 Hz while a key is held; minidump analysis showed the
+			// webview message-pump thread at 90% CPU during push-to-talk
+			// hold, with its stack dispatching this handler on every
+			// repeat. The activeShortcuts Set already gates callbacks to
+			// fire once per physical press, so auto-repeats were pure
+			// overhead (DOM traversal for isTypingInInput, shortcut-map
+			// iteration, arraysMatch comparisons, preventDefault).
+			if (e.repeat) return;
+
 			// Skip shortcut processing if user is typing in an input field
 			if (isTypingInInput()) return;
 
