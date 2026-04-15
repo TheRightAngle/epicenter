@@ -112,9 +112,19 @@ export const GlobalShortcutManagerLive = {
 			return ShortcutError.InvalidFormat({ accelerator });
 		}
 
+		// Windows RegisterHotKey generates WM_HOTKEY at the OS key-repeat rate
+		// (~30Hz) while a registered hotkey is held down. Without dedup,
+		// hold-to-activate shortcuts like Push-to-Talk fire their `Pressed`
+		// callback 30x/sec — each one did a Tauri IPC roundtrip into
+		// startManualRecording and pegged a core. Dedupe consecutive
+		// same-state events so every shortcut sees exactly one Pressed
+		// followed by one Released per physical press.
+		let lastState: ShortcutEventState | null = null;
 		const { error: registerError } = await tryAsync({
 			try: () =>
 				tauriRegister(accelerator, (event) => {
+					if (event.state === lastState) return;
+					lastState = event.state;
 					if (on.includes(event.state)) {
 						callback(event.state);
 					}
