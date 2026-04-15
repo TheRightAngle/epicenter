@@ -9,6 +9,12 @@ export {
 } from './icons';
 
 export {
+	LAYOUT_MODE_OPTIONS,
+	LAYOUT_MODES,
+	type LayoutMode,
+} from './layout-mode';
+
+export {
 	NAV_ITEMS,
 	type NavItem,
 } from './nav-items';
