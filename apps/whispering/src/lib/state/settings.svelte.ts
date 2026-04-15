@@ -98,7 +98,14 @@ function createSettings() {
 	 * components (dropdowns, `$derived` comparisons against numeric
 	 * catalog entries) see the real number and match correctly.
 	 */
-	const NUMERIC_KV_KEYS = new Set<string>(['retention.maxCount']);
+	const NUMERIC_KV_KEYS = new Set<string>([
+		'retention.maxCount',
+		// Upstream stores temperature as `0 <= number <= 1` while the fork's
+		// old schema typed it as a string. No current fork code reads it
+		// through the legacy proxy, but listing it here keeps the shim
+		// consistent with workspace/definition.ts and guards future callers.
+		'transcription.temperature',
+	]);
 
 	function readValue(rawKey: string): unknown {
 		const key = canonicalKey(rawKey);
