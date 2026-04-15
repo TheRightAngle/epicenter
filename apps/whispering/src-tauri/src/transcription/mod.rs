@@ -172,8 +172,8 @@ fn probe_directml_status() -> AcceleratorStatus {
 /// to CPU with a log warning — we prefer to surface that up-front.
 #[cfg(target_os = "windows")]
 fn probe_tensorrt_status() -> AcceleratorStatus {
-    use windows_sys::Win32::Foundation::HMODULE;
-    use windows_sys::Win32::System::LibraryLoader::{FreeLibrary, LoadLibraryW};
+    use windows_sys::Win32::Foundation::{FreeLibrary, HMODULE};
+    use windows_sys::Win32::System::LibraryLoader::LoadLibraryW;
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
 
@@ -671,7 +671,6 @@ fn extract_samples_from_wav(wav_data: Vec<u8>) -> Result<Vec<f32>, Transcription
     Ok(samples)
 }
 
-#[cfg(not(target_os = "windows"))]
 fn extract_moonshine_variant_from_model_path(model_path: &str) -> MoonshineVariant {
     let dir_name = std::path::Path::new(model_path)
         .file_name()
