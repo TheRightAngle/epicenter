@@ -113,3 +113,11 @@ incremental = true # Compile your binary in smaller steps.
 # opt-level = "s" # Prioritizes small binary size. Use `3` if you prefer speed.
 panic = "abort" # Higher performance by disabling panic handlers.
 strip = true # Ensures debug symbols are removed.
+
+# FORK PATCH: Override global-hotkey with our vendored copy that adds a
+# 10ms sleep inside the Windows release-detection poll loop. Without this,
+# holding a push-to-talk hotkey for N seconds pegs a CPU core for the full
+# N seconds because global-hotkey 0.7.0's release loop has no sleep/yield.
+# Applies transitively to tauri-plugin-global-shortcut.
+[patch.crates-io]
+global-hotkey = { path = "vendor/global-hotkey" }

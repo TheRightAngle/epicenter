@@ -15,7 +15,7 @@ import { vadRecorder } from '$lib/state/vad-recorder.svelte';
 import * as transformClipboardWindow from '$routes/transform-clipboard/transformClipboardWindow.tauri';
 import { delivery } from './delivery';
 import { notify } from './notify';
-import { recorder } from './recorder';
+import { recorder, recorderService } from './recorder';
 import { sound } from './sound';
 import { text } from './text';
 import { transcribeBlob } from './transcription';
@@ -341,10 +341,20 @@ export const actions = {
 	toggleManualRecording: defineMutation({
 		mutationKey: ['commands', 'toggleManualRecording'] as const,
 		mutationFn: async () => {
+			// Go direct to the recorder service instead of the tanstack-cached
+			// query. `getRecorderState.fetch()` can briefly return 'IDLE' while
+			// an invalidation round-trip is still in flight, which caused the
+			// click-to-stop button to fall through to startManualRecording
+			// (guarded by isRecordingOperationBusy → no-op) and the recorder
+			// state would stay RECORDING forever. PTT-release isn't affected
+			// because it calls stopManualRecording directly.
 			const { data: recorderState, error: getRecorderStateError } =
-				await recorder.getRecorderState.fetch();
+				await recorderService().getRecorderState();
 			if (getRecorderStateError) {
-				notify.error(getRecorderStateError);
+				notify.error({
+					title: '❌ Failed to get recorder state',
+					description: getRecorderStateError.message,
+				});
 				return Ok(undefined);
 			}
 			if (recorderState === 'RECORDING') {
