@@ -4,7 +4,7 @@ mod model_manager;
 use audioadapter_buffers::direct::SequentialSliceOfVecs;
 use error::TranscriptionError;
 use log::{debug, error, info, warn};
-pub use model_manager::{ModelManager, ParakeetAccelerationMode};
+pub use model_manager::{set_cache_dir, ModelManager, ParakeetAccelerationMode};
 use serde::Serialize;
 use std::io::Write;
 #[cfg(target_os = "windows")]

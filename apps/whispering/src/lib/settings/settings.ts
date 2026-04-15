@@ -243,7 +243,7 @@ export const Settings = type({
 	// retained only for backwards compat with existing persisted values
 	// and is no longer surfaced in the UI.
 	'transcription.parakeet.acceleration': type
-		.enumerated('cpu', 'directml', 'tensorrt')
+		.enumerated('cpu', 'xnnpack', 'directml', 'tensorrt')
 		.default('cpu'),
 	'transcription.parakeet.directmlAdapter': "string = 'auto'",
 	'transcription.parakeet.modelPath': "string = ''",

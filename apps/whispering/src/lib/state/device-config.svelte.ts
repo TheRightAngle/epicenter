@@ -88,7 +88,7 @@ const DEVICE_DEFINITIONS = {
 	// transcribe-rs no longer exposes per-adapter selection); the key is
 	// retained but unused.
 	'transcription.parakeet.acceleration': defineEntry(
-		type.enumerated('cpu', 'directml', 'tensorrt'),
+		type.enumerated('cpu', 'xnnpack', 'directml', 'tensorrt'),
 		'cpu',
 	),
 	'transcription.parakeet.directmlAdapter': defineEntry(type('string'), 'auto'),

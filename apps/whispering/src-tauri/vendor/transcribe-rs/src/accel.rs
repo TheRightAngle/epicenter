@@ -101,6 +101,87 @@ pub fn get_directml_device_id() -> Option<i32> {
     }
 }
 
+// TheRightAngle fork additions:
+// TensorRT + CUDA tuning globals. Applied to the execution provider
+// builder when the corresponding accelerator is selected.
+//
+// Uses std::sync::OnceLock (stable since 1.70) so we don't depend on
+// once_cell from this module — accel.rs isn't under the `onnx` feature
+// gate that pulls once_cell, so we avoid a cross-feature headache.
+use std::sync::{Mutex, OnceLock};
+
+#[derive(Debug, Clone, Default)]
+pub struct TensorRtTuning {
+    /// Enable FP16 inference. Typically 1.5-2× faster on Ampere+ GPUs
+    /// (RTX 30/40 series) with negligible accuracy loss for speech.
+    pub fp16: bool,
+    /// Persist compiled TensorRT engines to disk so cold-start after
+    /// the first launch is near-instant (saves 5-15s per launch).
+    pub engine_cache_path: Option<String>,
+    /// Persist TensorRT's kernel timing cache. Complements engine_cache:
+    /// engine cache is per-model; timing cache is per-GPU across models.
+    pub timing_cache_path: Option<String>,
+    /// Share context memory across inferences. Lowers per-call allocator
+    /// pressure for repeated PTT inferences.
+    pub context_memory_sharing: bool,
+    /// Fall back to FP32 for LayerNorm when FP16 is enabled. Usually
+    /// improves accuracy of FP16-converted transformer models.
+    pub layer_norm_fp32_fallback: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct CudaTuning {
+    /// Enable TF32 tensor-core math on Ampere+ GPUs. Free ~2× perf on
+    /// matrix ops for no accuracy loss on speech models.
+    pub tf32: bool,
+    // Note: `with_cuda_graph(true)` is deliberately NOT exposed —
+    // CUDA graphs require fixed input shapes, and Parakeet/Moonshine
+    // use variable-length audio inputs, so enabling it would break
+    // inference whenever audio length changed.
+}
+
+static TENSORRT_TUNING: OnceLock<Mutex<TensorRtTuning>> = OnceLock::new();
+static CUDA_TUNING: OnceLock<Mutex<CudaTuning>> = OnceLock::new();
+
+fn tensorrt_tuning_cell() -> &'static Mutex<TensorRtTuning> {
+    TENSORRT_TUNING.get_or_init(|| Mutex::new(TensorRtTuning::default()))
+}
+
+fn cuda_tuning_cell() -> &'static Mutex<CudaTuning> {
+    CUDA_TUNING.get_or_init(|| Mutex::new(CudaTuning::default()))
+}
+
+/// Set TensorRT tuning before loading a model. Applies to the next
+/// session build.
+pub fn set_tensorrt_tuning(tuning: TensorRtTuning) {
+    if let Ok(mut guard) = tensorrt_tuning_cell().lock() {
+        *guard = tuning;
+    }
+}
+
+/// Read current TensorRT tuning. Internal use by session.rs.
+pub fn get_tensorrt_tuning() -> TensorRtTuning {
+    tensorrt_tuning_cell()
+        .lock()
+        .map(|g| g.clone())
+        .unwrap_or_default()
+}
+
+/// Set CUDA tuning before loading a model.
+pub fn set_cuda_tuning(tuning: CudaTuning) {
+    if let Ok(mut guard) = cuda_tuning_cell().lock() {
+        *guard = tuning;
+    }
+}
+
+/// Read current CUDA tuning. Internal use by session.rs.
+pub fn get_cuda_tuning() -> CudaTuning {
+    cuda_tuning_cell()
+        .lock()
+        .map(|g| g.clone())
+        .unwrap_or_default()
+}
+
 impl OrtAccelerator {
     /// Return the list of ORT accelerators that are compiled-in for the current build.
     ///

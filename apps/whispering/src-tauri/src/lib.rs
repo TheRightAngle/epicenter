@@ -11,9 +11,9 @@ use recorder::commands::{
 
 pub mod transcription;
 use transcription::{
-    list_directml_adapters, probe_parakeet_accelerators, transcribe_audio_moonshine,
-    transcribe_audio_parakeet, transcribe_audio_whisper, validate_local_transcription_model,
-    ModelManager,
+    list_directml_adapters, probe_parakeet_accelerators, set_cache_dir as set_model_cache_dir,
+    transcribe_audio_moonshine, transcribe_audio_parakeet, transcribe_audio_whisper,
+    validate_local_transcription_model, ModelManager,
 };
 
 pub mod windows_path;
@@ -135,7 +135,22 @@ pub async fn run() {
         .manage(AppData::new())
         // Wrap in Arc so transcribe commands can clone a handle into
         // tauri::async_runtime::spawn_blocking without lifetime issues.
-        .manage(std::sync::Arc::new(ModelManager::new()));
+        .manage(std::sync::Arc::new(ModelManager::new()))
+        // Resolve app_data_dir and hand it to the ModelManager so
+        // TensorRT's engine + timing caches persist to disk. Without
+        // this, every app launch recompiles the TensorRT engine from
+        // scratch — a 5-15s cold-start hit.
+        .setup(|app| {
+            use tauri::Manager;
+            if let Ok(data_dir) = app.path().app_data_dir() {
+                set_model_cache_dir(data_dir);
+            } else {
+                log::warn!(
+                    "Could not resolve app_data_dir; TensorRT engine cache disabled"
+                );
+            }
+            Ok(())
+        });
 
     #[cfg(desktop)]
     {

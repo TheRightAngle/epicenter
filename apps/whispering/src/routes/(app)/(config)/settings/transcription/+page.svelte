@@ -615,7 +615,14 @@
 								{
 									value: 'cpu' as const,
 									label: 'CPU',
-									description: 'Standard local CPU execution. Works on any hardware.',
+									description: 'Standard CPU execution. Works everywhere; slowest.',
+									availability: { available: acceleratorAvailability.cpu },
+								},
+								{
+									value: 'xnnpack' as const,
+									label: 'CPU (XNNPACK, accelerated)',
+									description:
+										'SIMD-accelerated CPU path via XNNPACK (AVX on x86, NEON on ARM). Faster than plain CPU on every modern machine; no GPU needed. Good choice if DirectML/TensorRT are unavailable.',
 									availability: { available: acceleratorAvailability.cpu },
 								},
 								{
@@ -629,7 +636,7 @@
 									value: 'tensorrt' as const,
 									label: 'GPU (TensorRT, NVIDIA)',
 									description:
-										'NVIDIA-optimised path via TensorRT with a CUDA fallback. Typically 1.5–3× faster than DirectML on NVIDIA GPUs. Requires the CUDA runtime installed on this system; falls back to CPU otherwise. First run compiles the model (~5–15s).',
+										'NVIDIA-optimised path with FP16 Tensor Cores, engine cache, and CUDA fallback. Typically 1.5–3× faster than DirectML on NVIDIA GPUs. First launch compiles the engine (~5–15s, cached to disk afterward). Requires CUDA 12.x + TensorRT 10.x installed.',
 									availability: acceleratorAvailability.tensorrt,
 								},
 							] as option (option.value)}

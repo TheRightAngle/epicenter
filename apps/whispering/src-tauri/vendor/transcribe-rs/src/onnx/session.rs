@@ -31,7 +31,15 @@ fn execution_providers() -> Vec<ort::ep::ExecutionProviderDispatch> {
         }
         OrtAccelerator::Cuda => {
             #[cfg(feature = "ort-cuda")]
-            eps.push(CUDA::default().build());
+            {
+                // Apply CUDA tuning (TF32 on Ampere+).
+                let cuda_tuning = crate::accel::get_cuda_tuning();
+                let mut cuda = CUDA::default();
+                if cuda_tuning.tf32 {
+                    cuda = cuda.with_tf32(true);
+                }
+                eps.push(cuda.build());
+            }
             #[cfg(not(feature = "ort-cuda"))]
             log::warn!(
                 "Accelerator set to CUDA but ort-cuda feature is not enabled; falling back to CPU"
@@ -40,9 +48,42 @@ fn execution_providers() -> Vec<ort::ep::ExecutionProviderDispatch> {
         OrtAccelerator::TensorRt => {
             #[cfg(feature = "ort-tensorrt")]
             {
-                eps.push(TensorRT::default().build());
-                // CUDA as fallback for ops TensorRT doesn't support
-                eps.push(CUDA::default().build());
+                // TheRightAngle fork addition: apply TensorRT tuning
+                // (FP16, engine cache, timing cache, context memory
+                // sharing) before building the EP. Defaults preserve
+                // upstream "all off" behavior when the host code
+                // hasn't called set_tensorrt_tuning.
+                let trt_tuning = crate::accel::get_tensorrt_tuning();
+                let mut trt = TensorRT::default();
+                if trt_tuning.fp16 {
+                    trt = trt.with_fp16(true);
+                    if trt_tuning.layer_norm_fp32_fallback {
+                        trt = trt.with_layer_norm_fp32_fallback(true);
+                    }
+                }
+                if let Some(path) = trt_tuning.engine_cache_path.as_deref() {
+                    trt = trt
+                        .with_engine_cache(true)
+                        .with_engine_cache_path(path.to_string());
+                }
+                if let Some(path) = trt_tuning.timing_cache_path.as_deref() {
+                    trt = trt
+                        .with_timing_cache(true)
+                        .with_timing_cache_path(path.to_string());
+                }
+                if trt_tuning.context_memory_sharing {
+                    trt = trt.with_context_memory_sharing(true);
+                }
+                eps.push(trt.build());
+
+                // CUDA as fallback for ops TensorRT doesn't support.
+                // Apply CUDA tuning (TF32 on Ampere+) here too.
+                let cuda_tuning = crate::accel::get_cuda_tuning();
+                let mut cuda = CUDA::default();
+                if cuda_tuning.tf32 {
+                    cuda = cuda.with_tf32(true);
+                }
+                eps.push(cuda.build());
             }
             #[cfg(not(feature = "ort-tensorrt"))]
             log::warn!(
