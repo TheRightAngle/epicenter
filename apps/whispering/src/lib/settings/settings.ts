@@ -237,8 +237,13 @@ export const Settings = type({
 		'Systran/faster-distil-whisper-small.en',
 	),
 	'transcription.whispercpp.modelPath': "string = ''",
+	// Parakeet acceleration — cpu, directml (Win DX12 GPU), or tensorrt
+	// (NVIDIA-specific; requires CUDA runtime). transcribe-rs 0.3.11
+	// dropped per-adapter DirectML selection, so `directmlAdapter` is
+	// retained only for backwards compat with existing persisted values
+	// and is no longer surfaced in the UI.
 	'transcription.parakeet.acceleration': type
-		.enumerated('cpu', 'directml')
+		.enumerated('cpu', 'directml', 'tensorrt')
 		.default('cpu'),
 	'transcription.parakeet.directmlAdapter': "string = 'auto'",
 	'transcription.parakeet.modelPath': "string = ''",

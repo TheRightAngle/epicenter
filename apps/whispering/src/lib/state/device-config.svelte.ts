@@ -82,9 +82,13 @@ const DEVICE_DEFINITIONS = {
 	'transcription.parakeet.modelPath': defineEntry(type('string'), ''),
 	'transcription.moonshine.modelPath': defineEntry(type('string'), ''),
 
-	// ── Parakeet hardware acceleration (fork: Windows DirectML work) ──
+	// ── Parakeet hardware acceleration (fork: Windows DirectML + TensorRT) ──
+	// Added 'tensorrt' after upgrading transcribe-rs to 0.3.11. The
+	// DirectML adapter selector was dropped in the same upgrade (upstream
+	// transcribe-rs no longer exposes per-adapter selection); the key is
+	// retained but unused.
 	'transcription.parakeet.acceleration': defineEntry(
-		type.enumerated('cpu', 'directml'),
+		type.enumerated('cpu', 'directml', 'tensorrt'),
 		'cpu',
 	),
 	'transcription.parakeet.directmlAdapter': defineEntry(type('string'), 'auto'),

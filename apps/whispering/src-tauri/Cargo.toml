@@ -30,9 +30,9 @@ serde = { version = "1", features = ["derive"] }
 tauri = { version = "2.10.3", features = ["protocol-asset", "macos-private-api", "image-png", "tray-icon"] }
 tauri-plugin-opener = "2.5.3"
 tauri-plugin-clipboard-manager = "2.3.2"
-tauri-plugin-dialog = "2.6.0"
-tauri-plugin-fs = "2.4.5"
-tauri-plugin-http = "2.5.7"
+tauri-plugin-dialog = "2.7.0"
+tauri-plugin-fs = "2.5.0"
+tauri-plugin-http = "2.5.8"
 tauri-plugin-notification = "2.3.3"
 tauri-plugin-os = "2.3.2"
 tauri-plugin-process = "2.3.1"
@@ -41,13 +41,13 @@ tauri-plugin-autostart = "2.5.1"
 tauri-plugin-aptabase = "1.0.0"
 enigo = "0.6.1"
 cpal = "0.17.3"
-audioadapter-buffers = "2.0.0"
+audioadapter-buffers = "3.0.0"
 tracing = "0.1.44"
 thiserror = "2.0.18"
 hound = "3.5.1"
 lazy_static = "1.5.0"
 tempfile = "3.27.0"
-rubato = "1.0.1"
+rubato = "2.0.0"
 tauri-plugin-macos-permissions = "2.3.0"
 fix-path-env = { git = "https://github.com/tauri-apps/fix-path-env-rs" }
 regex = "1"
@@ -66,12 +66,18 @@ nix = { version = "0.31.2", features = ["signal"] }
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_Console"] }
 windows = { version = "0.58.0", features = ["Win32_Graphics_Dxgi"] }
-# Windows: Only parakeet is available due to MSVC runtime library conflicts (MT_StaticRelease vs MD_DynamicRelease)
+# Windows: Only parakeet is available due to MSVC runtime library conflicts
+# (MT_StaticRelease vs MD_DynamicRelease):
 # - whisper-cpp: whisper-rs-sys conflicts with ort
-# - moonshine: Previously blocked by tokenizers/esaxx-rs CRT conflict.
-#   tokenizers was removed in transcribe-rs 0.2.2 — moonshine on Windows may now work (untested).
-# Parakeet works because it uses ort without tokenizers dependency
-transcribe-rs = { path = "vendor/transcribe-rs", features = ["onnx", "directml"] }
+# - moonshine: previously blocked by tokenizers/esaxx-rs CRT conflict;
+#   removed in transcribe-rs 0.2.2 — moonshine on Windows may now work (untested).
+# Parakeet works because it uses ort without tokenizers.
+#
+# transcribe-rs 0.3.x renamed acceleration features to the `ort-*`
+# scheme. ort-directml + ort-tensorrt give the user both AMD/Intel GPU
+# (DirectML) and NVIDIA GPU (TensorRT) paths. TensorRT additionally
+# pulls ort-cuda as its fallback for ops it doesn't natively support.
+transcribe-rs = { path = "vendor/transcribe-rs", features = ["onnx", "ort-directml", "ort-tensorrt"] }
 
 [target.'cfg(not(windows))'.dependencies]
 # macOS/Linux: full whisper-cpp support
@@ -83,8 +89,8 @@ core-foundation-sys =  "0.8.7"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-global-shortcut = "2.3.1"
-tauri-plugin-single-instance = "2.4.0"
-tauri-plugin-updater = "2.10.0"
+tauri-plugin-single-instance = "2.4.1"
+tauri-plugin-updater = "2.10.1"
 
 [profile.dev]
 incremental = true # Compile your binary in smaller steps.

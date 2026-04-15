@@ -595,13 +595,19 @@
 								{
 									value: 'cpu',
 									label: 'CPU',
-									description: 'Use the standard local CPU execution path.',
+									description: 'Standard local CPU execution. Works on any hardware.',
 								},
 								{
 									value: 'directml',
 									label: 'GPU (DirectML)',
 									description:
-										'Use Windows DirectML acceleration and optionally target a specific GPU adapter.',
+										'Universal Windows GPU path via DirectML. Works on any DX12-capable adapter (NVIDIA, AMD, Intel).',
+								},
+								{
+									value: 'tensorrt',
+									label: 'GPU (TensorRT, NVIDIA)',
+									description:
+										'NVIDIA-optimised path via TensorRT with a CUDA fallback. Typically 1.5–3× faster than DirectML on NVIDIA GPUs. Requires the CUDA runtime installed on this system; falls back to CPU otherwise. First run compiles the model (~5–15s).',
 								},
 							] as option (option.value)}
 								<Field.Label for="parakeet-acceleration-{option.value}">
@@ -620,41 +626,17 @@
 						</RadioGroup.Root>
 					</Field.Field>
 
-					{#if settings.value['transcription.parakeet.acceleration'] ===
-						'directml'}
+					<!--
+						GPU-adapter selection dropdown removed in transcribe-rs
+						0.3.11 — upstream stopped exposing per-adapter DirectML
+						targeting. DirectML uses the system's default DX12 adapter.
+						If you have multiple GPUs and need to target a specific
+						one, set the `DXGI_ADAPTER_VENDOR` env var or wait for
+						transcribe-rs to re-expose device selection.
+					-->
+					{#if false}
 						<Field.Field>
 							<Field.Label for="parakeet-directml-adapter">GPU Adapter</Field.Label>
-							<Select.Root
-								type="single"
-								bind:value={() =>
-									settings.value['transcription.parakeet.directmlAdapter'],
-									(value) =>
-										settings.updateKey(
-											'transcription.parakeet.directmlAdapter',
-											value,
-										)}
-							>
-								<Select.Trigger id="parakeet-directml-adapter" class="w-full">
-									{parakeetDirectmlAdapterLabel ?? 'Auto (default adapter)'}
-								</Select.Trigger>
-								<Select.Content>
-									{#each parakeetDirectmlAdapterItems as item (item.value)}
-										<Select.Item value={item.value} label={item.label}>
-											{item.label}
-										</Select.Item>
-									{/each}
-								</Select.Content>
-							</Select.Root>
-							<Field.Description>
-								Choose which Windows GPU DirectML should use. Auto follows the
-								system default adapter.
-							</Field.Description>
-							{#if directmlAdapterError}
-								<Field.Description>
-									Unable to list GPU adapters right now. Auto still uses the
-									system default adapter.
-								</Field.Description>
-							{/if}
 						</Field.Field>
 					{/if}
 					{/if}

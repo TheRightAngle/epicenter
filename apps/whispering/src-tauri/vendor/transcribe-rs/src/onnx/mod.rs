@@ -4,7 +4,6 @@
 //! and implements the `SpeechModel` trait for a unified transcription API.
 
 pub mod session;
-pub use session::OnnxExecutionProvider;
 
 /// Preferred precision for ONNX model loading.
 ///
@@ -18,8 +17,11 @@ pub enum Quantization {
     FP32,
     FP16,
     Int8,
+    Int4,
 }
 
+pub mod canary;
+pub mod cohere;
 pub mod gigaam;
 pub mod moonshine;
 pub mod parakeet;

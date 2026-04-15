@@ -753,7 +753,7 @@ pub async fn transcribe_audio_parakeet(
         model_manager
             .get_or_load_parakeet(PathBuf::from(&model_path), acceleration_mode)
             .map_err(|e| match acceleration_mode {
-                ParakeetAccelerationMode::DirectML { .. } => {
+                ParakeetAccelerationMode::DirectMl | ParakeetAccelerationMode::TensorRt => {
                     TranscriptionError::GpuError { message: e }
                 }
                 ParakeetAccelerationMode::Cpu => {

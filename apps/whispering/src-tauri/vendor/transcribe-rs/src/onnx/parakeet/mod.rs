@@ -93,26 +93,14 @@ pub struct ParakeetModel {
 
 impl ParakeetModel {
     pub fn load(model_dir: &Path, quantization: &Quantization) -> Result<Self, TranscribeError> {
-        Self::load_with_provider(
-            model_dir,
-            quantization,
-            &session::OnnxExecutionProvider::Cpu,
-        )
-    }
-
-    pub fn load_with_provider(
-        model_dir: &Path,
-        quantization: &Quantization,
-        provider: &session::OnnxExecutionProvider,
-    ) -> Result<Self, TranscribeError> {
         let encoder_path = session::resolve_model_path(model_dir, "encoder-model", quantization);
         let decoder_path =
             session::resolve_model_path(model_dir, "decoder_joint-model", quantization);
         let preprocessor_path = model_dir.join("nemo128.onnx");
 
-        let encoder = session::create_session_with_provider(&encoder_path, provider)?;
-        let decoder_joint = session::create_session_with_provider(&decoder_path, provider)?;
-        let preprocessor = session::create_session_with_provider(&preprocessor_path, provider)?;
+        let encoder = session::create_session(&encoder_path)?;
+        let decoder_joint = session::create_session(&decoder_path)?;
+        let preprocessor = session::create_session(&preprocessor_path)?;
 
         let vocab_path = model_dir.join("vocab.txt");
         let (vocab, blank_idx) = load_vocab(&vocab_path)?;
@@ -140,15 +128,24 @@ impl ParakeetModel {
         })
     }
 
+    /// Default leading silence in milliseconds.
+    const DEFAULT_LEADING_SILENCE_MS: u32 = 250;
+
     /// Transcribe with model-specific parameters.
+    ///
+    /// Applies leading silence padding (default 250 ms) and adjusts
+    /// timestamps, matching the behaviour of [`SpeechModel::transcribe`].
     pub fn transcribe_with(
         &mut self,
         samples: &[f32],
         params: &ParakeetParams,
     ) -> Result<TranscriptionResult, TranscribeError> {
         let granularity = params.timestamp_granularity.clone().unwrap_or_default();
-
-        self.infer(samples, &granularity)
+        let lead_ms = Self::DEFAULT_LEADING_SILENCE_MS;
+        let padded = crate::audio::prepend_silence(samples, lead_ms);
+        let mut result = self.infer(&padded, &granularity)?;
+        result.offset_timestamps(-(lead_ms as f32 / 1000.0));
+        Ok(result)
     }
 
     fn infer(
@@ -220,13 +217,13 @@ impl ParakeetModel {
     }
 
     fn create_decoder_state(&self) -> Result<DecoderState, TranscribeError> {
-        let inputs = &self.decoder_joint.inputs;
+        let inputs = self.decoder_joint.inputs();
 
         let state1_shape = inputs
             .iter()
-            .find(|input| input.name == "input_states_1")
+            .find(|input| input.name() == "input_states_1")
             .ok_or_else(|| TranscribeError::Inference("Missing input: input_states_1".to_string()))?
-            .input_type
+            .dtype()
             .tensor_shape()
             .ok_or_else(|| {
                 TranscribeError::Inference(
@@ -236,9 +233,9 @@ impl ParakeetModel {
 
         let state2_shape = inputs
             .iter()
-            .find(|input| input.name == "input_states_2")
+            .find(|input| input.name() == "input_states_2")
             .ok_or_else(|| TranscribeError::Inference("Missing input: input_states_2".to_string()))?
-            .input_type
+            .dtype()
             .tensor_shape()
             .ok_or_else(|| {
                 TranscribeError::Inference(
@@ -440,7 +437,11 @@ impl SpeechModel for ParakeetModel {
         CAPABILITIES
     }
 
-    fn transcribe(
+    fn default_leading_silence_ms(&self) -> u32 {
+        Self::DEFAULT_LEADING_SILENCE_MS
+    }
+
+    fn transcribe_raw(
         &mut self,
         samples: &[f32],
         _options: &TranscribeOptions,
