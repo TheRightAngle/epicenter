@@ -13,6 +13,7 @@ import { tryAsync } from 'wellcrafted/result';
 import { goto } from '$app/navigation';
 // import { extension } from '@epicenter/extension';
 import type { WhisperingRecordingState } from '$lib/constants/audio';
+import { recoverWindowScaleNow } from '$routes/(app)/_layout-utils/register-window-scale-recovery';
 
 const TRAY_ID = 'whispering-tray';
 type TrayWindow = Pick<
@@ -67,6 +68,16 @@ export async function restoreWindowFromTray(
 	await currentWindow.unminimize();
 	await currentWindow.setFocus();
 	await currentWindow.requestUserAttention(UserAttentionType.Critical);
+
+	// Belt-and-suspenders DPI recovery. The persistent recovery listener
+	// (registerWindowScaleRecovery, installed in AppLayout) already
+	// listens to onFocusChanged + visibilitychange + onScaleChanged, but
+	// when the user drags the app between displays at different DPI
+	// while it's hidden in the tray, the order of focus/visibility events
+	// after restore is racy on Windows. Triggering recovery explicitly
+	// here is idempotent (early-returns if scale matches) and guarantees
+	// at least one recovery attempt actually fires.
+	void recoverWindowScaleNow();
 
 	if (!wasAlwaysOnTop) {
 		window.setTimeout(() => {

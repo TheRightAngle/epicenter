@@ -5,6 +5,45 @@ type WindowScaleRecoveryWindow = Pick<
 	'onScaleChanged' | 'onFocusChanged' | 'scaleFactor' | 'innerSize' | 'setSize'
 >;
 
+type WindowScaleSampleWindow = Pick<
+	TauriWindow,
+	'scaleFactor' | 'innerSize' | 'setSize'
+>;
+
+const SCALE_MISMATCH_EPSILON_FOR_EXPORT = 0.01;
+
+/**
+ * One-shot scale recovery — call this when you know the window has just
+ * been re-shown (e.g., from the tray) and the resident DPR may not match
+ * the OS-reported scale factor.
+ *
+ * Idempotent: returns immediately if no mismatch is observed. Safe to
+ * call alongside the persistent listener installed by
+ * `registerWindowScaleRecovery` — the listener ignores in-flight runs.
+ */
+export async function recoverWindowScaleNow(
+	currentWindow?: WindowScaleSampleWindow,
+	getDevicePixelRatio: () => number = () => window.devicePixelRatio,
+): Promise<void> {
+	const win =
+		currentWindow ??
+		(await import('@tauri-apps/api/window')).getCurrentWindow();
+	try {
+		const scaleFactor = await win.scaleFactor();
+		if (
+			Math.abs(getDevicePixelRatio() - scaleFactor) <=
+			SCALE_MISMATCH_EPSILON_FOR_EXPORT
+		) {
+			return;
+		}
+		const currentSize = await win.innerSize();
+		const { PhysicalSize } = await import('@tauri-apps/api/window');
+		await win.setSize(new PhysicalSize(currentSize.width, currentSize.height));
+	} catch (error) {
+		console.error('Failed to recover window scale on demand:', error);
+	}
+}
+
 type WindowSizeArg = Parameters<WindowScaleRecoveryWindow['setSize']>[0];
 
 type DocumentRef = Pick<
